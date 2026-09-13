@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars*
+.env*
+wrangler.deploy.json
+wrangler.deploy.json.tmp
+test-results/

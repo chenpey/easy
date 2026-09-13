@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>localShare</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body data-page="app">
+  <header>
+    <div class="header-inner">
+      <div class="brand"><i data-lucide="share-2"></i><h1>localShare</h1></div>
+      <div class="tools">
+        <button id="qr-open" class="icon-button" title="访问二维码" aria-label="访问二维码"><i data-lucide="qr-code"></i></button>
+        <button id="logout" class="icon-button" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button>
+      </div>
+    </div>
+  </header>
+  <main class="workspace">
+    <div id="notice" role="status" aria-live="polite">正在加载...</div>
+    <details id="error-details" hidden><summary>错误详情</summary><pre id="error-body"></pre></details>
+    <div class="compose">
+      <section aria-labelledby="text-title">
+        <h2 id="text-title"><i data-lucide="text"></i>文本</h2>
+        <form id="text-form">
+          <label class="sr-only" for="text-input">分享文本</label>
+          <textarea id="text-input" placeholder="输入要分享的文本" rows="6" required></textarea>
+          <div class="section-footer"><span id="text-count" class="muted"></span><button class="primary" type="submit" disabled><i data-lucide="send"></i>分享文本</button></div>
+        </form>
+      </section>
+      <section aria-labelledby="file-title">
+        <h2 id="file-title"><i data-lucide="files"></i>文件</h2>
+        <label class="file-picker" for="file-input">
+          <i data-lucide="file-up"></i><span>选择文件</span><span id="upload-limit" class="muted"></span>
+          <input id="file-input" type="file" multiple disabled>
+        </label>
+        <ul id="upload-list" class="upload-list"></ul>
+        <div class="section-footer"><span id="file-count" class="muted">未选择文件</span><button id="upload" class="primary" disabled><i data-lucide="upload"></i>上传文件</button></div>
+      </section>
+    </div>
+    <section class="history" aria-labelledby="history-title">
+      <div class="section-heading">
+        <h2 id="history-title">分享历史 <span id="history-count" class="muted"></span></h2>
+        <div class="tools">
+          <button id="refresh" class="icon-button" title="刷新历史" aria-label="刷新历史" disabled><i data-lucide="refresh-cw"></i></button>
+          <button id="clear" class="icon-button danger" title="清空历史" aria-label="清空历史" disabled><i data-lucide="trash-2"></i></button>
+        </div>
+      </div>
+      <div id="history-list" aria-live="polite"></div>
+      <button id="load-more" class="secondary" hidden>加载更早记录</button>
+    </section>
+  </main>
+  <dialog id="qr-dialog">
+    <div class="section-heading"><h2>访问地址</h2><button id="qr-close" class="icon-button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button></div>
+    <canvas id="qr-canvas" width="200" height="200" aria-label="站点访问二维码"></canvas>
+    <p id="site-url"></p>
+    <button id="copy-url" class="secondary"><i data-lucide="copy"></i>复制地址</button>
+  </dialog>
+  <dialog id="confirm-dialog">
+    <h2 id="confirm-title"></h2><p>此操作不可恢复。</p>
+    <form method="dialog" class="dialog-actions">
+      <button value="cancel" class="secondary">取消</button>
+      <button value="confirm" class="destructive">确认删除</button>
+    </form>
+  </dialog>
+</body>
+</html>

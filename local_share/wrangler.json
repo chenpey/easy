@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "local-share",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "local-share",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "FILES", "bucket_name": "local-share-files" }
+  ],
+  "vars": {
+    "SESSION_TTL_SECONDS": "604800",
+    "MAX_UPLOAD_BYTES": "52428800",
+    "UPLOAD_CHUNK_BYTES": "5242880",
+    "UPLOAD_CONCURRENCY": "3",
+    "UPLOAD_SESSION_TTL_SECONDS": "86400",
+    "MAX_TEXT_BYTES": "131072",
+    "POLL_INTERVAL_SECONDS": "15",
+    "LOGIN_WINDOW_SECONDS": "900",
+    "LOGIN_IP_LIMIT": "10",
+    "LOGIN_GLOBAL_LIMIT": "100",
+    "HISTORY_PAGE_SIZE": "50",
+    "CLEANUP_BATCHES": "4",
+    "ALLOW_LOCAL_HTTP": "false"
+  },
+  "triggers": { "crons": ["*/15 * * * *"] }
+}
