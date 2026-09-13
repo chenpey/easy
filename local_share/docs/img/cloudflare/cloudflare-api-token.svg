@@ -35,7 +35,7 @@
 
   <rect x="130" y="672" width="1340" height="95" rx="12" fill="#eef5ff" stroke="#b9d4ff"/>
   <text x="170" y="708" class="body blue" font-weight="700">只在使用 Custom Domain 时追加</text>
-  <text x="170" y="745" class="small">Zone / Zone / Read（确认目标 Zone；域名绑定已由 Workers Scripts / Edit 覆盖）</text>
+  <text x="170" y="745" class="small">Zone / Zone / Read　＋　Zone / Workers Routes / Read（Wrangler 冲突检查）</text>
 
   <rect x="70" y="821" width="1460" height="264" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="875" r="24" fill="#f48120"/><text x="107" y="884" class="heading white">3</text>

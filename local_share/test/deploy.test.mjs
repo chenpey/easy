@@ -5,8 +5,9 @@ import { readFile } from "node:fs/promises";
 import { createCloudflareClient, deploymentConfig, inspectDeployment, provisionDeployment, selectAccount } from "../scripts/cloudflare.mjs";
 
 const account = "a".repeat(32);
+const zone = "z".repeat(32);
 const template = JSON.parse(await readFile(new URL("../wrangler.json", import.meta.url)));
-let server, api, records, database, bucket, settings, publicBucket, failBucket, failure, accounts;
+let server, api, records, database, bucket, settings, publicBucket, failBucket, failure, routeFailure, accounts;
 
 before(async () => {
   server = createServer(async (request, response) => {
@@ -21,7 +22,10 @@ before(async () => {
     };
     if (failure) return reply(failure.message, failure.status);
     if (url.pathname === "/accounts") return reply(accounts);
-    if (url.pathname === "/zones") return reply([{ name: "example.test", status: "active" }]);
+    if (url.pathname === "/zones") return reply([{ id: zone, name: "example.test", status: "active" }]);
+    if (url.pathname === `/zones/${zone}/workers/routes`) {
+      return routeFailure ? reply("Missing Workers Routes Read permission", 403) : reply([]);
+    }
     if (url.pathname.endsWith("/settings")) return settings ? reply(settings) : reply("Worker not found", 404);
     if (url.pathname.endsWith("/workers/subdomain")) return reply({ subdomain: "personal" });
     if (url.pathname.endsWith("/d1/database")) {
@@ -46,7 +50,7 @@ before(async () => {
 after(async () => { await new Promise((resolve) => server.close(resolve)); });
 beforeEach(() => {
   records = [];
-  database = bucket = settings = failure = null;
+  database = bucket = settings = failure = routeFailure = null;
   publicBucket = failBucket = false;
   accounts = [{ id: account, name: "Personal" }];
 });
@@ -121,5 +125,10 @@ test("custom domain checks active zone and disables alternative public entrypoin
   assert.equal(config.workers_dev, false);
   assert.equal(config.preview_urls, false);
   assert.equal((await inspectDeployment(api, config, null)).url, "https://share.example.test");
+  assert.ok(records.some((request) => request.path === `/zones/${zone}/workers/routes`));
+  routeFailure = true;
+  await assert.rejects(inspectDeployment(api, config, null),
+    new RegExp(`GET /zones/${zone}/workers/routes\\?page=1&per_page=50\\nHTTP 403\\n.*Missing Workers Routes Read permission`));
+  assert.ok(records.every((request) => request.method === "GET"));
   assert.throws(() => deploymentConfig(template, config, "b".repeat(32), config.name, ""), /target differs/);
 });

@@ -127,6 +127,7 @@ export async function inspectDeployment(api, config, existing) {
     const zones = await api.list("/zones", { "account.id": config.account_id });
     const zone = zones.find((item) => item.status === "active" && (hostname === item.name || hostname.endsWith(`.${item.name}`)));
     if (!zone) throw new Error(`No active accessible zone for ${hostname}.`);
+    await api.list(`/zones/${zone.id}/workers/routes`);
     url = `https://${hostname}`;
   } else {
     const subdomain = await api.request("GET", `${prefix}/workers/subdomain`);

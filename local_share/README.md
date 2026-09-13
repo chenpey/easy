@@ -336,8 +336,9 @@ R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。
 | Scope | Permission | Level | 用途 |
 | --- | --- | --- | --- |
 | Zone | Zone | Read | 查找并确认主机名所属的 Active Zone |
+| Zone | Workers Routes | Read | 允许 Wrangler 在绑定域名前读取现有 Worker Routes 并检查冲突 |
 
-Worker Custom Domain 的绑定由基础权限中的 **Account → Workers Scripts → Edit** 覆盖，Cloudflare API 对应权限名为 `Workers Scripts Write`。Dashboard 中不存在 **Account → Workers Custom Domains** 权限，不需要添加 **Zone → Workers Routes → Edit**；后者用于传统 Worker Route，不是本项目使用的 Custom Domain。也不要改选 **Custom Hostnames**，那是 Cloudflare for SaaS 的另一项功能。
+Worker Custom Domain 的绑定由基础权限中的 **Account → Workers Scripts → Edit** 覆盖，Cloudflare API 对应权限名为 `Workers Scripts Write`。当前锁定的 Wrangler 在绑定前还会读取 `/zones/<zone-id>/workers/routes` 检查冲突，因此需要 **Zone → Workers Routes → Read**，但不需要 `Edit`。Dashboard 中不存在 **Account → Workers Custom Domains** 权限；也不要改选 **Custom Hostnames**，那是 Cloudflare for SaaS 的另一项功能。
 
 5. 在 **Account Resources** 选择 **Include → Specific account → 目标账号**，不要选择全部账号。
 6. 使用 Custom Domain 时，在 **Zone Resources** 选择 **Include → Specific zone → 目标根域名**；使用 `workers.dev` 时不需要 Zone 资源范围。
@@ -350,7 +351,7 @@ Worker Custom Domain 的绑定由基础权限中的 **Account → Workers Script
 
 R2、Workers、D1 均受各自套餐限额约束。默认可先使用 Workers Free、D1 Free 和 R2 免费额度，额度内为 `$0/月`；首次上线后检查登录和分片校验的 CPU 时间及各产品用量，仅在实际触及限制时再决定是否升级。
 
-官方参考：[启用 R2](https://developers.cloudflare.com/r2/get-started/)、[配置 workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)、[Attach Domain API 权限](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/)。
+官方参考：[启用 R2](https://developers.cloudflare.com/r2/get-started/)、[配置 workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)、[Attach Domain API 权限](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/)、[List Routes API 权限](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)。
 
 从仓库根目录执行：
 
@@ -527,6 +528,7 @@ npm run password
 | 已删除文件仍占用 R2 空间 | 删除权限先撤销，实体由后台任务分批清理；检查 Cron 和 Worker 错误日志 |
 | 手机无法访问本地预览二维码 | loopback 地址不能用于跨设备访问，使用已部署的 HTTPS 地址 |
 | API Token 无法自动发现账号 | 查看输出的 API 错误，可按提示显式输入 Account ID；其他必要权限仍必须具备 |
+| Custom Domain 部署在 `/workers/routes` 返回 `10000` | 为 Token 的目标 Zone 添加 **Workers Routes / Read**，确认 Zone Resources 包含该根域名，然后重新运行 `bash deploy.sh` |
 | 部署提示 R2 未开通或权限不足 | 在 Cloudflare 开通 R2 并核对 Token 权限；保留已生成的部署配置，修复后重新运行 |
 | 部署提示绑定与本地记录不一致 | 先核对账户和远端资源归属，不要直接覆盖，也不要删除配置绕过检查 |
 
