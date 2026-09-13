@@ -108,8 +108,13 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
   assert.equal((await request("/api/history/arbitrary", { method: "DELETE" })).status, 401);
   const login = await request("/login");
   assert.equal(login.status, 200);
-  assert.match(await login.text(), /login-form/);
+  assert.match(await login.text(), /<link rel="icon" href="\/favicon\.ico" type="image\/svg\+xml">/);
   assert.equal((await request("/assets/app.js")).status, 200);
+  const favicon = await request("/favicon.ico");
+  assert.equal(favicon.status, 200);
+  assert.match(favicon.headers.get("Content-Type"), /image\/svg\+xml/);
+  assert.match(await favicon.text(), /<title id="title">localShare<\/title>/);
+  assert.equal((await request("/favicon.ico", { method: "HEAD" })).status, 200);
 });
 
 test("login validates inputs and origin, issues secure cookies and stores only token hashes", async () => {
@@ -386,9 +391,10 @@ test("expired sessions, login counters and abandoned uploads are cleaned", async
 });
 
 test("security headers apply to success, error and static responses", async () => {
-  for (const path of ["/login", "/api/history", "/assets/app.js"]) {
+  for (const path of ["/login", "/api/history", "/assets/app.js", "/favicon.ico"]) {
     const response = await request(path);
-    assert.equal(response.headers.get("Cache-Control"), path.startsWith("/assets/") ? "public, max-age=0, must-revalidate" : "no-store");
+    const publicAsset = path.startsWith("/assets/") || path === "/favicon.ico";
+    assert.equal(response.headers.get("Cache-Control"), publicAsset ? "public, max-age=0, must-revalidate" : "no-store");
     assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
     assert.match(response.headers.get("Content-Security-Policy"), /frame-ancestors 'none'/);
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), null);

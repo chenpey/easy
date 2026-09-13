@@ -8,6 +8,12 @@ const revision = (env) => env.DB.prepare("UPDATE app_state SET revision = revisi
 const objectKey = (id) => `files/${id}`;
 const validId = (id) => /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id);
 const encoder = new TextEncoder();
+const publicAssets = new Map([
+  ["/assets/app.js", "/assets/app.js"],
+  ["/assets/style.css", "/assets/style.css"],
+  ["/favicon.ico", "/favicon.svg"],
+  ["/favicon.svg", "/favicon.svg"],
+]);
 const sha256 = async (value) => Array.from(
   new Uint8Array(await crypto.subtle.digest("SHA-256", value)),
   (byte) => byte.toString(16).padStart(2, "0"),
@@ -24,7 +30,7 @@ function validateFile(name, size, config) {
 
 function harden(response, request) {
   const result = new Response(response.body, response);
-  const publicAsset = ["/assets/app.js", "/assets/style.css"].includes(new URL(request.url).pathname);
+  const publicAsset = publicAssets.has(new URL(request.url).pathname);
   result.headers.set("Cache-Control", publicAsset && (response.ok || response.status === 304) ? "public, max-age=0, must-revalidate" : "no-store");
   result.headers.set("X-Content-Type-Options", "nosniff");
   result.headers.set("X-Frame-Options", "DENY");
@@ -399,8 +405,8 @@ async function route(request, env, ctx) {
     const result = await login(request, env, config);
     return json({ success: true }, 200, { "Set-Cookie": sessionCookie(request, env, result.token, config.ttl) });
   }
-  if ((method === "GET" || method === "HEAD") && ["/assets/app.js", "/assets/style.css"].includes(path)) {
-    return asset(request, env, path);
+  if ((method === "GET" || method === "HEAD") && publicAssets.has(path)) {
+    return asset(request, env, publicAssets.get(path));
   }
   const session = await getSession(request, env);
   if ((method === "GET" || method === "HEAD") && path === "/login") {
