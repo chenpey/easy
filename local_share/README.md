@@ -336,8 +336,8 @@ R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。
 | Scope | Permission | Level | 用途 |
 | --- | --- | --- | --- |
 | Zone | Zone | Read | 查找并确认主机名所属的 Active Zone |
-| Zone | Workers Routes | Edit | 允许 Wrangler 配置目标 Zone 的 Worker 路由信息 |
-| Account | Workers Custom Domains | Edit | 如果当前 Dashboard 单独提供该权限则添加；部分账号已合并到 Workers Scripts Edit |
+
+Worker Custom Domain 的绑定由基础权限中的 **Account → Workers Scripts → Edit** 覆盖，Cloudflare API 对应权限名为 `Workers Scripts Write`。Dashboard 中不存在 **Account → Workers Custom Domains** 权限，不需要添加 **Zone → Workers Routes → Edit**；后者用于传统 Worker Route，不是本项目使用的 Custom Domain。也不要改选 **Custom Hostnames**，那是 Cloudflare for SaaS 的另一项功能。
 
 5. 在 **Account Resources** 选择 **Include → Specific account → 目标账号**，不要选择全部账号。
 6. 使用 Custom Domain 时，在 **Zone Resources** 选择 **Include → Specific zone → 目标根域名**；使用 `workers.dev` 时不需要 Zone 资源范围。
@@ -350,7 +350,7 @@ R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。
 
 R2、Workers、D1 均受各自套餐限额约束。默认可先使用 Workers Free、D1 Free 和 R2 免费额度，额度内为 `$0/月`；首次上线后检查登录和分片校验的 CPU 时间及各产品用量，仅在实际触及限制时再决定是否升级。
 
-官方参考：[启用 R2](https://developers.cloudflare.com/r2/get-started/)、[配置 workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
+官方参考：[启用 R2](https://developers.cloudflare.com/r2/get-started/)、[配置 workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)、[Attach Domain API 权限](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/)。
 
 从仓库根目录执行：
 
