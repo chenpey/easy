@@ -1,0 +1,13 @@
+[project]
+name = "innovation-news"
+version = "0.1.0"
+description = "新闻采集：日期与关键词粗筛、语义筛选、统计及 Excel 台账"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12",   # 解析栏目列表与正文
+    "openpyxl>=3.1",          # 直接导出 Excel 台账与统计
+]
+
+[tool.uv]
+package = false            # 纯脚本工程，不需要打包安装自己

@@ -1,0 +1,12 @@
+# Python 运行环境
+.venv/
+__pycache__/
+*.py[cod]
+
+# 运行时产物（每次运行都会重新生成，不入库）
+outputs/
+data/news_cache/
+
+# 系统文件
+.DS_Store
+Thumbs.db
