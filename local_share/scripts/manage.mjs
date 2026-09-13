@@ -53,6 +53,24 @@ function run(args, env = {}) {
   });
 }
 
+async function withProgress(label, action) {
+  const startedAt = Date.now();
+  console.log(`\n${label}...`);
+  const heartbeat = setInterval(() => {
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    console.log(`${label} still running (${elapsed}s elapsed)...`);
+  }, 15000);
+  heartbeat.unref();
+  try {
+    const result = await action();
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.log(`${label} complete (${elapsed}s).`);
+    return result;
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
 async function loadConfig(path) {
   try { return JSON.parse(await readFile(path, "utf8")); }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
@@ -104,14 +122,19 @@ async function main() {
     password: verifier ? "initialize" : "preserve existing password and sessions",
   }, null, 2));
   if (await ask(`Type ${name} to create/update these Cloudflare resources: `) !== name) throw new Error("Cancelled.");
-  await import("./build.mjs");
-  await provisionDeployment(api, config, inspection, saveConfig);
-  await run(["d1", "migrations", "apply", "DB", "--remote", "--config", "wrangler.deploy.json"], authEnv);
+  await withProgress("Building static assets", () => import("./build.mjs"));
+  await withProgress("Preparing D1 and R2 resources", () => provisionDeployment(api, config, inspection, saveConfig));
+  await withProgress("Applying remote D1 migrations",
+    () => run(["d1", "migrations", "apply", "DB", "--remote", "--config", "wrangler.deploy.json"], authEnv));
   // First deployment has no verifier and fails closed until the secret is installed.
-  await run(["deploy", "--config", "wrangler.deploy.json"], authEnv);
-  if (verifier) await api.request("PUT", `/accounts/${account}/workers/scripts/${name}/secrets`, {
-    name: "PASSWORD_VERIFIER", type: "secret_text", text: verifier,
-  });
+  await withProgress("Uploading Worker and configuring its public entrypoint",
+    () => run(["deploy", "--config", "wrangler.deploy.json"], authEnv));
+  if (verifier) {
+    await withProgress("Installing the shared-password secret",
+      () => api.request("PUT", `/accounts/${account}/workers/scripts/${name}/secrets`, {
+        name: "PASSWORD_VERIFIER", type: "secret_text", text: verifier,
+      }));
+  }
   console.log(`Deployment complete: ${inspection.url}`);
   console.log("Cloudflare token and shared password were not saved locally.");
 }

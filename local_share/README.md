@@ -371,6 +371,7 @@ bash deploy.sh
 - 拒绝非交互式输入和预先设置的 Cloudflare Token/API Key 环境变量。
 - Token 仅在本次进程中使用，通过子进程环境交给 Wrangler，不写文件、不放命令行参数。共享密码派生出的验证器直接通过 HTTPS API 写入 Worker Secret `PASSWORD_VERIFIER`。
 - 自动创建 D1、专用 R2、应用迁移和部署静态资源。首次发现已有同名存储时必须确认仅供此应用使用，不能与其他应用共用；已确认的部署不反复询问。
+- 构建、资源准备、D1 迁移、Worker 上传与域名配置、Secret 安装均显示独立阶段；单个阶段超过 15 秒时持续输出已等待时间。
 - 无本地部署记录时拒绝覆盖同名 Worker；有记录时核对远端 D1/R2 绑定，防止误覆盖其他项目。
 - 检查 R2 的 `r2.dev` 和桶自定义域名都未开启公开访问；发现开启则停止，不擅自更改已有权限。
 - 配置自定义域名时，关闭 `workers.dev` 和预览域名入口；不配置时使用 Wrangler 输出的 `workers.dev` URL。自定义域名需要属于此 Cloudflare 账户内可用的 Zone。
