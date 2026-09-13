@@ -1,6 +1,6 @@
-# localShare Worker
+# RelayDrop
 
-基于 Cloudflare Workers 的文本与文件分享工具，使用共享密码登录、D1 数据库和私有 R2 对象存储。部署后，电脑、手机和平板可以访问同一个 HTTPS 地址交换内容，不需要在个人电脑上持续运行服务，也不要求设备处于同一局域网。
+RelayDrop 是一个基于 Cloudflare Workers 的文本与文件分享工具，使用共享密码登录、D1 数据库和私有 R2 对象存储。部署后，电脑、手机和平板可以访问同一个 HTTPS 地址交换内容，不需要在个人电脑上持续运行服务，也不要求设备处于同一局域网。
 
 适合个人跨设备传递文本和文件，或少量可信成员共用一个分享空间。项目仅包含 Worker 实现，没有独立账号系统；知道共享密码的人具有相同的读取、上传和删除权限。
 
@@ -248,7 +248,7 @@ B 类操作费 = ceil(max(B 类月操作数 - 10000000, 0) / 1000000) × $0.36
 需要 Node.js 22 或更新版本。
 
 ```sh
-cd local_share
+cd relaydrop
 npm ci
 npm run setup
 npm run dev
@@ -319,7 +319,7 @@ R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。
 
 1. 打开 [My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens/)。
 2. 选择 **Create Token → Create Custom Token**，不要使用 Global API Key，也不要在 R2 页面创建 S3 Access Key。
-3. Token name 可填写 `local-share-deploy`。
+3. Token name 可填写 `relaydrop-deploy`。
 4. 在 **Permissions** 中逐行添加下表权限。Dashboard 通常显示 `Edit`，API 文档可能显示同义的 `Write`。
 
 基础权限：
@@ -345,7 +345,7 @@ Worker Custom Domain 的绑定由基础权限中的 **Account → Workers Script
 7. 可选设置客户端 IP 限制和 Token 到期时间。确认部署机器出口 IP 稳定且后续还能在 Token 过期前重新创建。
 8. 选择 **Continue to summary**，逐项核对后点击 **Create Token**。Token secret 只显示一次，应立即存入密码管理器。
 
-![localShare Cloudflare API Token 最小权限与资源范围](docs/img/cloudflare/cloudflare-api-token.svg)
+![RelayDrop Cloudflare API Token 最小权限与资源范围](docs/img/cloudflare/cloudflare-api-token.svg)
 
 部署脚本只接受终端交互式隐藏输入，不从环境变量读取 Token，也不会保存 Token。不要把 Token 写入 README、截图、Shell 历史、`.env`、Issue 或聊天记录。
 
@@ -356,7 +356,7 @@ R2、Workers、D1 均受各自套餐限额约束。默认可先使用 Workers Fr
 从仓库根目录执行：
 
 ```sh
-cd local_share
+cd relaydrop
 bash deploy.sh
 ```
 
@@ -367,6 +367,8 @@ bash deploy.sh
 以 Worker 名称 `my-share` 为例，默认创建 D1 数据库 `my-share` 和 R2 存储桶 `my-share-files`。Worker 名称要求 3～50 位小写字母、数字或连字符，以字母开头，以字母或数字结尾。
 
 后续运行：输入 Token、确认已保存的目标即可，**保留现有共享密码和有效会话**。更改密码单独使用 `npm run password`。
+
+从旧名称升级时，部署脚本会识别既有部署并执行一次性迁移：校验旧 Worker 的资源归属，创建名为 `relaydrop` 的新 Worker，复用原 D1/R2 数据和 Custom Domain，设置共享密码，确认部署完成后删除旧 Worker，再保存新的部署记录。D1 数据库和 R2 bucket 的已有名称保持不变，因为它们是承载数据的资源标识，不为改名执行高风险复制。新版兼容既有密码验证器；Cookie 名称已更新，迁移后浏览器需要重新登录一次。
 
 - 拒绝非交互式输入和预先设置的 Cloudflare Token/API Key 环境变量。
 - Token 仅在本次进程中使用，通过子进程环境交给 Wrangler，不写文件、不放命令行参数。共享密码派生出的验证器直接通过 HTTPS API 写入 Worker Secret `PASSWORD_VERIFIER`。
@@ -500,7 +502,7 @@ npm run password
 | `wrangler.json` | Worker 入口、绑定模板、行为配置和 Cron |
 | `deploy.sh` | 检查 Node.js、安装锁定依赖并进入交互部署 |
 
-以下命令均在 `local_share/` 下执行：
+以下命令均在 `relaydrop/` 下执行：
 
 | 命令 | 作用 |
 | --- | --- |

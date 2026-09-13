@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1220" viewBox="0 0 1600 1220" role="img" aria-labelledby="title desc">
-  <title id="title">localShare Cloudflare API Token 配置示意图</title>
-  <desc id="desc">从 My Profile 的 API Tokens 创建 Custom Token，配置 localShare 部署所需的账号权限、可选域名权限和资源范围。</desc>
+  <title id="title">RelayDrop Cloudflare API Token 配置示意图</title>
+  <desc id="desc">从 My Profile 的 API Tokens 创建 Custom Token，配置 RelayDrop 部署所需的账号权限、可选域名权限和资源范围。</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%">
       <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#18324d" flood-opacity=".12"/>
@@ -18,7 +18,7 @@
   <circle cx="115" cy="199" r="24" fill="#f48120"/><text x="107" y="208" class="heading white">1</text>
   <text x="162" y="195" class="heading">打开 Custom Token 表单</text>
   <text x="162" y="238" class="body mono">My Profile → API Tokens → Create Token → Create Custom Token</text>
-  <text x="162" y="270" class="small muted">Token name 示例：local-share-deploy。不要使用 Global API Key 或 R2 专用 S3 Token。</text>
+  <text x="162" y="270" class="small muted">Token name 示例：relaydrop-deploy。不要使用 Global API Key 或 R2 专用 S3 Token。</text>
 
   <rect x="70" y="315" width="1460" height="478" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="369" r="24" fill="#f48120"/><text x="107" y="378" class="heading white">2</text>

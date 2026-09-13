@@ -92,6 +92,14 @@ export async function selectAccount(api, saved, ask, log = console.log) {
   return selected.id;
 }
 
+export function migrateDeploymentIdentity(template, existing) {
+  const legacyWorker = existing?.name === "local-share" && template.name === "relaydrop" ? existing.name : null;
+  return {
+    legacyWorker,
+    deploymentState: legacyWorker ? { ...existing, name: template.name } : existing,
+  };
+}
+
 export function deploymentConfig(template, existing, account, name, domain) {
   if (!/^[a-f0-9]{32}$/.test(account)) throw new Error("Invalid account ID.");
   if (!/^[a-z][a-z0-9-]{1,48}[a-z0-9]$/.test(name)) throw new Error("Worker name must be 3-50 lowercase letters, digits or hyphens.");

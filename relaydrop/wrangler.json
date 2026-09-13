@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "local-share",
+  "name": "relaydrop",
   "main": "src/worker.js",
   "compatibility_date": "2026-09-01",
   "workers_dev": true,
@@ -15,13 +15,13 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "local-share",
+      "database_name": "relaydrop",
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
   ],
   "r2_buckets": [
-    { "binding": "FILES", "bucket_name": "local-share-files" }
+    { "binding": "FILES", "bucket_name": "relaydrop-files" }
   ],
   "vars": {
     "SESSION_TTL_SECONDS": "604800",

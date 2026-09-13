@@ -1,6 +1,10 @@
 const encoder = new TextEncoder();
 const ITERATIONS = 100000;
-const PROOF = encoder.encode("local-share/password-verifier/v1");
+const CURRENT_VERIFIER_VERSION = 2;
+const PROOF_CONTEXTS = new Map([
+  [1, encoder.encode("local-share/password-verifier/v1")],
+  [2, encoder.encode("relaydrop/password-verifier/v2")],
+]);
 
 export class HttpError extends Error {
   constructor(status, message, headers = {}) {
@@ -24,14 +28,23 @@ async function passwordKey(password, salt, usages) {
   );
 }
 
-export async function createPasswordVerifier(password) {
+export async function createPasswordVerifier(password, version = CURRENT_VERIFIER_VERSION) {
   if (typeof password !== "string" || password.length < 12 || encoder.encode(password).length > 1024) {
     throw new Error("Password must contain at least 12 characters and at most 1024 UTF-8 bytes.");
   }
+  const proofContext = PROOF_CONTEXTS.get(version);
+  if (!proofContext) throw new Error("Unsupported password verifier version.");
   const salt = randomToken();
   const key = await passwordKey(password, salt, ["sign"]);
-  const proof = hex(await crypto.subtle.sign("HMAC", key, PROOF));
-  return JSON.stringify({ version: 1, iterations: ITERATIONS, salt, proof });
+  const proof = hex(await crypto.subtle.sign("HMAC", key, proofContext));
+  return JSON.stringify({ version, iterations: ITERATIONS, salt, proof });
+}
+
+export async function verifyPassword(password, verifier) {
+  const proofContext = PROOF_CONTEXTS.get(verifier.version);
+  if (!proofContext) return false;
+  const key = await passwordKey(password, verifier.salt, ["verify"]);
+  return crypto.subtle.verify("HMAC", key, unhex(verifier.proof), proofContext);
 }
 
 export function configuration(env) {
@@ -46,7 +59,7 @@ export function configuration(env) {
   let verifier;
   try {
     verifier = JSON.parse(env.PASSWORD_VERIFIER);
-    if (verifier.version !== 1 || verifier.iterations !== ITERATIONS ||
+    if (!PROOF_CONTEXTS.has(verifier.version) || verifier.iterations !== ITERATIONS ||
         !/^[a-f0-9]{64}$/.test(verifier.salt) || !/^[a-f0-9]{64}$/.test(verifier.proof)) throw new Error();
   } catch {
     throw new HttpError(503, "PASSWORD_VERIFIER is missing or invalid. Run the interactive setup.");
@@ -85,7 +98,7 @@ export function requireOrigin(request) {
 }
 
 function cookieName(request, env) {
-  return localHttp(request, env) ? "local_share_dev" : "__Host-local_share";
+  return localHttp(request, env) ? "relaydrop_dev" : "__Host-relaydrop";
 }
 
 export function sessionCookie(request, env, token, ttl) {
@@ -169,8 +182,7 @@ export async function login(request, env, config) {
       throw new HttpError(429, "Too many login attempts. Try again later.", { "Retry-After": String(retry) });
     }
   }
-  const key = await passwordKey(data.password, config.verifier.salt, ["verify"]);
-  if (!await crypto.subtle.verify("HMAC", key, unhex(config.verifier.proof), PROOF)) {
+  if (!await verifyPassword(data.password, config.verifier)) {
     throw new HttpError(401, "Incorrect password.");
   }
   const token = randomToken();

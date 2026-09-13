@@ -22,7 +22,7 @@ let sessionEnded = false;
 const activeUploads = new Set();
 const activeRequests = new Set();
 const busyButtons = new WeakSet();
-const uploadStorageKey = "local-share/resumable-uploads/v1";
+const uploadStorageKey = "relaydrop/resumable-uploads/v1";
 
 class UploadPaused extends Error {}
 

@@ -22,7 +22,7 @@ export async function createPreview(vars = {}) {
     bundle: true, write: false, format: "esm", platform: "browser",
   });
   const mf = new Miniflare(convertV4MiniflareOptions({
-    name: "local-share-preview", host: "127.0.0.1", port: 0,
+    name: "relaydrop-preview", host: "127.0.0.1", port: 0,
     modules: true, script: bundle.outputFiles[0].text,
     compatibilityDate: config.compatibility_date,
     bindings: { ...config.vars, ...vars, ALLOW_LOCAL_HTTP: "true", PASSWORD_VERIFIER: await createPasswordVerifier(password) },

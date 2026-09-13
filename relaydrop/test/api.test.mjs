@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { createPasswordVerifier, digest } from "../src/auth.js";
+import { createPasswordVerifier, digest, verifyPassword } from "../src/auth.js";
 import { maintenance } from "../src/worker.js";
 import { applyLocalMigrations } from "../scripts/preview.mjs";
 
@@ -46,7 +46,7 @@ before(async () => {
   const bundle = await build({ entryPoints: ["src/worker.js"], bundle: true, write: false, format: "esm", platform: "browser" });
   script = bundle.outputFiles[0].text;
   mf = new Miniflare(convertV4MiniflareOptions({
-    name: "local-share-test",
+    name: "relaydrop-test",
     modules: true, script: bundle.outputFiles[0].text, compatibilityDate: config.compatibility_date,
     bindings: { ...config.vars, MAX_UPLOAD_BYTES: "6291456", PASSWORD_VERIFIER: await createPasswordVerifier(password) },
     d1Databases: ["DB"], r2Buckets: ["FILES"],
@@ -72,6 +72,16 @@ beforeEach(async () => {
 });
 
 after(async () => { await mf?.dispose(); });
+
+test("current and legacy password verifiers remain valid across the rename", async () => {
+  const current = JSON.parse(await createPasswordVerifier(password));
+  const legacy = JSON.parse(await createPasswordVerifier(password, 1));
+  assert.equal(current.version, 2);
+  assert.equal(legacy.version, 1);
+  assert.equal(await verifyPassword(password, current), true);
+  assert.equal(await verifyPassword(password, legacy), true);
+  assert.equal(await verifyPassword("wrong-password-value", current), false);
+});
 
 test("missing credentials and invalid settings fail closed; production refuses HTTP", async () => {
   const runtime = new Miniflare(convertV4MiniflareOptions({
@@ -113,7 +123,7 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
   const favicon = await request("/favicon.ico");
   assert.equal(favicon.status, 200);
   assert.match(favicon.headers.get("Content-Type"), /image\/svg\+xml/);
-  assert.match(await favicon.text(), /<title id="title">localShare<\/title>/);
+  assert.match(await favicon.text(), /<title id="title">RelayDrop<\/title>/);
   assert.equal((await request("/favicon.ico", { method: "HEAD" })).status, 200);
 });
 
@@ -125,7 +135,7 @@ test("login validates inputs and origin, issues secure cookies and stores only t
   assert.equal((await request("/api/login", { method: "POST", body: "password=test" })).status, 415);
   const response = await signIn();
   const header = response.headers.get("Set-Cookie");
-  assert.match(header, /^__Host-local_share=[a-f0-9]{64};/);
+  assert.match(header, /^__Host-relaydrop=[a-f0-9]{64};/);
   for (const attribute of ["Secure", "HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=604800"]) assert.ok(header.includes(attribute));
   const stored = await db.prepare("SELECT * FROM sessions").first();
   assert.equal(stored.token_hash, await digest(cookie.split("=")[1]));
