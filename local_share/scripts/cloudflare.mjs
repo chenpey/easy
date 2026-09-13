@@ -44,6 +44,30 @@ export function createCloudflareClient(token, { baseUrl = "https://api.cloudflar
   };
 }
 
+export async function resolvePublicHostname(hostname, fetcher = fetch) {
+  const query = new URL("https://1.1.1.1/dns-query");
+  query.searchParams.set("name", hostname);
+  query.searchParams.set("type", "A");
+  let response;
+  let raw;
+  try {
+    response = await fetcher(query, {
+      headers: { Accept: "application/dns-json" },
+      signal: AbortSignal.timeout(10000),
+      redirect: "error",
+    });
+    raw = await response.text();
+  } catch (error) {
+    throw new Error(`GET ${query}\nNetwork error: ${error.message}`, { cause: error });
+  }
+  let data;
+  try { data = JSON.parse(raw); } catch { /* Include the complete non-JSON response below. */ }
+  if (!response.ok || data?.Status !== 0) {
+    throw new Error(`GET ${query}\nHTTP ${response.status}\n${raw}`);
+  }
+  return (data.Answer || []).filter((answer) => answer.type === 1).map((answer) => answer.data);
+}
+
 export async function selectAccount(api, saved, ask, log = console.log) {
   if (saved) return saved;
   let accounts;

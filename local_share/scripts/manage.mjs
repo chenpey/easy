@@ -4,7 +4,14 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { createPasswordVerifier } from "../src/auth.js";
-import { createCloudflareClient, deploymentConfig, inspectDeployment, provisionDeployment, selectAccount } from "./cloudflare.mjs";
+import {
+  createCloudflareClient,
+  deploymentConfig,
+  inspectDeployment,
+  provisionDeployment,
+  resolvePublicHostname,
+  selectAccount,
+} from "./cloudflare.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 process.chdir(root);
@@ -68,6 +75,29 @@ async function withProgress(label, action) {
     return result;
   } finally {
     clearInterval(heartbeat);
+  }
+}
+
+async function verifyDeploymentAccess(url) {
+  const hostname = new URL(url).hostname;
+  let addresses;
+  try {
+    addresses = await resolvePublicHostname(hostname);
+  } catch (error) {
+    console.warn(`Public DNS verification through 1.1.1.1 failed:\n${error.message}`);
+    return;
+  }
+  if (!addresses.length) {
+    console.warn(`Public DNS for ${hostname} is not visible through 1.1.1.1 yet. Wait for propagation before retrying.`);
+    return;
+  }
+  console.log(`Public DNS active via 1.1.1.1: ${addresses.join(", ")}`);
+  try {
+    const response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(10000) });
+    console.log(`Local HTTPS access passed (HTTP ${response.status}).`);
+  } catch (error) {
+    console.warn(`Public DNS is active, but this machine cannot access ${url}: ${error.message}`);
+    console.warn("If the browser shows ERR_NAME_NOT_RESOLVED, restart its DNS cache and the local proxy/DNS service.");
   }
 }
 
@@ -135,6 +165,7 @@ async function main() {
         name: "PASSWORD_VERIFIER", type: "secret_text", text: verifier,
       }));
   }
+  await withProgress("Verifying public DNS and local HTTPS access", () => verifyDeploymentAccess(inspection.url));
   console.log(`Deployment complete: ${inspection.url}`);
   console.log("Cloudflare token and shared password were not saved locally.");
 }

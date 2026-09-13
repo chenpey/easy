@@ -2,7 +2,14 @@ import { before, after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { createCloudflareClient, deploymentConfig, inspectDeployment, provisionDeployment, selectAccount } from "../scripts/cloudflare.mjs";
+import {
+  createCloudflareClient,
+  deploymentConfig,
+  inspectDeployment,
+  provisionDeployment,
+  resolvePublicHostname,
+  selectAccount,
+} from "../scripts/cloudflare.mjs";
 
 const account = "a".repeat(32);
 const zone = "z".repeat(32);
@@ -118,6 +125,26 @@ test("API errors preserve method, path, HTTP status and JSON response without re
     new RegExp(`POST /accounts/${account}/r2/buckets\\nHTTP 403\\n.*Missing permission`));
   assert.equal(records.length, 1);
   await assert.rejects(api.request("GET", "/anything", undefined, { allowMissing: true }), /HTTP 403/);
+});
+
+test("public DNS verification uses 1.1.1.1 without relying on the system resolver", async () => {
+  let requested;
+  const addresses = await resolvePublicHostname("share.example.test", async (url, options) => {
+    requested = { url, options };
+    return new Response(JSON.stringify({
+      Status: 0,
+      Answer: [
+        { name: "share.example.test", type: 1, data: "192.0.2.10" },
+        { name: "share.example.test", type: 28, data: "2001:db8::10" },
+      ],
+    }));
+  });
+  assert.equal(requested.url.hostname, "1.1.1.1");
+  assert.equal(requested.url.searchParams.get("name"), "share.example.test");
+  assert.equal(requested.options.headers.Accept, "application/dns-json");
+  assert.deepEqual(addresses, ["192.0.2.10"]);
+  await assert.rejects(resolvePublicHostname("missing.example.test",
+    async () => new Response('{"Status":3,"Comment":"NXDOMAIN"}')), /HTTP 200[\s\S]*NXDOMAIN/);
 });
 
 test("custom domain checks active zone and disables alternative public entrypoints", async () => {
