@@ -9,6 +9,7 @@ test.afterAll(async () => { await preview?.mf.dispose(); });
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
   test(`share workflow at ${viewport.width}px`, async ({ page, context }) => {
     await page.setViewportSize(viewport);
+    await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: preview.url });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(preview.url);
@@ -42,11 +43,30 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page.locator("#notice")).toHaveText("上传完成");
     const file = page.locator(".history-item").filter({ hasText: filename });
     await expect(file).toHaveCount(1);
+    const fileLink = file.getByRole("link", { name: "打开文件链接" });
+    const fileUrl = await fileLink.getAttribute("href");
+    expect(fileUrl).toMatch(new RegExp(`^${preview.url}/uploads/[a-f0-9-]+$`));
+    await file.getByRole("button", { name: "复制文件链接" }).click();
+    await expect(page.locator("#notice")).toHaveText("已复制");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(fileUrl);
+    await fileLink.hover();
+    await expect(file.locator(".file-link-qr")).toBeVisible();
+    await expect(file.locator(".file-link-qr")).toHaveCSS("opacity", "1");
+    await expect.poll(() => file.locator(".file-link-qr canvas").evaluate((canvas) => {
+      const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      let dark = 0;
+      for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 100 && pixels[i + 3] > 0) dark++;
+      return dark;
+    })).toBeGreaterThan(100);
+    await page.screenshot({ path: `test-results/file-link-qr-${viewport.width}.png` });
     const downloadPromise = page.waitForEvent("download");
-    await file.getByRole("link", { name: "下载文件" }).click();
+    await fileLink.click();
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toBe(filename);
     expect(await download.failure()).toBeNull();
+    await page.locator("#refresh").focus();
+    await page.locator("#history-title").hover();
+    await expect(file.locator(".file-link-qr")).toBeHidden();
     await page.screenshot({ path: `test-results/share-${viewport.width}.png`, fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 

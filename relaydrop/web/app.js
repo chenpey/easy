@@ -1,7 +1,7 @@
-import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Download, FileText } from "lucide";
+import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText } from "lucide";
 import QRCode from "qrcode";
 
-const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Download, FileText };
+const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText };
 const renderIcons = () => createIcons({ icons });
 const $ = (id) => document.getElementById(id);
 const isLogin = document.body.dataset.page === "login";
@@ -152,14 +152,32 @@ function historyRow(item) {
   if (item.type === "text") {
     actions.append(actionButton("复制文本", "copy", () => copy(item.content)));
   } else {
+    const fileUrl = new URL(`/uploads/${item.id}`, location.origin).href;
+    const preview = document.createElement("div");
+    preview.className = "file-link-preview";
     const link = document.createElement("a");
     link.className = "icon-button";
-    link.href = `/uploads/${item.id}`;
-    link.download = item.name;
-    link.title = "下载文件";
-    link.setAttribute("aria-label", "下载文件");
-    link.append(icon("download"));
-    actions.append(link);
+    link.href = fileUrl;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = "打开文件链接";
+    link.setAttribute("aria-label", "打开文件链接");
+    link.append(icon("link"));
+    const qr = document.createElement("div");
+    qr.className = "file-link-qr";
+    const canvas = document.createElement("canvas");
+    canvas.width = 168;
+    canvas.height = 168;
+    canvas.setAttribute("aria-label", `${item.name} 文件链接二维码`);
+    const hint = document.createElement("span");
+    hint.textContent = "扫码后登录下载";
+    qr.append(canvas, hint);
+    preview.append(link, qr);
+    QRCode.toCanvas(canvas, fileUrl, { width: 168, margin: 1 }).catch((error) => {
+      console.error("File QR generation failed:", error);
+      qr.remove();
+    });
+    actions.append(preview, actionButton("复制文件链接", "copy", () => copy(fileUrl)));
   }
   actions.append(actionButton("删除记录", "trash-2", async () => {
     if (!await confirmDelete("删除这条记录？")) return;

@@ -339,6 +339,68 @@ progress {
 
 .item-actions { display: flex; gap: 3px; }
 
+.file-link-preview {
+  position: relative;
+  z-index: 1;
+  display: flex;
+}
+
+.file-link-qr {
+  position: absolute;
+  z-index: 20;
+  top: 50%;
+  right: calc(100% + 10px);
+  width: 190px;
+  padding: 10px 10px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .16);
+  color: var(--label-secondary);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-50%) scale(.98);
+  transform-origin: right center;
+  transition: opacity .16s ease, visibility .16s ease, transform .16s ease;
+}
+
+.file-link-qr::after {
+  position: absolute;
+  top: calc(50% - 7px);
+  right: -7px;
+  width: 12px;
+  height: 12px;
+  border-top: 1px solid var(--hairline);
+  border-right: 1px solid var(--hairline);
+  background: #fff;
+  content: "";
+  transform: rotate(45deg);
+}
+
+.file-link-qr canvas {
+  display: block;
+  width: 168px;
+  height: 168px;
+}
+
+.file-link-qr span {
+  display: block;
+  margin-top: 7px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.file-link-preview:hover,
+.file-link-preview:focus-within { z-index: 30; }
+
+.file-link-preview:hover .file-link-qr,
+.file-link-preview:focus-within .file-link-qr {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) scale(1);
+}
+
 a.icon-button {
   display: inline-flex;
   align-items: center;
@@ -496,6 +558,21 @@ dialog::backdrop {
   .compose { grid-template-columns: minmax(0, 1fr); gap: 30px; padding-top: 14px; }
   .history-item { grid-template-columns: 22px minmax(0, 1fr); gap: 10px; }
   .item-actions { grid-column: 2; justify-content: flex-end; }
+  .file-link-qr {
+    top: auto;
+    right: 0;
+    bottom: calc(100% + 8px);
+    transform: translateY(4px) scale(.98);
+    transform-origin: right bottom;
+  }
+  .file-link-qr::after {
+    top: auto;
+    right: 13px;
+    bottom: -7px;
+    transform: rotate(135deg);
+  }
+  .file-link-preview:hover .file-link-qr,
+  .file-link-preview:focus-within .file-link-qr { transform: translateY(0) scale(1); }
   .history .tools { gap: 4px; }
   .login-layout { padding: 28px 22px; }
   .login-layout .brand { margin-bottom: 30px; }
