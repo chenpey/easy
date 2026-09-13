@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860" role="img" aria-labelledby="title desc">
+  <title id="title">Cloudflare workers.dev 子域名初始化示意图</title>
+  <desc id="desc">在账号级 Workers and Pages 页面找到 Your subdomain，设置账号的 workers.dev 子域名。</desc>
+  <defs>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#18324d" flood-opacity=".12"/>
+    </filter>
+    <style>
+      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}
+      .title{font-size:38px;font-weight:740}.heading{font-size:28px;font-weight:700}.body{font-size:24px}.small{font-size:20px}.muted{fill:#687387}.white{fill:#fff}.orange{fill:#d96500}.blue{fill:#1769e0}.green{fill:#087f5b}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    </style>
+  </defs>
+  <rect width="1400" height="860" fill="#f5f7fb"/>
+  <rect x="38" y="34" width="1324" height="792" rx="18" fill="#fff" filter="url(#shadow)"/>
+  <rect x="38" y="34" width="1324" height="82" rx="18" fill="#fafbfc"/>
+  <circle cx="78" cy="75" r="12" fill="#ff625d"/><circle cx="118" cy="75" r="12" fill="#ffc043"/><circle cx="158" cy="75" r="12" fill="#32c759"/>
+  <rect x="225" y="55" width="1040" height="40" rx="20" fill="#fff" stroke="#d9e1ed"/>
+  <text x="260" y="82" class="small muted">dash.cloudflare.com › 目标账号 › Workers &amp; Pages</text>
+
+  <rect x="38" y="116" width="308" height="710" fill="#101828"/>
+  <text x="76" y="178" class="title white">CLOUDFLARE</text>
+  <rect x="56" y="218" width="272" height="62" rx="10" fill="#1769e0"/>
+  <text x="76" y="258" class="body white" font-weight="700">Workers &amp; Pages</text>
+  <text x="76" y="332" class="body" fill="#c9d4e3">Overview</text>
+  <text x="76" y="390" class="body" fill="#c9d4e3">Plans</text>
+
+  <text x="392" y="180" class="title">Workers &amp; Pages</text>
+  <text x="392" y="222" class="body muted">仅在不使用自定义域名时完成此步骤。</text>
+  <rect x="392" y="266" width="900" height="270" rx="16" fill="#fbfcfe" stroke="#d7dee8"/>
+  <text x="438" y="326" class="heading">Your subdomain</text>
+  <text x="438" y="372" class="body mono">my-account.workers.dev</text>
+  <rect x="1034" y="332" width="202" height="54" rx="9" fill="#1769e0"/>
+  <text x="1135" y="367" class="body white" text-anchor="middle" font-weight="700">Change / Set up</text>
+  <line x1="438" y1="414" x2="1236" y2="414" stroke="#d7dee8"/>
+  <circle cx="462" cy="462" r="19" fill="#087f5b"/><text x="456" y="470" class="body white">1</text>
+  <text x="500" y="469" class="body">输入账号级子域名，确认保存。</text>
+  <text x="500" y="507" class="small muted">它不是 Worker 名称；同一账号的所有 Worker 共用这一段。</text>
+
+  <rect x="392" y="572" width="900" height="150" rx="16" fill="#f0faf6" stroke="#9bd3be"/>
+  <text x="438" y="625" class="heading green">最终访问地址</text>
+  <text x="438" y="674" class="body mono">https://&lt;worker-name&gt;.my-account.workers.dev</text>
+
+  <rect x="392" y="752" width="900" height="48" rx="10" fill="#fff4e9" stroke="#f0b27a"/>
+  <text x="420" y="784" class="small orange">使用 Custom Domain 时跳过本页；部署脚本会关闭 workers.dev 和 Preview URL。</text>
+</svg>

@@ -270,15 +270,87 @@ npm run preview
 
 ## 部署
 
-先在 Cloudflare 账户启用 R2，并初始化账户的 `workers.dev` 子域名（使用自定义域名时不需要）。准备仅限目标账户的 API Token，包含：
+部署前只需要在 Cloudflare Dashboard 完成 R2、公开入口和 API Token 三项准备。D1 数据库、R2 bucket、Worker、迁移和绑定都由 `deploy.sh` 自动创建，不要提前手工创建同名资源。
 
-- Account / Account Settings / Read（用于自动发现账号；没有此权限可显式输入 Account ID）
-- Account / Workers Scripts / Edit
-- Account / D1 / Edit
-- Account / Workers R2 Storage / Edit
-- 使用自定义域名时，额外授予目标 Zone 的 Zone / Read、Workers Routes / Edit，以及账户 Workers Custom Domains / Edit（以控制台当前权限项为准）。
+### 1. 选择公开入口
 
-R2 开通或超额计费可能要求绑定支付方式。默认可先使用 Workers Free、D1 Free 和 R2 免费额度，额度内为 `$0/月`；首次上线后检查登录请求的 CPU 时间及各产品用量，仅在实际触及限制时再决定是否升级。
+只选择一种入口：
+
+| 入口 | 需要准备 | 部署后的地址 |
+| --- | --- | --- |
+| `workers.dev` | 初始化账号级 `workers.dev` 子域名；不需要自己的域名 | `https://<worker-name>.<account-subdomain>.workers.dev` |
+| Custom Domain | 一个已在同一 Cloudflare 账号内变为 **Active** 的 Zone，以及其中未被占用的主机名 | 例如 `https://share.example.com` |
+
+Custom Domain 模式不要求初始化 `workers.dev`。部署脚本会关闭该 Worker 的 `workers.dev` 和 Preview URL，只保留自定义域名入口。
+
+### 2. 启用 R2
+
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)，进入准备部署的目标账号。
+2. 打开 **Storage & databases → R2 → Overview**，也可以直接打开 [R2 Overview](https://dash.cloudflare.com/?to=/:account/r2/overview)。
+3. 首次使用时，按页面提示选择 **Add R2 subscription**、**Get started** 或 **Continue**，完成 R2 启用流程。按钮名称可能随账号和地区变化。
+4. 返回 R2 Overview，确认能看到 **Create bucket** 按钮即可停止。不要手工创建 bucket，脚本会创建 `<worker-name>-files` 并检查它没有 `r2.dev` 或 R2 Custom Domain 公共入口。
+
+![Cloudflare R2 启用路径脱敏示意图](docs/img/cloudflare/cloudflare-r2-enable.svg)
+
+R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。R2 Standard 仍先使用每月 10 GB-month、100 万 A 类操作和 1,000 万 B 类操作的免费额度；Cloudflare 可能要求绑定付款方式，最终以当前账号页面为准。
+
+### 3. 准备访问域名
+
+#### 3.1 使用 workers.dev
+
+1. 进入目标账号的 **Workers & Pages** 页面。
+2. 找到 **Your subdomain**。首次使用时按页面提示设置；已经存在时可点击旁边的 **Change** 查看或修改。
+3. 输入账号级子域名并保存，例如 `my-account`，最终后缀为 `my-account.workers.dev`。
+4. 不需要在控制台创建 Worker。部署脚本会创建 Worker，并输出完整访问地址。
+
+![Cloudflare workers.dev 初始化路径脱敏示意图](docs/img/cloudflare/cloudflare-workers-dev.svg)
+
+`workers.dev` 子域名属于整个账号，不是 Worker 名称。一个 Worker 名为 `my-share`、账号子域名为 `my-account` 时，地址为 `https://my-share.my-account.workers.dev`。
+
+#### 3.2 使用 Custom Domain
+
+1. 确认根域名已经添加到同一 Cloudflare 账号，Zone 状态为 **Active**。
+2. 准备一个未被占用的主机名，例如 `share.example.com`。该主机名不能已有 CNAME，也不要提前创建同名 DNS 记录。
+3. 部署时在 `Custom domain` 提示处输入完整主机名。脚本通过 Wrangler 创建 Worker Custom Domain；Cloudflare 自动创建对应 DNS 记录和边缘证书。
+
+### 4. 创建 API Token
+
+推荐创建 **User API Token**：
+
+1. 打开 [My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens/)。
+2. 选择 **Create Token → Create Custom Token**，不要使用 Global API Key，也不要在 R2 页面创建 S3 Access Key。
+3. Token name 可填写 `local-share-deploy`。
+4. 在 **Permissions** 中逐行添加下表权限。Dashboard 通常显示 `Edit`，API 文档可能显示同义的 `Write`。
+
+基础权限：
+
+| Scope | Permission | Level | 用途 |
+| --- | --- | --- | --- |
+| Account | Account Settings | Read | 自动发现可访问账号；可省略，省略后部署脚本要求手工输入 Account ID |
+| Account | Workers Scripts | Edit | 创建/更新 Worker、静态资源和 `PASSWORD_VERIFIER` Secret |
+| Account | D1 | Edit | 创建数据库、执行迁移和配置绑定 |
+| Account | Workers R2 Storage | Edit | 检查/创建私有 bucket 及其公开访问状态 |
+
+只在使用 Custom Domain 时追加：
+
+| Scope | Permission | Level | 用途 |
+| --- | --- | --- | --- |
+| Zone | Zone | Read | 查找并确认主机名所属的 Active Zone |
+| Zone | Workers Routes | Edit | 允许 Wrangler 配置目标 Zone 的 Worker 路由信息 |
+| Account | Workers Custom Domains | Edit | 如果当前 Dashboard 单独提供该权限则添加；部分账号已合并到 Workers Scripts Edit |
+
+5. 在 **Account Resources** 选择 **Include → Specific account → 目标账号**，不要选择全部账号。
+6. 使用 Custom Domain 时，在 **Zone Resources** 选择 **Include → Specific zone → 目标根域名**；使用 `workers.dev` 时不需要 Zone 资源范围。
+7. 可选设置客户端 IP 限制和 Token 到期时间。确认部署机器出口 IP 稳定且后续还能在 Token 过期前重新创建。
+8. 选择 **Continue to summary**，逐项核对后点击 **Create Token**。Token secret 只显示一次，应立即存入密码管理器。
+
+![localShare Cloudflare API Token 最小权限与资源范围](docs/img/cloudflare/cloudflare-api-token.svg)
+
+部署脚本只接受终端交互式隐藏输入，不从环境变量读取 Token，也不会保存 Token。不要把 Token 写入 README、截图、Shell 历史、`.env`、Issue 或聊天记录。
+
+R2、Workers、D1 均受各自套餐限额约束。默认可先使用 Workers Free、D1 Free 和 R2 免费额度，额度内为 `$0/月`；首次上线后检查登录和分片校验的 CPU 时间及各产品用量，仅在实际触及限制时再决定是否升级。
+
+官方参考：[启用 R2](https://developers.cloudflare.com/r2/get-started/)、[配置 workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
 
 从仓库根目录执行：
 
