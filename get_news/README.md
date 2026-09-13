@@ -9,7 +9,7 @@
 
 ## 导航
 
-- [架构概览](#架构概览)
+- [架构脑图](#架构脑图)
 - [环境](#环境)
 - [配置](#配置)
 - [使用](#使用)
@@ -20,33 +20,29 @@
 - [维护与验证](#维护与验证)
 - [覆盖边界](#覆盖边界)
 
-## 架构概览
+## 架构脑图
 
-项目按以下职责组织，处理阶段通过 JSON 文件交换数据：
+脑图按职责自上而下展开，处理阶段通过 JSON 文件交换数据：
 
-```text
-新闻筛选与统计
-├── 配置与运行环境
-│   ├── config.json       发布日期范围、粗筛关键词、语义筛选要求
-│   └── uv                依赖声明、版本锁定与项目虚拟环境管理
-├── 数据处理模块
-│   ├── pipeline.py       流程编排：prepare 准备任务，finish 汇总导出
-│   ├── news.py           网页采集、正文解析、文章去重与关键词粗筛
-│   ├── semantic.py       判断任务分片、结果校验、合并与统计
-│   └── export_excel.py   生成统计、新闻台账及判断明细等六张工作表
-├── 语义判断
-│   └── 当前会话模型      依据筛选要求与文章全文，返回逐篇结论及原文证据
-├── 数据存储
-│   ├── data/             人工参考资料与网页缓存
-│   ├── outputs/          运行快照、粗筛池、判断分片、判断结果与统计
-│   └── deliverables/     正式交付文件
-└── 质量控制
-    ├── test_news.py      离线回归验证
-    ├── 统计口径          符合、不符合、待确认与未判断分别统计
-    └── 导出约束          全部判断完成且校验通过后导出，不覆盖已有 Excel
+```mermaid
+%%{init: {"theme": "neutral", "flowchart": {"curve": "linear", "nodeSpacing": 20}}}%%
+flowchart TB
+    root["新闻筛选与统计"]
+
+    root --- config["配置与环境"]
+    root --- modules["处理模块"]
+    root --- model["语义判断"]
+    root --- storage["数据存储"]
+    root --- quality["质量控制"]
+
+    config --- config_detail["config.json<br/>日期、关键词、语义要求<br/><br/>uv<br/>依赖与虚拟环境管理"]
+    modules --- modules_detail["pipeline.py：流程编排<br/>news.py：采集与粗筛<br/>semantic.py：校验与统计<br/>export_excel.py：报表导出"]
+    model --- model_detail["当前会话模型<br/>理解筛选要求与全文<br/>返回逐篇结论及原文证据"]
+    storage --- storage_detail["data/：参考资料与缓存<br/>outputs/：运行数据与结果<br/>deliverables/：正式交付文件"]
+    quality --- quality_detail["test_news.py：离线回归<br/>各类判断结果分别统计<br/>全部判断完成且校验通过后导出<br/>不覆盖已有 Excel"]
 ```
 
-上述结构表示职责划分，不表示自动调用关系。Python 脚本不调用模型；
+连线表示职责归属，不表示执行顺序或自动调用关系。Python 脚本不调用模型；
 语义判断由当前会话模型执行，未经用户明确同意不得切换模型。
 `semantic.py` 仅负责准备输入、校验写回结果及汇总统计。
 各模块职责和执行顺序分别见[代码结构](#代码结构)与[调用链与数据流](#调用链与数据流)。
