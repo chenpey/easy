@@ -1,7 +1,7 @@
-import { createIcons, Share2, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Download, FileText } from "lucide";
+import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Download, FileText } from "lucide";
 import QRCode from "qrcode";
 
-const icons = { Share2, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Download, FileText };
+const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Download, FileText };
 const renderIcons = () => createIcons({ icons });
 const $ = (id) => document.getElementById(id);
 const isLogin = document.body.dataset.page === "login";

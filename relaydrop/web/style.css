@@ -131,11 +131,11 @@ header {
   gap: 12px;
 }
 
-.brand > .lucide {
-  width: 25px;
-  height: 25px;
-  color: var(--blue);
-  stroke-width: 2;
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 7px;
 }
 
 h1 {

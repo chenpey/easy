@@ -1,13 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
   <title id="title">RelayDrop</title>
   <rect width="512" height="512" rx="112" fill="#0071e3"/>
-  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-width="34">
-    <path d="m198 234 106-59"/>
-    <path d="m198 278 106 59"/>
-  </g>
-  <g fill="#fff">
-    <circle cx="160" cy="256" r="48"/>
-    <circle cx="346" cy="151" r="48"/>
-    <circle cx="346" cy="361" r="48"/>
+  <g transform="translate(64 64) scale(16)" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+    <path d="M7 19H5.5a4.5 4.5 0 0 1-1.2-8.84A7 7 0 0 1 18 8a5 5 0 0 1 .9 9.92"/>
+    <path d="M12 10v11"/>
+    <path d="m8 17 4 4 4-4"/>
   </g>
 </svg>
