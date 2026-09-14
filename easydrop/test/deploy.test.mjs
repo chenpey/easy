@@ -43,7 +43,9 @@ before(async () => {
       return reply(database);
     }
     if (url.pathname.includes("/d1/database/")) {
-      if (request.method === "PATCH") database = { ...database, name: JSON.parse(body).name };
+      if (request.method === "PATCH") {
+        database = { ...database, read_replication: JSON.parse(body).read_replication };
+      }
       return reply(database);
     }
     if (url.pathname.endsWith("/domains/managed")) return reply({ enabled: publicBucket });
@@ -103,17 +105,19 @@ test("storage migration names use an explicit validated base", () => {
   assert.throws(() => deploymentConfig(unsafe, null, account, "my-share", ""), /STORAGE_MIGRATION_MODE/);
 });
 
-test("D1 database rename preserves its configured UUID", async () => {
+test("D1 database updates send only supported replication settings", async () => {
   database = { uuid: crypto.randomUUID(), name: "local-share" };
-  const renamed = await api.request(
-    "PATCH", `/accounts/${account}/d1/database/${database.uuid}`, { name: "easy-drop" },
+  const updated = await api.request(
+    "PATCH", `/accounts/${account}/d1/database/${database.uuid}`,
+    { read_replication: { mode: "disabled" } },
   );
-  assert.equal(renamed.uuid, database.uuid);
-  assert.equal(renamed.name, "easy-drop");
+  assert.equal(updated.uuid, database.uuid);
+  assert.equal(updated.name, "local-share");
+  assert.deepEqual(updated.read_replication, { mode: "disabled" });
   assert.deepEqual(records.at(-1), {
     method: "PATCH",
     path: `/accounts/${account}/d1/database/${database.uuid}`,
-    body: { name: "easy-drop" },
+    body: { read_replication: { mode: "disabled" } },
   });
 });
 

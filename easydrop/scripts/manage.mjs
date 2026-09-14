@@ -249,13 +249,16 @@ async function migrateStorage(template, existing) {
   );
   const finalConfig = structuredClone(sourceConfig);
   finalConfig.d1_databases[0].database_name = target.database;
+  if (savedState?.targetDatabaseId) {
+    finalConfig.d1_databases[0].database_id = savedState.targetDatabaseId;
+  }
   finalConfig.r2_buckets[0].bucket_name = target.bucket;
   finalConfig.vars.STORAGE_MIGRATION_MODE = "false";
   const summary = {
     worker: sourceConfig.name,
     database: `${sourceConfig.d1_databases[0].database_name} -> ${target.database}`,
     bucket: `${sourceConfig.r2_buckets[0].bucket_name} -> ${target.bucket}`,
-    oldBucket: "retained after verified cutover",
+    oldStorage: "source D1 and R2 retained after verified cutover",
   };
   console.log(JSON.stringify(summary, null, 2));
   if (await ask(`Type migrate ${target.database} to continue: `) !== `migrate ${target.database}`) {
@@ -273,17 +276,21 @@ async function migrateStorage(template, existing) {
   const settings = await api.request("GET", `${prefix}/workers/scripts/${sourceConfig.name}/settings`);
   const remoteDatabase = settings?.bindings?.find((entry) => entry.name === "DB" && entry.type === "d1");
   const remoteBucket = settings?.bindings?.find((entry) => entry.name === "FILES" && entry.type === "r2_bucket");
-  if (remoteDatabase?.id !== sourceConfig.d1_databases[0].database_id) {
-    throw new Error("Remote DB binding differs from the saved deployment.");
+  const allowedDatabaseIds = [
+    sourceConfig.d1_databases[0].database_id,
+    savedState?.targetDatabaseId,
+  ].filter(Boolean);
+  if (!allowedDatabaseIds.includes(remoteDatabase?.id)) {
+    throw new Error("Remote DB binding differs from both the source and owned target database.");
   }
   if (![sourceConfig.r2_buckets[0].bucket_name, target.bucket].includes(remoteBucket?.bucket_name)) {
     throw new Error("Remote FILES binding differs from both the source and target storage.");
   }
-  const database = await api.request(
+  const sourceDatabase = await api.request(
     "GET", `${prefix}/d1/database/${sourceConfig.d1_databases[0].database_id}`,
   );
-  if (![sourceConfig.d1_databases[0].database_name, target.database].includes(database.name)) {
-    throw new Error("Remote D1 name differs from both the source and target storage.");
+  if (sourceDatabase.name !== sourceConfig.d1_databases[0].database_name) {
+    throw new Error("Remote source D1 name differs from the saved deployment.");
   }
 
   let migrationState = savedState;
@@ -313,9 +320,14 @@ async function migrateStorage(template, existing) {
   if (!targetBucket) throw new Error(`Target R2 bucket ${target.bucket} could not be verified.`);
 
   if (remoteBucket.bucket_name === target.bucket) {
-    if (database.name !== target.database) {
-      throw new Error("Worker already uses the target R2 bucket but D1 has not been renamed. Manual recovery is required.");
+    if (!savedState?.targetDatabaseId || remoteDatabase.id !== savedState.targetDatabaseId) {
+      throw new Error("Worker already uses the target R2 bucket but not the owned target D1 database.");
     }
+    const remoteTargetDatabase = await api.request(
+      "GET", `${prefix}/d1/database/${savedState.targetDatabaseId}`,
+    );
+    if (remoteTargetDatabase.name !== target.database) throw new Error("Target D1 database name is invalid.");
+    finalConfig.d1_databases[0].database_id = savedState.targetDatabaseId;
     await saveConfig(finalConfig);
     await saveJson(statePath, { ...migrationState, status: "complete", completedAt: new Date().toISOString() });
     console.log("Remote storage already uses the migration target; local deployment configuration was repaired.");
@@ -324,13 +336,15 @@ async function migrateStorage(template, existing) {
 
   await inspectPrivateBucket(api, sourceConfig.account_id, sourceConfig.r2_buckets[0].bucket_name);
   await withProgress("Building static assets", () => import("./build.mjs"));
-  const maintenanceConfig = structuredClone(sourceConfig);
-  maintenanceConfig.vars.STORAGE_MIGRATION_MODE = "true";
-  await saveJson(temporaryConfigPath, maintenanceConfig);
   let maintenanceDeployed = false;
   let cutoverComplete = false;
-  let databaseRenamed = database.name === target.database;
   try {
+    await saveJson(temporaryConfigPath, sourceConfig);
+    await withProgress("Applying pending migrations to source D1",
+      () => run(["d1", "migrations", "apply", "DB", "--remote", "--config", temporaryConfigPath], authEnv, false));
+    const maintenanceConfig = structuredClone(sourceConfig);
+    maintenanceConfig.vars.STORAGE_MIGRATION_MODE = "true";
+    await saveJson(temporaryConfigPath, maintenanceConfig);
     await withProgress("Enabling read-only storage migration mode",
       () => run(["deploy", "--config", temporaryConfigPath], authEnv));
     maintenanceDeployed = true;
@@ -356,16 +370,60 @@ async function migrateStorage(template, existing) {
     if (JSON.stringify(verified) !== JSON.stringify(ready)) {
       throw new Error("D1 file inventory changed during storage migration.");
     }
-    if (!databaseRenamed) {
-      await withProgress(`Renaming D1 database to ${target.database}`,
-        () => api.request("PATCH", `${prefix}/d1/database/${sourceConfig.d1_databases[0].database_id}`, {
-          name: target.database,
-        }));
-      databaseRenamed = true;
+    const exportPath = ".wrangler/storage-migration/database.sql";
+    await rm(exportPath, { force: true });
+    await withProgress("Exporting source D1 database", () => run([
+      "d1", "export", "DB", "--remote", "--skip-confirmation",
+      "--output", exportPath, "--config", temporaryConfigPath,
+    ], authEnv, false));
+    const postExportInventory = await remoteFileInventory(temporaryConfigPath, authEnv);
+    if (postExportInventory.some((item) => item.state === "pending") ||
+        JSON.stringify(postExportInventory.filter((item) => item.state === "ready")) !== JSON.stringify(ready)) {
+      throw new Error("D1 file inventory changed while the database was exported.");
     }
+
+    if (migrationState.targetDatabaseId) {
+      const previousTarget = await api.request(
+        "GET", `${prefix}/d1/database/${migrationState.targetDatabaseId}`, undefined, { allowMissing: true },
+      );
+      if (previousTarget) {
+        if (previousTarget.name !== target.database) throw new Error("Owned target D1 database name is invalid.");
+        await withProgress("Resetting incomplete target D1 database",
+          () => api.request("DELETE", `${prefix}/d1/database/${migrationState.targetDatabaseId}`));
+      }
+    } else {
+      const matches = (await api.list(`${prefix}/d1/database`, { name: target.database }))
+        .filter((item) => item.name === target.database);
+      if (matches.length) {
+        throw new Error(`Target D1 database ${target.database} already exists. Refusing to adopt or overwrite it.`);
+      }
+    }
+    const createBody = { name: target.database };
+    if (["eu", "fedramp", "us"].includes(sourceDatabase.jurisdiction)) {
+      createBody.jurisdiction = sourceDatabase.jurisdiction;
+    }
+    const targetDatabase = await withProgress(`Creating D1 database ${target.database}`,
+      () => api.request("POST", `${prefix}/d1/database`, createBody));
+    if (!targetDatabase?.uuid) throw new Error("D1 create response is missing the target UUID.");
+    migrationState = { ...migrationState, targetDatabaseId: targetDatabase.uuid };
+    await saveJson(statePath, migrationState);
+    finalConfig.d1_databases[0].database_id = targetDatabase.uuid;
     await saveJson(temporaryConfigPath, finalConfig);
+    await withProgress("Importing source data into target D1", () => run([
+      "d1", "execute", "DB", "--remote", "--yes",
+      "--file", exportPath, "--config", temporaryConfigPath,
+    ], authEnv, false));
     await withProgress("Applying remote D1 migrations",
       () => run(["d1", "migrations", "apply", "DB", "--remote", "--config", temporaryConfigPath], authEnv, false));
+    const targetInventory = await remoteFileInventory(temporaryConfigPath, authEnv);
+    if (JSON.stringify(targetInventory) !== JSON.stringify(postExportInventory)) {
+      throw new Error("Target D1 file inventory does not match the exported source database.");
+    }
+    if (["auto", "disabled"].includes(sourceDatabase.read_replication?.mode)) {
+      await api.request("PATCH", `${prefix}/d1/database/${targetDatabase.uuid}`, {
+        read_replication: { mode: sourceDatabase.read_replication.mode },
+      });
+    }
     await withProgress("Switching Worker to migrated storage",
       () => run(["deploy", "--config", temporaryConfigPath], authEnv));
     cutoverComplete = true;
@@ -374,12 +432,12 @@ async function migrateStorage(template, existing) {
     const url = await publicUrl(api, finalConfig);
     await withProgress("Verifying public DNS and local HTTPS access", () => verifyDeploymentAccess(url));
     console.log(`Storage migration complete: D1 ${target.database}, R2 ${target.bucket}`);
+    console.log(`Old D1 database ${sourceConfig.d1_databases[0].database_name} was retained for manual verification and cleanup.`);
     console.log(`Old R2 bucket ${sourceConfig.r2_buckets[0].bucket_name} was retained for manual verification and cleanup.`);
   } catch (error) {
     if (maintenanceDeployed && !cutoverComplete) {
       const recoveryConfig = structuredClone(sourceConfig);
       recoveryConfig.vars.STORAGE_MIGRATION_MODE = "false";
-      if (databaseRenamed) recoveryConfig.d1_databases[0].database_name = target.database;
       await saveJson(temporaryConfigPath, recoveryConfig);
       try {
         await withProgress("Restoring normal access to source storage",
