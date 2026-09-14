@@ -30,14 +30,32 @@ const sha256 = async (value) => Array.from(
   (byte) => byte.toString(16).padStart(2, "0"),
 ).join("");
 
+function validFilename(name) {
+  return typeof name === "string" && Boolean(name.trim()) && encoder.encode(name).length <= 255 &&
+    ![".", ".."].includes(name) && !/[\/\\\u0000-\u001f\u007f]/.test(name);
+}
+
+function decodeFilename(value) {
+  try {
+    const name = decodeURIComponent(value || "");
+    return validFilename(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+function protectedDownloadPath(value) {
+  const match = /^\/uploads\/([^/?#]+)\/([^/?#]+)$/.exec(value || "");
+  const name = match && decodeFilename(match[2]);
+  return match && validId(match[1]) && name ? { path: match[0], id: match[1], name } : null;
+}
+
 function safeDownloadPath(value) {
-  const match = /^\/uploads\/([^/?#]+)$/.exec(value || "");
-  return match && validId(match[1]) ? match[0] : "/";
+  return protectedDownloadPath(value)?.path || "/";
 }
 
 function validateFile(name, size, config) {
-  if (typeof name !== "string" || !name.trim() || encoder.encode(name).length > 255 ||
-      /[\/\\\u0000-\u001f\u007f]/.test(name)) {
+  if (!validFilename(name)) {
     throw new HttpError(400, "Invalid filename (maximum 255 UTF-8 bytes; no paths or control characters).");
   }
   if (!Number.isSafeInteger(size) || size < 0) throw new HttpError(400, "Invalid file size.");
@@ -504,12 +522,12 @@ function rangeFor(header, size) {
   return { offset: start, length: end - start + 1 };
 }
 
-async function download(request, env, id, knownItem = null) {
+async function download(request, env, id, expectedName, knownItem = null) {
   if (!validId(id)) throw new HttpError(404, "File not found.");
   const item = knownItem || await env.DB.prepare(
     "SELECT name, size FROM items WHERE id = ? AND type = 'file' AND state = 'ready'",
   ).bind(id).first();
-  if (!item) throw new HttpError(404, "File not found.");
+  if (!item || item.name !== expectedName) throw new HttpError(404, "File not found.");
   const range = request.method === "HEAD" ? null : rangeFor(request.headers.get("Range"), item.size);
   const object = request.method === "HEAD"
     ? await env.FILES.head(objectKey(id))
@@ -528,15 +546,17 @@ async function download(request, env, id, knownItem = null) {
   return new Response(request.method === "HEAD" ? null : object.body, { status: range ? 206 : 200, headers });
 }
 
-async function temporaryDownload(request, env, token) {
-  if (!temporaryShareToken.test(token || "")) throw new HttpError(404, "Temporary file link not found or expired.");
+async function temporaryDownload(request, env, token, expectedName) {
+  if (!temporaryShareToken.test(token || "") || !expectedName) {
+    throw new HttpError(404, "Temporary file link not found or expired.");
+  }
   const item = await env.DB.prepare(
     `SELECT i.id, i.name, i.size
      FROM file_shares s JOIN items i ON i.id = s.item_id
      WHERE s.token_hash = ? AND s.expires_at > ? AND i.type = 'file' AND i.state = 'ready'`,
   ).bind(await digest(token), now()).first();
-  if (!item) throw new HttpError(404, "Temporary file link not found or expired.");
-  return download(request, env, item.id, item);
+  if (!item || item.name !== expectedName) throw new HttpError(404, "Temporary file link not found or expired.");
+  return download(request, env, item.id, expectedName, item);
 }
 
 async function createTemporaryShare(request, env, id) {
@@ -546,7 +566,7 @@ async function createTemporaryShare(request, env, id) {
     throw new HttpError(400, "Temporary access duration must be an integer from 1 to 168 hours.");
   }
   const item = await env.DB.prepare(
-    "SELECT id FROM items WHERE id = ? AND type = 'file' AND state = 'ready'",
+    "SELECT id, name FROM items WHERE id = ? AND type = 'file' AND state = 'ready'",
   ).bind(id).first();
   if (!item) throw new HttpError(404, "File not found.");
   const token = randomToken();
@@ -562,7 +582,7 @@ async function createTemporaryShare(request, env, id) {
   ]);
   return json({
     success: true,
-    url: new URL(`/shared/${token}`, request.url).href,
+    url: new URL(`/shared/${token}/${encodeURIComponent(item.name)}`, request.url).href,
     expiresAt,
   }, 201);
 }
@@ -648,7 +668,8 @@ async function route(request, env, ctx, responseState) {
     return asset(request, env, publicAssets.get(path));
   }
   if ((method === "GET" || method === "HEAD") && path.startsWith("/shared/")) {
-    return temporaryDownload(request, env, path.slice("/shared/".length));
+    const match = /^\/shared\/([a-f0-9]{64})\/([^/?#]+)$/.exec(path);
+    return temporaryDownload(request, env, match?.[1], decodeFilename(match?.[2]));
   }
   const session = await getSession(request, env, config.ttl);
   if (session) responseState.session = { ...session, ttl: config.ttl };
@@ -754,7 +775,11 @@ async function route(request, env, ctx, responseState) {
   if ((method === "GET" || method === "HEAD") && path.startsWith("/previews/")) {
     return previewImage(request, env, path.slice(10));
   }
-  if ((method === "GET" || method === "HEAD") && path.startsWith("/uploads/")) return download(request, env, path.slice(9));
+  if ((method === "GET" || method === "HEAD") && path.startsWith("/uploads/")) {
+    const target = protectedDownloadPath(path);
+    if (!target) throw new HttpError(404, "File not found.");
+    return download(request, env, target.id, target.name);
+  }
   const temporaryShareRoute = path.match(/^\/api\/history\/([a-f0-9-]+)\/share$/);
   if (temporaryShareRoute) {
     if (method === "POST") return createTemporaryShare(request, env, temporaryShareRoute[1]);

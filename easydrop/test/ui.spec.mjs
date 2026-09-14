@@ -72,7 +72,9 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     expect(await thumbnail.getAttribute("src")).toMatch(/^\/previews\/[a-f0-9-]+$/);
     const fileLink = file.getByRole("link", { name: "打开文件链接" });
     const fileUrl = await fileLink.getAttribute("href");
-    expect(fileUrl).toMatch(new RegExp(`^${preview.url}/uploads/[a-f0-9-]+$`));
+    const fileLinkUrl = new URL(fileUrl);
+    expect(fileLinkUrl.pathname).toMatch(/^\/uploads\/[a-f0-9-]+\//);
+    expect(decodeURIComponent(fileLinkUrl.pathname.split("/").at(-1))).toBe(filename);
     const copyFileLink = file.getByRole("button", { name: "复制文件链接" });
     await copyFileLink.click();
     await expect(copyFileLink).toHaveClass(/copy-confirmed/);
@@ -85,7 +87,9 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await temporaryDialog.getByRole("button", { name: "创建链接" }).click();
     await expect(page.locator("#notice")).toHaveText("临时链接已创建");
     const temporaryUrl = await temporaryDialog.locator("#temporary-share-url").getAttribute("href");
-    expect(temporaryUrl).toMatch(new RegExp(`^${preview.url}/shared/[a-f0-9]{64}$`));
+    const temporaryLinkUrl = new URL(temporaryUrl);
+    expect(temporaryLinkUrl.pathname).toMatch(/^\/shared\/[a-f0-9]{64}\//);
+    expect(decodeURIComponent(temporaryLinkUrl.pathname.split("/").at(-1))).toBe(filename);
     await expect(temporaryDialog.locator("#temporary-share-status")).toContainText("当前链接有效至");
     await expect.poll(() => temporaryDialog.locator("#temporary-share-qr").evaluate((canvas) => {
       const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;

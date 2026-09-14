@@ -34,6 +34,8 @@ async function jsonRequest(path, data, authenticated = false, headers = {}) {
   });
 }
 
+const fileDownloadPath = (id, name) => `/uploads/${id}/${encodeURIComponent(name)}`;
+
 async function signIn() {
   const response = await jsonRequest("/api/login", { username, password });
   assert.equal(response.status, 200, await response.clone().text());
@@ -132,7 +134,7 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
   for (const path of ["/api/session", "/api/history", "/api/revision", "/uploads/arbitrary", "/login.html"]) {
     assert.equal((await request(path)).status, 401, path);
   }
-  const unauthorizedDownload = await request(`/uploads/${crypto.randomUUID()}`);
+  const unauthorizedDownload = await request(fileDownloadPath(crypto.randomUUID(), "file.txt"));
   assert.equal(unauthorizedDownload.status, 401);
   assert.deepEqual(await unauthorizedDownload.json(), {
     success: false,
@@ -151,7 +153,7 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
   assert.match(favicon.headers.get("Content-Type"), /image\/svg\+xml/);
   assert.match(await favicon.text(), /<title id="title">EasyDrop<\/title>/);
   assert.equal((await request("/favicon.ico", { method: "HEAD" })).status, 200);
-  const downloadPath = `/uploads/${crypto.randomUUID()}`;
+  const downloadPath = fileDownloadPath(crypto.randomUUID(), "file.txt");
   const navigation = await request(downloadPath, {
     headers: { "Sec-Fetch-Mode": "navigate", Accept: "text/html" },
   });
@@ -179,7 +181,7 @@ test("login validates inputs and origin, issues secure cookies and stores only t
   assert.match(renewed.headers.get("Set-Cookie"), /Max-Age=2592000/);
   const sliding = await db.prepare("SELECT expires_at FROM sessions").first();
   assert.ok(sliding.expires_at > Math.floor(Date.now() / 1000) + 2591900);
-  const downloadPath = `/uploads/${crypto.randomUUID()}`;
+  const downloadPath = fileDownloadPath(crypto.randomUUID(), "file.txt");
   const resumed = await request(`/login?next=${encodeURIComponent(downloadPath)}`, { authenticated: true });
   assert.equal(resumed.status, 303);
   assert.equal(resumed.headers.get("Location"), `${origin}${downloadPath}`);
@@ -361,39 +363,42 @@ test("multipart upload supports duplicate names, Unicode, empty files and authen
   const first = await uploadFile("资料.html", "<script>alert(1)</script>");
   assert.equal(first.status, 201, await first.clone().text());
   const id = (await first.json()).id;
+  const path = fileDownloadPath(id, "资料.html");
   const second = await uploadFile("资料.html");
   assert.notEqual((await second.json()).id, id);
-  const response = await request(`/uploads/${id}`, { authenticated: true });
+  const response = await request(path, { authenticated: true });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Content-Type"), "application/octet-stream");
   assert.match(response.headers.get("Content-Disposition"), /^attachment;/);
   assert.match(response.headers.get("Content-Disposition"), /%E8%B5%84%E6%96%99/);
   assert.equal(await response.text(), "<script>alert(1)</script>");
-  assert.equal((await request(`/uploads/${id}`)).status, 401);
-  const head = await request(`/uploads/${id}`, { authenticated: true, method: "HEAD" });
+  assert.equal((await request(path)).status, 401);
+  assert.equal((await request(`/uploads/${id}`, { authenticated: true })).status, 404);
+  assert.equal((await request(fileDownloadPath(id, "different.html"), { authenticated: true })).status, 404);
+  const head = await request(path, { authenticated: true, method: "HEAD" });
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
   assert.equal(head.headers.get("Accept-Ranges"), "bytes");
   assert.match(head.headers.get("ETag"), /^".+"$/);
   assert.ok(Date.parse(head.headers.get("Last-Modified")));
-  const partial = await request(`/uploads/${id}`, { authenticated: true, headers: { Range: "bytes=1-6" } });
+  const partial = await request(path, { authenticated: true, headers: { Range: "bytes=1-6" } });
   assert.equal(partial.status, 206);
   assert.equal(partial.headers.get("Content-Range"), "bytes 1-6/25");
   assert.equal(await partial.text(), "script");
-  const suffix = await request(`/uploads/${id}`, { authenticated: true, headers: { Range: "bytes=-3" } });
+  const suffix = await request(path, { authenticated: true, headers: { Range: "bytes=-3" } });
   assert.equal(await suffix.text(), "pt>");
   const [left, right] = await Promise.all([
-    request(`/uploads/${id}`, { authenticated: true, headers: { Range: "bytes=0-7" } }),
-    request(`/uploads/${id}`, { authenticated: true, headers: { Range: "bytes=8-24" } }),
+    request(path, { authenticated: true, headers: { Range: "bytes=0-7" } }),
+    request(path, { authenticated: true, headers: { Range: "bytes=8-24" } }),
   ]);
   assert.equal(left.status, 206);
   assert.equal(right.status, 206);
   assert.equal(`${await left.text()}${await right.text()}`, "<script>alert(1)</script>");
-  assert.equal((await request(`/uploads/${id}`, { authenticated: true, headers: { Range: "bytes=999-" } })).status, 416);
+  assert.equal((await request(path, { authenticated: true, headers: { Range: "bytes=999-" } })).status, 416);
   const empty = await uploadFile("empty.txt", "");
   assert.equal(empty.status, 201);
   const emptyId = (await empty.json()).id;
-  assert.equal(await (await request(`/uploads/${emptyId}`, { authenticated: true })).text(), "");
+  assert.equal(await (await request(fileDownloadPath(emptyId, "empty.txt"), { authenticated: true })).text(), "");
 });
 
 test("temporary file links enforce duration, replace old tokens and download without authentication", async () => {
@@ -411,9 +416,9 @@ test("temporary file links enforce duration, replace old tokens and download wit
   assert.equal(created.status, 201, await created.clone().text());
   const first = await created.json();
   const firstUrl = new URL(first.url);
-  const firstToken = firstUrl.pathname.slice("/shared/".length);
+  const firstToken = firstUrl.pathname.split("/")[2];
   assert.equal(firstUrl.origin, origin);
-  assert.match(firstUrl.pathname, /^\/shared\/[a-f0-9]{64}$/);
+  assert.match(firstUrl.pathname, /^\/shared\/[a-f0-9]{64}\/temporary\.txt$/);
   assert.ok(first.expiresAt >= startedAt + 3600 && first.expiresAt <= Math.floor(Date.now() / 1000) + 3600);
   const stored = await db.prepare("SELECT * FROM file_shares WHERE item_id = ?").bind(id).first();
   assert.equal(stored.token_hash, await digest(firstToken));
@@ -431,7 +436,13 @@ test("temporary file links enforce duration, replace old tokens and download wit
   const publicRange = await request(firstUrl.pathname, { headers: { Range: "bytes=10-13" } });
   assert.equal(publicRange.status, 206);
   assert.equal(await publicRange.text(), "file");
-  assert.equal((await request(`/uploads/${id}`)).status, 401);
+  assert.equal((await request(fileDownloadPath(id, "temporary.txt"))).status, 401);
+  const wrongTemporaryName = await request(`/shared/${firstToken}/different.txt`);
+  assert.equal(wrongTemporaryName.status, 404);
+  assert.deepEqual(await wrongTemporaryName.json(), {
+    success: false,
+    message: "Temporary file link not found or expired.",
+  });
 
   const replaced = await jsonRequest(`/api/history/${id}/share`, { hours: 168 }, true);
   assert.equal(replaced.status, 201);
@@ -492,7 +503,7 @@ test("image previews are authenticated, inline and limited to safe raster types"
   const updated = await (await request("/api/history", { authenticated: true })).json();
   assert.equal(updated.items.find((item) => item.id === svgId).media_type, null);
   assert.equal((await request(`/previews/${svgId}`, { authenticated: true })).status, 404);
-  assert.equal((await request(`/uploads/${svgId}`, { authenticated: true })).headers.get("Content-Type"), "application/octet-stream");
+  assert.equal((await request(fileDownloadPath(svgId, "active.svg"), { authenticated: true })).headers.get("Content-Type"), "application/octet-stream");
   assert.equal((await request(`/api/history/${id}`, { method: "DELETE", authenticated: true })).status, 202);
   assert.equal((await request(`/previews/${id}`, { authenticated: true })).status, 404);
 
@@ -547,7 +558,7 @@ test("multipart upload persists verified parts, resumes safely and completes onc
   const completed = await request(`/api/uploads/${upload.id}/complete`, { method: "POST", authenticated: true });
   assert.equal(completed.status, 201, await completed.clone().text());
   assert.equal((await request(`/api/uploads/${upload.id}/complete`, { method: "POST", authenticated: true })).status, 200);
-  const object = Buffer.from(await (await request(`/uploads/${upload.id}`, { authenticated: true })).arrayBuffer());
+  const object = Buffer.from(await (await request(fileDownloadPath(upload.id, "resume.bin"), { authenticated: true })).arrayBuffer());
   assert.deepEqual(object, Buffer.concat([firstPart, lastPart]));
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM multipart_uploads").first()).n, 0);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM multipart_parts").first()).n, 0);
@@ -555,7 +566,7 @@ test("multipart upload persists verified parts, resumes safely and completes onc
 
 test("invalid filenames and oversized uploads never publish history", async () => {
   await signIn();
-  for (const name of ["", "../file", "path\\file", "nul\u0000.txt", "a".repeat(256)]) {
+  for (const name of ["", ".", "..", "../file", "path\\file", "nul\u0000.txt", "a".repeat(256)]) {
     assert.equal((await uploadFile(name)).status, 400);
   }
   const large = await jsonRequest("/api/uploads", { name: "large.bin", size: 6291457 }, true);
@@ -576,7 +587,7 @@ test("delete and clear revoke downloads immediately and cleanup removes R2 objec
   const { id } = await (await uploadFile("delete.txt")).json();
   const response = await request(`/api/history/${id}`, { method: "DELETE", authenticated: true });
   assert.equal(response.status, 202);
-  assert.equal((await request(`/uploads/${id}`, { authenticated: true })).status, 404);
+  assert.equal((await request(fileDownloadPath(id, "delete.txt"), { authenticated: true })).status, 404);
   await maintenance({ DB: db, FILES: bucket });
   assert.equal(await bucket.head(`files/${id}`), null);
   await uploadFile("clear.txt");

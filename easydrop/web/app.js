@@ -30,7 +30,7 @@ class UploadPaused extends Error {}
 
 function requestedDownloadPath() {
   const path = new URL(location.href).searchParams.get("next") || "";
-  return /^\/uploads\/[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(path)
+  return /^\/uploads\/[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\/[^/]+$/.test(path)
     ? path
     : null;
 }
@@ -277,7 +277,7 @@ function historyRow(item) {
   if (item.type === "text") {
     actions.append(actionButton("复制文本", "copy", (button) => copy(item.content, button)));
   } else {
-    const fileUrl = new URL(`/uploads/${item.id}`, location.origin).href;
+    const fileUrl = new URL(`/uploads/${item.id}/${encodeURIComponent(item.name)}`, location.origin).href;
     if (item.media_type) {
       const thumbnailLink = document.createElement("a");
       thumbnailLink.className = "thumbnail-link";
