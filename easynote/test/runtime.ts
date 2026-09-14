@@ -46,7 +46,7 @@ export async function createRuntime(port?: number) {
   const bucket = await runtime.getR2Bucket('IMAGES');
   const objects = await bucket.list();
   if (objects.objects.length) await bucket.delete(objects.objects.map((object) => object.key));
-  await db.prepare('INSERT INTO users VALUES(?,?,?,?)').bind(testUserId, 'tester', JSON.stringify(verifier), Date.now()).run();
-  await db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(testToken), testUserId, testCsrf, Date.now() + 86400_000).run();
+  await db.prepare('INSERT OR REPLACE INTO users VALUES(?,?,?,?)').bind(testUserId, 'tester', JSON.stringify(verifier), Date.now()).run();
+  await db.prepare('INSERT OR REPLACE INTO sessions VALUES(?,?,?,?)').bind(await digest(testToken), testUserId, testCsrf, Date.now() + 86400_000).run();
   return { runtime, db, bucket };
 }

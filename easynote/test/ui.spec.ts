@@ -140,15 +140,20 @@ test('note list width is adjustable, persistent, and both footers align', async 
   expect(resized!.width).toBeGreaterThan(initial!.width + 70);
   expect(await separator.getAttribute('aria-valuenow')).toBe(String(Math.round(resized!.width)));
   const footers = await page.evaluate(() => {
+    const sidebarFooter = document.querySelector('.sidebar-bottom')!.getBoundingClientRect();
     const listFooter = document.querySelector('.list-footer')!.getBoundingClientRect();
     const documentFooter = document.querySelector('.document-footer')!.getBoundingClientRect();
     return {
+      sidebarTop: sidebarFooter.top, sidebarHeight: sidebarFooter.height,
       listTop: listFooter.top, documentTop: documentFooter.top,
       listHeight: listFooter.height, documentHeight: documentFooter.height,
     };
   });
+  expect(Math.abs(footers.sidebarTop - footers.listTop)).toBeLessThanOrEqual(1);
   expect(Math.abs(footers.listTop - footers.documentTop)).toBeLessThanOrEqual(1);
+  expect(Math.abs(footers.sidebarHeight - footers.listHeight)).toBeLessThanOrEqual(1);
   expect(Math.abs(footers.listHeight - footers.documentHeight)).toBeLessThanOrEqual(1);
+  expect(footers.sidebarHeight).toBeCloseTo(32, 0);
   expect(footers.listHeight).toBeCloseTo(32, 0);
   expect(footers.documentHeight).toBeCloseTo(32, 0);
   await page.screenshot({ path: 'test-results/desktop-resized.png', fullPage: true });
