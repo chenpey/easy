@@ -96,7 +96,7 @@ export function configuration(env) {
   return {
     initialAdmin,
     ttl: number("SESSION_TTL_SECONDS", 3600, 31536000),
-    uploadLimit: number("MAX_UPLOAD_BYTES", 1, 95 * 1024 * 1024),
+    uploadLimit: number("MAX_UPLOAD_BYTES", 1, 200 * 1024 * 1024),
     uploadChunkBytes: number("UPLOAD_CHUNK_BYTES", 5 * 1024 * 1024, 95 * 1024 * 1024),
     uploadConcurrency: number("UPLOAD_CONCURRENCY", 1, 6),
     uploadSessionTtl: number("UPLOAD_SESSION_TTL_SECONDS", 3600, 6 * 86400),

@@ -28,6 +28,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await page.goto(preview.url);
     await expect(page).toHaveTitle("EasyDrop");
     await expect(page.locator("#file-input")).toBeEnabled();
+    await expect(page.locator("#upload-limit")).toHaveText("单文件上限 200.0 MB");
     const text = `<script>window.injected = true</script>\n${"long-text-".repeat(30)}`;
     await page.getByLabel("分享文本", { exact: true }).fill(text);
     await page.getByRole("button", { name: "分享文本", exact: true }).click();

@@ -107,6 +107,15 @@ test("missing credentials and invalid settings fail closed; production refuses H
       bindings: { ...config.vars, MAX_UPLOAD_BYTES: "invalid", INITIAL_ADMIN: await createInitialAdmin(username, password) },
     }));
     assert.equal((await runtime.dispatchFetch(`${origin}/`)).status, 503);
+    await runtime.setOptions(convertV4MiniflareOptions({
+      modules: true, script, compatibilityDate: config.compatibility_date,
+      bindings: {
+        ...config.vars,
+        MAX_UPLOAD_BYTES: String(200 * 1024 * 1024 + 1),
+        INITIAL_ADMIN: await createInitialAdmin(username, password),
+      },
+    }));
+    assert.equal((await runtime.dispatchFetch(`${origin}/`)).status, 503);
   } finally {
     await runtime.dispose();
   }
