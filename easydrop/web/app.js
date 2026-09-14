@@ -206,6 +206,7 @@ function historyRow(item) {
   row.className = "history-item";
   row.dataset.id = item.id;
   const content = document.createElement("div");
+  content.className = "item-content";
   const time = document.createElement("time");
   time.className = "muted";
   time.dateTime = new Date(item.created_at * 1000).toISOString();
@@ -220,6 +221,24 @@ function historyRow(item) {
     actions.append(actionButton("复制文本", "copy", () => copy(item.content)));
   } else {
     const fileUrl = new URL(`/uploads/${item.id}`, location.origin).href;
+    if (item.media_type) {
+      const thumbnailLink = document.createElement("a");
+      thumbnailLink.className = "thumbnail-link";
+      thumbnailLink.href = fileUrl;
+      thumbnailLink.target = "_blank";
+      thumbnailLink.rel = "noopener";
+      thumbnailLink.title = "下载图片";
+      thumbnailLink.setAttribute("aria-label", `下载图片 ${item.name}`);
+      const thumbnail = document.createElement("img");
+      thumbnail.className = "file-thumbnail";
+      thumbnail.src = `/previews/${item.id}`;
+      thumbnail.alt = `${item.name} 缩略图`;
+      thumbnail.loading = "lazy";
+      thumbnail.decoding = "async";
+      thumbnail.addEventListener("error", () => thumbnailLink.remove(), { once: true });
+      thumbnailLink.append(thumbnail);
+      content.insertBefore(thumbnailLink, body);
+    }
     const preview = document.createElement("div");
     preview.className = "file-link-preview";
     const link = document.createElement("a");
@@ -505,6 +524,7 @@ async function uploadFile(entry) {
     data: {
       name: entry.file.name,
       size: entry.file.size,
+      mediaType: entry.file.type,
       chunkSize: prepared.chunkSize,
       fileFingerprint: prepared.fileFingerprint,
     },

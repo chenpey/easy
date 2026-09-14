@@ -306,7 +306,7 @@ async function checksum(body) {
   return Buffer.from(await crypto.subtle.digest("SHA-256", body)).toString("hex");
 }
 
-async function multipartMetadata(name, body, chunkSize = 5 * 1024 * 1024) {
+async function multipartMetadata(name, body, chunkSize = 5 * 1024 * 1024, mediaType = "") {
   const partChecksums = [];
   for (let offset = 0; offset < body.length; offset += chunkSize) {
     partChecksums.push(await checksum(body.subarray(offset, Math.min(offset + chunkSize, body.length))));
@@ -314,12 +314,12 @@ async function multipartMetadata(name, body, chunkSize = 5 * 1024 * 1024) {
   const fileFingerprint = await checksum(Buffer.from(JSON.stringify([
     "multipart-file-v1", body.length, chunkSize, partChecksums,
   ])));
-  return { name, size: body.length, chunkSize, fileFingerprint, partChecksums };
+  return { name, size: body.length, mediaType, chunkSize, fileFingerprint, partChecksums };
 }
 
-async function uploadFile(name, value = "file contents") {
+async function uploadFile(name, value = "file contents", mediaType = "") {
   const body = Buffer.isBuffer(value) ? value : Buffer.from(value);
-  const metadata = await multipartMetadata(name, body);
+  const metadata = await multipartMetadata(name, body, 5 * 1024 * 1024, mediaType);
   const initiated = await jsonRequest("/api/uploads", metadata, true, { "Idempotency-Key": crypto.randomUUID() });
   if (!initiated.ok) return initiated;
   const upload = await initiated.clone().json();
@@ -377,6 +377,45 @@ test("multipart upload supports duplicate names, Unicode, empty files and authen
   assert.equal(empty.status, 201);
   const emptyId = (await empty.json()).id;
   assert.equal(await (await request(`/uploads/${emptyId}`, { authenticated: true })).text(), "");
+});
+
+test("image previews are authenticated, inline and limited to safe raster types", async () => {
+  await signIn();
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const uploaded = await uploadFile("pixel.png", png, "image/png");
+  assert.equal(uploaded.status, 201, await uploaded.clone().text());
+  const { id } = await uploaded.json();
+  const history = await (await request("/api/history", { authenticated: true })).json();
+  assert.equal(history.items[0].media_type, "image/png");
+  assert.equal((await request(`/previews/${id}`)).status, 401);
+  const preview = await request(`/previews/${id}`, { authenticated: true });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("Content-Type"), "image/png");
+  assert.equal(preview.headers.get("Content-Disposition"), "inline");
+  assert.deepEqual(Buffer.from(await preview.arrayBuffer()), png);
+  const head = await request(`/previews/${id}`, { authenticated: true, method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+
+  const svg = await uploadFile("active.svg", "<svg><script>alert(1)</script></svg>", "image/svg+xml");
+  const svgId = (await svg.json()).id;
+  const updated = await (await request("/api/history", { authenticated: true })).json();
+  assert.equal(updated.items.find((item) => item.id === svgId).media_type, null);
+  assert.equal((await request(`/previews/${svgId}`, { authenticated: true })).status, 404);
+  assert.equal((await request(`/uploads/${svgId}`, { authenticated: true })).headers.get("Content-Type"), "application/octet-stream");
+  assert.equal((await request(`/api/history/${id}`, { method: "DELETE", authenticated: true })).status, 202);
+  assert.equal((await request(`/previews/${id}`, { authenticated: true })).status, 404);
+
+  const legacyId = crypto.randomUUID();
+  await db.prepare(
+    "INSERT INTO items(id, type, name, size, state, created_at) VALUES (?, 'file', 'legacy.webp', 1, 'ready', 1)",
+  ).bind(legacyId).run();
+  await bucket.put(`files/${legacyId}`, Buffer.from([0]));
+  const legacyHistory = await (await request("/api/history", { authenticated: true })).json();
+  assert.equal(legacyHistory.items.find((item) => item.id === legacyId).media_type, "image/webp");
 });
 
 test("multipart upload persists verified parts, resumes safely and completes once", async () => {
@@ -438,6 +477,10 @@ test("invalid filenames and oversized uploads never publish history", async () =
     name: "bad.bin", size: 1, chunkSize: 5 * 1024 * 1024, fileFingerprint: "invalid",
   }, true);
   assert.equal(malformed.status, 400);
+  const invalidMediaType = await jsonRequest("/api/uploads", {
+    name: "bad.bin", size: 1, mediaType: 123, chunkSize: 5 * 1024 * 1024, fileFingerprint: "0".repeat(64),
+  }, true);
+  assert.equal(invalidMediaType.status, 400);
   assert.equal((await (await request("/api/history", { authenticated: true })).json()).items.length, 0);
 });
 

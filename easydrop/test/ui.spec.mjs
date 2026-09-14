@@ -36,14 +36,33 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page.locator("#text-input")).toHaveValue("");
 
     const filename = `qa-${viewport.width}-${"long-name-".repeat(16)}.txt`;
+    const imageName = `preview-${viewport.width}.png`;
+    const imageBase64 = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 48;
+      canvas.height = 36;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#0071e3";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = "#ffffff";
+      context.fillRect(12, 9, 24, 18);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
     await page.locator("#file-input").setInputFiles([
       { name: filename, mimeType: "text/plain", buffer: Buffer.from("browser file contents") },
       { name: "empty.txt", mimeType: "text/plain", buffer: Buffer.alloc(0) },
+      { name: imageName, mimeType: "image/png", buffer: Buffer.from(imageBase64, "base64") },
     ]);
     await page.getByRole("button", { name: "上传文件", exact: true }).click();
     await expect(page.locator("#notice")).toHaveText("上传完成");
     const file = page.locator(".history-item").filter({ hasText: filename });
     await expect(file).toHaveCount(1);
+    const image = page.locator(".history-item").filter({ hasText: imageName });
+    const thumbnail = image.locator(".file-thumbnail");
+    await image.scrollIntoViewIfNeeded();
+    await expect(thumbnail).toBeVisible();
+    await expect.poll(() => thumbnail.evaluate((node) => node.naturalWidth)).toBe(48);
+    expect(await thumbnail.getAttribute("src")).toMatch(/^\/previews\/[a-f0-9-]+$/);
     const fileLink = file.getByRole("link", { name: "打开文件链接" });
     const fileUrl = await fileLink.getAttribute("href");
     expect(fileUrl).toMatch(new RegExp(`^${preview.url}/uploads/[a-f0-9-]+$`));

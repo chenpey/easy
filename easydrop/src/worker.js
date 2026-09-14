@@ -14,6 +14,16 @@ const publicAssets = new Map([
   ["/favicon.ico", "/favicon.svg"],
   ["/favicon.svg", "/favicon.svg"],
 ]);
+const imageTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp"]);
+const imageExtensions = new Map([
+  ["jpg", "image/jpeg"],
+  ["jpeg", "image/jpeg"],
+  ["png", "image/png"],
+  ["gif", "image/gif"],
+  ["webp", "image/webp"],
+  ["avif", "image/avif"],
+  ["bmp", "image/bmp"],
+]);
 const sha256 = async (value) => Array.from(
   new Uint8Array(await crypto.subtle.digest("SHA-256", value)),
   (byte) => byte.toString(16).padStart(2, "0"),
@@ -31,6 +41,14 @@ function validateFile(name, size, config) {
   }
   if (!Number.isSafeInteger(size) || size < 0) throw new HttpError(400, "Invalid file size.");
   if (size > config.uploadLimit) throw new HttpError(413, `File exceeds ${config.uploadLimit} bytes.`);
+}
+
+function imageMediaType(value, name) {
+  const supplied = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (imageTypes.has(supplied)) return supplied;
+  if (supplied) return null;
+  const extension = typeof name === "string" ? name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] : null;
+  return imageExtensions.get(extension) || null;
 }
 
 function requireAdmin(session) {
@@ -312,6 +330,10 @@ async function multipartPayload(env, id, config, touch = false) {
 async function initiateMultipart(request, env, config) {
   const data = await readJson(request, 4096);
   validateFile(data.name, data.size, config);
+  if (data.mediaType !== undefined && (typeof data.mediaType !== "string" || data.mediaType.length > 100)) {
+    throw new HttpError(400, "Invalid media type.");
+  }
+  const mediaType = imageMediaType(data.mediaType, data.name);
   if (data.chunkSize !== config.uploadChunkBytes || !/^[a-f0-9]{64}$/.test(data.fileFingerprint || "")) {
     throw new HttpError(400, "Upload chunk size or file fingerprint is invalid.");
   }
@@ -325,8 +347,9 @@ async function initiateMultipart(request, env, config) {
 
   let multipart;
   try {
-    await env.DB.prepare("INSERT INTO items(id, type, name, size, state, created_at) VALUES (?, 'file', ?, ?, 'pending', ?)")
-      .bind(id, data.name, data.size, now()).run();
+    await env.DB.prepare(
+      "INSERT INTO items(id, type, name, size, media_type, state, created_at) VALUES (?, 'file', ?, ?, ?, 'pending', ?)",
+    ).bind(id, data.name, data.size, mediaType, now()).run();
     if (data.size === 0) {
       const object = await env.FILES.put(objectKey(id), new Uint8Array(), {
         httpMetadata: { contentType: "application/octet-stream" },
@@ -502,6 +525,27 @@ async function download(request, env, id) {
   return new Response(request.method === "HEAD" ? null : object.body, { status: range ? 206 : 200, headers });
 }
 
+async function previewImage(request, env, id) {
+  if (!validId(id)) throw new HttpError(404, "Image preview not found.");
+  const item = await env.DB.prepare(
+    "SELECT name, size, media_type FROM items WHERE id = ? AND type = 'file' AND state = 'ready'",
+  ).bind(id).first();
+  const contentType = item && imageMediaType(item.media_type, item.name);
+  if (!contentType) throw new HttpError(404, "Image preview not found.");
+  const object = request.method === "HEAD"
+    ? await env.FILES.head(objectKey(id))
+    : await env.FILES.get(objectKey(id));
+  if (!object) throw new HttpError(404, "Image preview not found.");
+  const headers = {
+    "Content-Type": contentType,
+    "Content-Length": String(item.size),
+    "Content-Disposition": "inline",
+  };
+  if (object.httpEtag) headers.ETag = object.httpEtag;
+  if (object.uploaded) headers["Last-Modified"] = object.uploaded.toUTCString();
+  return new Response(request.method === "HEAD" ? null : object.body, { headers });
+}
+
 async function cleanupDeleted(env) {
   const { results } = await env.DB.prepare("SELECT id, type FROM items WHERE state = 'deleting' ORDER BY seq LIMIT 50").all();
   if (!results.length) return 0;
@@ -601,11 +645,14 @@ async function route(request, env, ctx, responseState) {
     // Bound the worst-case text allocation before fetching full bodies from D1.
     const pageSize = Math.min(config.pageSize, Math.max(1, Math.floor(1048576 / config.textLimit)));
     const [items, state] = await env.DB.batch([
-      env.DB.prepare("SELECT seq, id, type, content, name, size, created_at FROM items WHERE state = 'ready' AND seq < ? ORDER BY seq DESC LIMIT ?").bind(cursor, pageSize + 1),
+      env.DB.prepare("SELECT seq, id, type, content, name, size, media_type, created_at FROM items WHERE state = 'ready' AND seq < ? ORDER BY seq DESC LIMIT ?").bind(cursor, pageSize + 1),
       env.DB.prepare("SELECT revision FROM app_state WHERE id = 1"),
     ]);
     return json({
-      items: items.results.slice(0, pageSize),
+      items: items.results.slice(0, pageSize).map((item) => ({
+        ...item,
+        media_type: item.type === "file" ? imageMediaType(item.media_type, item.name) : null,
+      })),
       nextCursor: items.results.length > pageSize ? items.results[pageSize - 1].seq : null,
       revision: state.results[0].revision,
     });
@@ -639,6 +686,9 @@ async function route(request, env, ctx, responseState) {
     if (method === "DELETE" && !action) return cancelMultipart(env, ctx, id);
     if (method === "POST" && action === "complete") return completeMultipart(env, id);
     if (method === "PUT" && partNumber) return uploadMultipartPart(request, env, id, partNumber);
+  }
+  if ((method === "GET" || method === "HEAD") && path.startsWith("/previews/")) {
+    return previewImage(request, env, path.slice(10));
   }
   if ((method === "GET" || method === "HEAD") && path.startsWith("/uploads/")) return download(request, env, path.slice(9));
   if (method === "DELETE" && path.startsWith("/api/history/")) {
