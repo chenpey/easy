@@ -14,6 +14,9 @@ export function useNotebook(session: Session) {
   const pendingTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const alive = useRef(true);
   const ready = useRef(false);
+  const pollInFlight = useRef(false);
+  const pollAbort = useRef<AbortController | null>(null);
+  const pollError = useRef('');
   const [tick, bump] = useState(0);
   const [view, setView] = useState('all');
   const [query, setQuery] = useState('');
@@ -23,7 +26,6 @@ export function useNotebook(session: Session) {
   const [error, setError] = useState('');
   const [conflict, setConflict] = useState<{ local: Note; remote?: Note } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [syncPaused, setSyncPaused] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
   const listGeneration = useRef(0);
   const selectionGeneration = useRef(0);
@@ -34,13 +36,13 @@ export function useNotebook(session: Session) {
   const show = useCallback((value: Note | null) => { current.current = value; setNote(value); }, []);
   const notify = () => { if (alive.current) bump((v) => v + 1); };
 
-  const refresh = useCallback(async (append = false) => {
+  const refresh = useCallback(async (append = false, signal?: AbortSignal) => {
     const generation = ++listGeneration.current;
-    const result = await api.list({ q: query, view, tag, offset: append ? nextOffset ?? 0 : 0 });
+    const result = await api.list({ q: query, view, tag, offset: append ? nextOffset ?? 0 : 0 }, signal);
     if (!alive.current || generation !== listGeneration.current) return;
     setNotes((prev) => append ? [...prev, ...result.notes.filter((n) => !prev.some((old) => old.id === n.id))] : result.notes);
     setNextOffset(result.nextOffset);
-    const data = await api.tags();
+    const data = await api.tags(signal);
     if (alive.current && generation === listGeneration.current) setTags(data.tags);
   }, [query, view, tag, nextOffset]);
   const refreshRef = useRef(refresh);
@@ -140,7 +142,7 @@ export function useNotebook(session: Session) {
   };
 
   const retry = async (): Promise<boolean> => {
-    setError(''); setConflict(null); setSyncPaused(false);
+    setError(''); setConflict(null); pollError.current = '';
     let savedAll = true;
     for (const id of drafts.current.keys()) {
       blocked.current.delete(id);
@@ -150,7 +152,7 @@ export function useNotebook(session: Session) {
       await refreshRef.current();
       return savedAll;
     } catch (e) {
-      setError(String(e)); setSyncPaused(true);
+      setError(String(e));
       return false;
     }
   };
@@ -210,35 +212,66 @@ export function useNotebook(session: Session) {
 
   useEffect(() => {
     const poll = async () => {
-      if (!ready.current || document.hidden || syncPaused || !navigator.onLine) return;
+      if (!ready.current || document.hidden || !navigator.onLine || pollInFlight.current) return;
+      pollInFlight.current = true;
+      const controller = new AbortController();
+      pollAbort.current = controller;
+      const timeout = setTimeout(() => controller.abort(), session.config.pollSeconds * 1000);
       try {
-        if (notes.length > 50) return;
-        await refreshRef.current();
+        let checked = false;
+        if (notes.length <= 50) {
+          await refreshRef.current(false, controller.signal);
+          checked = true;
+        }
         const before = current.current;
-        if (!before || drafts.current.has(before.id)) return;
-        const remote = (await api.note(before.id)).note;
-        if (current.current?.id === before.id && !drafts.current.has(before.id) && remote.revision > current.current.revision) show(remote);
+        if (before && !drafts.current.has(before.id)) {
+          const remote = (await api.note(before.id, controller.signal)).note;
+          if (current.current?.id === before.id && !drafts.current.has(before.id) && remote.revision > current.current.revision) show(remote);
+          checked = true;
+        }
+        if (checked) {
+          const previous = pollError.current;
+          pollError.current = '';
+          if (previous && alive.current) setError((value) => value === previous ? '' : value);
+        }
       } catch (e) {
-        if (alive.current) { setError(String(e)); setSyncPaused(true); }
+        if (alive.current && !controller.signal.aborted) {
+          const message = `后台同步失败，将自动重试。\n${String(e)}`;
+          pollError.current = message;
+          setError(message);
+        }
+      } finally {
+        clearTimeout(timeout);
+        if (pollAbort.current === controller) pollAbort.current = null;
+        pollInFlight.current = false;
       }
     };
-    const network = () => setOnline(navigator.onLine);
+    const network = () => {
+      setOnline(navigator.onLine);
+      if (navigator.onLine) void poll();
+      else pollAbort.current?.abort();
+    };
+    const visibility = () => {
+      if (document.hidden) pollAbort.current?.abort();
+      else void poll();
+    };
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if (drafts.current.size) { event.preventDefault(); event.returnValue = ''; }
     };
     const timer = setInterval(() => void poll(), session.config.pollSeconds * 1000);
-    document.addEventListener('visibilitychange', poll);
+    document.addEventListener('visibilitychange', visibility);
     window.addEventListener('online', network);
     window.addEventListener('offline', network);
     window.addEventListener('beforeunload', beforeUnload);
     return () => {
       clearInterval(timer);
-      document.removeEventListener('visibilitychange', poll);
+      pollAbort.current?.abort();
+      document.removeEventListener('visibilitychange', visibility);
       window.removeEventListener('online', network);
       window.removeEventListener('offline', network);
       window.removeEventListener('beforeunload', beforeUnload);
     };
-  }, [session.config.pollSeconds, syncPaused, nextOffset, notes.length, show]);
+  }, [session.config.pollSeconds, notes.length, show]);
 
   const pending = [...drafts.current.values()].map((draft) => draft.note);
   const visible = notes.map((item) => {

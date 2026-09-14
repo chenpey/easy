@@ -193,6 +193,65 @@ test('typing while a save response is delayed preserves the newer draft', async 
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('完整保留第二段修改');
 });
 
+test('polling still refreshes the selected note after loading more than 50 notes', async ({ page }) => {
+  const marker = randomUUID().slice(0, 8);
+  const targetId = randomUUID();
+  const targetTitle = `分页同步-${marker}`;
+  for (let index = 0; index < 55; index++) {
+    const id = index === 54 ? targetId : randomUUID();
+    const response = await page.request.post(`${origin}/api/notes/${id}`, {
+      headers,
+      data: {
+        title: index === 54 ? targetTitle : `分页填充-${marker}-${index}`,
+        content: '初始内容', tags: [], pinned: false, deletedAt: null,
+        revision: 0, operationId: randomUUID(),
+      },
+    });
+    expect(response.status()).toBe(201);
+  }
+  await page.goto('/');
+  const loadMore = page.getByRole('button', { name: '加载更多' });
+  await loadMore.click();
+  await expect(loadMore).toBeHidden();
+  await page.getByRole('button').filter({ hasText: targetTitle }).click();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(targetTitle);
+  await page.route(`**/api/notes/${targetId}`, (route) => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { message: 'Temporary failure.' } }),
+  }));
+  const failedPoll = page.waitForResponse((response) =>
+    response.url().endsWith(`/api/notes/${targetId}`) && response.status() === 503);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await failedPoll;
+  await expect(page.getByRole('alert')).toContainText('后台同步失败，将自动重试。');
+  await page.unroute(`**/api/notes/${targetId}`);
+  const remote = await page.request.put(`${origin}/api/notes/${targetId}`, {
+    headers,
+    data: {
+      title: targetTitle, content: '另一台设备更新后的内容', tags: [], pinned: false, deletedAt: null,
+      revision: 1, operationId: randomUUID(),
+    },
+  });
+  expect(remote.status()).toBe(200);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('另一台设备更新后的内容');
+  await expect(page.getByRole('alert')).toBeHidden();
+});
+
+test('an expired session returns to login without a page reload', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '全部笔记' })).toBeVisible();
+  await page.route('**/api/notes?**', (route) => route.fulfill({
+    status: 401,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { message: 'Please sign in.' } }),
+  }));
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('button[aria-label="同步"]')?.click());
+  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible();
+  await expect(page.getByText('登录已过期，请重新登录。', { exact: true })).toBeVisible();
+});
+
 test('a second tab cannot overwrite this browser profile local drafts', async ({ page, context }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '全部笔记' })).toBeVisible();

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ArrowLeft, BookOpen, Check, ChevronDown, Download, FileText, History, ImagePlus, LoaderCircle, LogOut, Moon, MoreHorizontal, PanelLeftClose, Pin, Plus, RefreshCw, Save, Search, Settings, Sun, Tag, Trash2, Upload, X, RotateCcw, PenLine } from 'lucide-react';
 import type { NoteInput, Session, Version } from '../shared/types';
-import { api, setSession, uploadImage } from './api';
+import { api, setSession, setUnauthorizedHandler, uploadImage } from './api';
 import { Editor, Preview } from './Editor';
 import { useNotebook } from './useNotebook';
 import { exportArchive, importArchive } from './transfer';
@@ -34,6 +34,14 @@ export default function App() {
     setBootError('');
     void api.session().then(applySession).catch((e: unknown) => setBootError(String(e)));
   };
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setPassword('');
+      setBootError('登录已过期，请重新登录。');
+      updateSession((current) => current ? { ...current, user: null, csrf: null } : current);
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
   useEffect(boot, []);
   if (session?.user) return <AccountWorkspace key={session.user.id} session={session} logout={() => {
     setPassword(''); applySession({ ...session, user: null, csrf: null });
