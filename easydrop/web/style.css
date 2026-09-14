@@ -539,13 +539,39 @@ body[data-page="login"] {
 
 .login-layout .brand {
   justify-content: center;
-  margin-bottom: 34px;
+  margin-bottom: 24px;
 }
 
 .login-layout h2 {
   margin-bottom: 24px;
   justify-content: center;
   font-size: 20px;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 26px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #e8e8ed;
+}
+
+.auth-tabs a {
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--label-secondary);
+  text-align: center;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.auth-tabs a[aria-current="page"] {
+  background: #fff;
+  color: #1d1d1f;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
 }
 
 .login-layout label {
@@ -564,6 +590,42 @@ body[data-page="login"] {
 }
 
 .login-layout #notice { text-align: center; }
+
+.auth-secondary-link {
+  display: block;
+  color: var(--blue);
+  text-align: center;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.auth-secondary-link:hover { text-decoration: underline; }
+
+.auth-message {
+  padding: 18px 0;
+  color: var(--label-secondary);
+  text-align: center;
+}
+
+.recovery-result {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--hairline);
+  text-align: center;
+}
+
+.recovery-result code {
+  display: block;
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid var(--separator);
+  border-radius: 6px;
+  background: #f5f5f7;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 
 dialog {
   border: 1px solid rgba(0, 0, 0, .1);
@@ -676,6 +738,20 @@ dialog::backdrop {
 
 #users-dialog { max-width: 620px; }
 
+.registration-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 14px 0 20px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.registration-setting span { display: grid; gap: 4px; }
+.registration-setting small { color: var(--label-secondary); font-weight: 400; }
+.registration-setting input { width: 20px; height: 20px; accent-color: var(--blue); }
+
 #user-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -726,6 +802,32 @@ dialog::backdrop {
 .user-detail { margin-top: 4px; }
 .user-row .item-actions { justify-content: flex-end; }
 .user-disabled { opacity: .58; }
+
+#account-dialog { max-width: 500px; }
+.account-name { margin: 12px 0 2px; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+
+.account-section {
+  padding: 22px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.account-section h3 {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.account-section label, #delete-account-form > label {
+  display: block;
+  margin: 12px 0 8px;
+  color: #3a3a3c;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.account-section .dialog-actions { margin-top: 16px; }
+.account-danger { display: flex; justify-content: flex-end; padding-top: 22px; }
+#delete-account-dialog p { color: var(--red); line-height: 1.5; }
 
 .sr-only {
   position: absolute;

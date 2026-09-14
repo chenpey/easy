@@ -13,6 +13,7 @@
     <div class="header-inner">
       <div class="brand"><img class="brand-icon" src="/favicon.svg" alt=""><h1>EasyDrop</h1></div>
       <div class="tools">
+        <button id="account-open" class="icon-button" title="账户设置" aria-label="账户设置"><i data-lucide="user-round"></i></button>
         <button id="users-open" class="icon-button" title="用户管理" aria-label="用户管理" hidden><i data-lucide="users"></i></button>
         <div class="site-link-preview">
           <button id="qr-open" class="icon-button" title="访问二维码" aria-label="访问二维码"><i data-lucide="qr-code"></i></button>
@@ -99,8 +100,61 @@
       <button value="confirm" class="destructive">确认删除</button>
     </form>
   </dialog>
+  <dialog id="account-dialog">
+    <div class="section-heading"><h2>账户设置</h2><button id="account-close" class="icon-button" title="关闭" aria-label="关闭账户设置"><i data-lucide="x"></i></button></div>
+    <p id="account-username" class="account-name"></p>
+    <section class="account-section" aria-labelledby="password-title">
+      <h3 id="password-title">修改密码</h3>
+      <form id="password-form">
+        <label for="current-password">当前密码</label>
+        <input id="current-password" type="password" autocomplete="current-password" required maxlength="32">
+        <label for="new-password">新密码</label>
+        <input id="new-password" type="password" autocomplete="new-password" required minlength="12" maxlength="32"
+          pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
+        <label for="new-password-confirm">确认新密码</label>
+        <input id="new-password-confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="32"
+          pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
+        <div class="dialog-actions"><button class="primary" type="submit"><i data-lucide="key-round"></i>修改密码</button></div>
+      </form>
+    </section>
+    <section class="account-section" aria-labelledby="recovery-title">
+      <h3 id="recovery-title">恢复码</h3>
+      <p id="recovery-status" class="muted"></p>
+      <form id="recovery-form">
+        <label for="recovery-current-password">当前密码</label>
+        <input id="recovery-current-password" type="password" autocomplete="current-password" required maxlength="32">
+        <div class="dialog-actions"><button class="secondary" type="submit"><i data-lucide="refresh-cw"></i><span id="recovery-submit-label">生成恢复码</span></button></div>
+      </form>
+      <div id="account-recovery-result" class="recovery-result" hidden>
+        <code id="account-recovery-code"></code>
+        <button id="copy-account-recovery" class="secondary" type="button"><i data-lucide="copy"></i>复制恢复码</button>
+        <p id="account-recovery-notice" class="copy-notice" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+    <div class="account-danger">
+      <button id="delete-account-open" class="destructive" type="button"><i data-lucide="trash-2"></i>注销账号</button>
+    </div>
+  </dialog>
+  <dialog id="delete-account-dialog">
+    <div class="section-heading"><h2>注销账号</h2><button id="delete-account-close" class="icon-button" title="关闭" aria-label="关闭注销账号"><i data-lucide="x"></i></button></div>
+    <p>账号和个人空间中的全部内容将被删除。</p>
+    <form id="delete-account-form">
+      <label for="delete-account-username">输入用户名确认</label>
+      <input id="delete-account-username" type="text" autocomplete="off" required>
+      <label for="delete-account-password">当前密码</label>
+      <input id="delete-account-password" type="password" autocomplete="current-password" required maxlength="32">
+      <div class="dialog-actions">
+        <button id="delete-account-cancel" class="secondary" type="button">取消</button>
+        <button class="destructive" type="submit"><i data-lucide="trash-2"></i>确认注销</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="users-dialog">
     <div class="section-heading"><h2>用户管理</h2><button id="users-close" class="icon-button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button></div>
+    <label class="registration-setting">
+      <span><strong>自助注册</strong><small>新账号需要管理员启用</small></span>
+      <input id="registration-enabled" type="checkbox">
+    </label>
     <form id="user-form">
       <input id="user-id" type="hidden">
       <label for="user-name">用户名</label>

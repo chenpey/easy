@@ -1,10 +1,12 @@
 import {
   HttpError, configuration, createPasswordVerifier, digest, getSession, localHttp, login, normalizeUsername,
-  now, randomToken, readJson, requireCsrf, sessionCookie,
+  now, randomToken, readJson, requireCsrf, requireOrigin, sessionCookie, validatePassword, verifyStoredPassword,
 } from "./auth.js";
 
 const json = (data, status = 200, headers = {}) => Response.json(data, { status, headers });
-const revision = (env) => env.DB.prepare("UPDATE app_state SET revision = revision + 1 WHERE id = 1 AND changes() > 0");
+const revision = (env, userId) => env.DB.prepare(
+  "UPDATE users SET content_revision = content_revision + 1 WHERE id = ? AND changes() > 0",
+).bind(userId);
 const objectKey = (id) => `files/${id}`;
 const validId = (id) => /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id);
 const encoder = new TextEncoder();
@@ -16,6 +18,7 @@ const publicAssets = new Map([
 ]);
 const imageTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp"]);
 const temporaryShareToken = /^[a-f0-9]{64}$/;
+const recoveryCodeToken = /^[a-f0-9]{64}$/;
 const imageExtensions = new Map([
   ["jpg", "image/jpeg"],
   ["jpeg", "image/jpeg"],
@@ -79,6 +82,7 @@ const userView = (user) => ({
   username: user.username,
   role: user.role,
   enabled: Boolean(user.enabled),
+  pendingApproval: !user.approved_at,
   createdAt: user.created_at,
   updatedAt: user.updated_at,
 });
@@ -86,8 +90,8 @@ const userView = (user) => ({
 async function listUsers(env, session) {
   requireAdmin(session);
   const { results } = await env.DB.prepare(
-    `SELECT id, username, role, enabled, created_at, updated_at
-     FROM users ORDER BY username COLLATE NOCASE`,
+    `SELECT id, username, role, enabled, approved_at, created_at, updated_at
+     FROM users WHERE deletion_requested_at IS NULL ORDER BY username COLLATE NOCASE`,
   ).all();
   return json({ users: results.map(userView) });
 }
@@ -112,22 +116,25 @@ async function createUser(request, env, session) {
   const timestamp = now();
   try {
     await env.DB.prepare(
-      `INSERT INTO users(id, username, password_verifier, role, enabled, auth_version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 1, 1, ?, ?)`,
-    ).bind(id, username, verifier, role, timestamp, timestamp).run();
+      `INSERT INTO users(
+        id, username, password_verifier, role, enabled, auth_version, created_at, updated_at, approved_at
+       ) VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)`,
+    ).bind(id, username, verifier, role, timestamp, timestamp, timestamp).run();
   } catch (error) {
     if (String(error).includes("UNIQUE")) throw new HttpError(409, "Username already exists.");
     throw error;
   }
   return json({ success: true, user: userView({
-    id, username, role, enabled: 1, created_at: timestamp, updated_at: timestamp,
+    id, username, role, enabled: 1, approved_at: timestamp, created_at: timestamp, updated_at: timestamp,
   }) }, 201);
 }
 
 async function updateUser(request, env, session, id) {
   requireAdmin(session);
   if (!validId(id)) throw new HttpError(404, "User not found.");
-  const target = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
+  const target = await env.DB.prepare(
+    "SELECT * FROM users WHERE id = ? AND deletion_requested_at IS NULL",
+  ).bind(id).first();
   if (!target) throw new HttpError(404, "User not found.");
   const data = await readJson(request, 4096);
   let username = target.username;
@@ -151,19 +158,28 @@ async function updateUser(request, env, session, id) {
   }
   if (target.role === "admin" && target.enabled === 1 && (role !== "admin" || enabled !== 1)) {
     const remaining = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND enabled = 1 AND id != ?",
+      `SELECT COUNT(*) AS count FROM users
+       WHERE role = 'admin' AND enabled = 1 AND id != ? AND deletion_requested_at IS NULL`,
     ).bind(id).first();
     if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
   }
   const duplicate = await env.DB.prepare("SELECT id FROM users WHERE username = ? AND id != ?").bind(username, id).first();
   if (duplicate) throw new HttpError(409, "Username already exists.");
   const timestamp = now();
+  const passwordChanged = data.password !== undefined;
+  const approvedAt = enabled ? (target.approved_at || timestamp) : target.approved_at;
   try {
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE users SET username = ?, password_verifier = ?, role = ?, enabled = ?,
+         recovery_code_hash = ?, recovery_code_created_at = ?, approved_at = ?,
          auth_version = auth_version + 1, updated_at = ? WHERE id = ?`,
-      ).bind(username, verifier, role, enabled, timestamp, id),
+      ).bind(
+        username, verifier, role, enabled,
+        passwordChanged ? null : target.recovery_code_hash,
+        passwordChanged ? null : target.recovery_code_created_at,
+        approvedAt, timestamp, id,
+      ),
       env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
     ]);
   } catch (error) {
@@ -178,23 +194,248 @@ async function updateUser(request, env, session, id) {
   );
 }
 
-async function deleteUser(env, session, id) {
+async function deleteUser(env, ctx, session, id) {
   requireAdmin(session);
   if (!validId(id)) throw new HttpError(404, "User not found.");
-  const target = await env.DB.prepare("SELECT id, role, enabled FROM users WHERE id = ?").bind(id).first();
+  const target = await env.DB.prepare(
+    "SELECT id, role, enabled FROM users WHERE id = ? AND deletion_requested_at IS NULL",
+  ).bind(id).first();
   if (!target) throw new HttpError(404, "User not found.");
   if (id === session.user_id) throw new HttpError(409, "The current administrator cannot delete itself.");
   if (target.role === "admin" && target.enabled === 1) {
     const remaining = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND enabled = 1 AND id != ?",
+      `SELECT COUNT(*) AS count FROM users
+       WHERE role = 'admin' AND enabled = 1 AND id != ? AND deletion_requested_at IS NULL`,
     ).bind(id).first();
     if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
   }
+  const timestamp = now();
   await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE users SET enabled = 0, auth_version = auth_version + 1,
+       deletion_requested_at = ?, updated_at = ? WHERE id = ?`,
+    ).bind(timestamp, timestamp, id),
+    env.DB.prepare("UPDATE items SET state = 'deleting' WHERE owner_user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
-    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),
   ]);
+  backgroundCleanup(env, ctx);
+  return json({ success: true }, 202);
+}
+
+function formatRecoveryCode(token) {
+  return token.match(/.{8}/g).join("-");
+}
+
+function normalizeRecoveryCode(value) {
+  const token = typeof value === "string" ? value.trim().toLowerCase().replaceAll("-", "") : "";
+  if (!recoveryCodeToken.test(token)) throw new HttpError(400, "Invalid recovery code.");
+  return token;
+}
+
+async function limitAccountAction(request, env, config, action, ipLimit, globalLimit) {
+  const ip = request.headers.get("CF-Connecting-IP") || (localHttp(request, env) ? "local" : null);
+  if (!ip) throw new HttpError(503, "Client IP unavailable.");
+  const timestamp = now();
+  for (const [key, limit] of [
+    [`${action}:ip:${await digest(ip)}`, ipLimit],
+    [`${action}:global`, globalLimit],
+  ]) {
+    const counter = await env.DB.prepare(`
+      INSERT INTO account_attempts(key, started_at, attempts) VALUES (?, ?, 1)
+      ON CONFLICT(key) DO UPDATE SET
+        attempts = CASE WHEN started_at <= ? THEN 1 ELSE MIN(attempts + 1, ?) END,
+        started_at = CASE WHEN started_at <= ? THEN excluded.started_at ELSE started_at END
+      RETURNING attempts, started_at
+    `).bind(
+      key, timestamp, timestamp - config.accountWindow, limit + 1, timestamp - config.accountWindow,
+    ).first();
+    if (counter.attempts > limit) {
+      const retry = Math.max(counter.started_at + config.accountWindow - timestamp, 1);
+      throw new HttpError(429, "Too many account requests. Try again later.", { "Retry-After": String(retry) });
+    }
+  }
+}
+
+async function authConfiguration(env) {
+  const state = await env.DB.prepare(
+    "SELECT self_registration_enabled FROM app_state WHERE id = 1",
+  ).first();
+  return json({ registrationEnabled: Boolean(state?.self_registration_enabled) });
+}
+
+async function updateRegistration(request, env, session) {
+  requireAdmin(session);
+  const data = await readJson(request, 1024);
+  if (typeof data.enabled !== "boolean") throw new HttpError(400, "Invalid registration state.");
+  await env.DB.prepare(
+    "UPDATE app_state SET self_registration_enabled = ? WHERE id = 1",
+  ).bind(Number(data.enabled)).run();
+  return json({ success: true, registrationEnabled: data.enabled });
+}
+
+async function registerUser(request, env, config) {
+  requireOrigin(request);
+  const state = await env.DB.prepare(
+    "SELECT self_registration_enabled FROM app_state WHERE id = 1",
+  ).first();
+  if (!state?.self_registration_enabled) throw new HttpError(403, "Self-registration is closed.");
+  const data = await readJson(request, 4096);
+  let username;
+  try {
+    username = normalizeUsername(data.username);
+    validatePassword(data.password);
+  } catch (error) {
+    throw new HttpError(400, error.message);
+  }
+  await limitAccountAction(
+    request, env, config, "register", config.registrationIpLimit, config.registrationGlobalLimit,
+  );
+  if (await env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first()) {
+    throw new HttpError(409, "Username already exists.");
+  }
+  const verifier = await createPasswordVerifier(data.password);
+  const token = randomToken();
+  const timestamp = now();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO users(
+        id, username, password_verifier, role, enabled, auth_version, recovery_code_hash,
+        recovery_code_created_at, created_at, updated_at
+       ) VALUES (?, ?, ?, 'user', 0, 1, ?, ?, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(), username, verifier, await digest(token), timestamp, timestamp, timestamp,
+    ).run();
+  } catch (error) {
+    if (String(error).includes("UNIQUE")) throw new HttpError(409, "Username already exists.");
+    throw error;
+  }
+  return json({
+    success: true,
+    pendingApproval: true,
+    recoveryCode: formatRecoveryCode(token),
+  }, 201);
+}
+
+async function resetPassword(request, env, config) {
+  requireOrigin(request);
+  const data = await readJson(request, 4096);
+  let username;
+  let recoveryCode;
+  try {
+    username = normalizeUsername(data.username);
+    recoveryCode = normalizeRecoveryCode(data.recoveryCode);
+    validatePassword(data.newPassword);
+  } catch (error) {
+    throw new HttpError(400, error.message);
+  }
+  await limitAccountAction(
+    request, env, config, "reset", config.resetIpLimit, config.resetGlobalLimit,
+  );
+  const user = await env.DB.prepare(
+    `SELECT id, recovery_code_hash FROM users
+     WHERE username = ? AND deletion_requested_at IS NULL`,
+  ).bind(username).first();
+  if (!user || user.recovery_code_hash !== await digest(recoveryCode)) {
+    throw new HttpError(401, "Username or recovery code is incorrect.");
+  }
+  const verifier = await createPasswordVerifier(data.newPassword);
+  const timestamp = now();
+  const [updated] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE users SET password_verifier = ?, recovery_code_hash = NULL,
+       recovery_code_created_at = NULL, auth_version = auth_version + 1, updated_at = ?
+       WHERE id = ? AND recovery_code_hash = ?`,
+    ).bind(verifier, timestamp, user.id, user.recovery_code_hash),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
+  ]);
+  if (!updated.meta.changes) throw new HttpError(401, "Username or recovery code is incorrect.");
   return json({ success: true });
+}
+
+async function changeOwnPassword(request, env, session) {
+  const data = await readJson(request, 4096);
+  try {
+    validatePassword(data.newPassword);
+  } catch (error) {
+    throw new HttpError(400, error.message);
+  }
+  if (typeof data.currentPassword !== "string" || Array.from(data.currentPassword).length > 32) {
+    throw new HttpError(400, "Invalid current password.");
+  }
+  const user = await env.DB.prepare(
+    "SELECT password_verifier FROM users WHERE id = ? AND deletion_requested_at IS NULL",
+  ).bind(session.user_id).first();
+  if (!user || !await verifyStoredPassword(data.currentPassword, user.password_verifier)) {
+    throw new HttpError(401, "Current password is incorrect.");
+  }
+  const verifier = await createPasswordVerifier(data.newPassword);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE users SET password_verifier = ?, recovery_code_hash = NULL,
+       recovery_code_created_at = NULL, auth_version = auth_version + 1, updated_at = ? WHERE id = ?`,
+    ).bind(verifier, now(), session.user_id),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(session.user_id),
+  ]);
+  return json(
+    { success: true },
+    200,
+    { "Set-Cookie": sessionCookie(request, env, "", 0) },
+  );
+}
+
+async function createRecoveryCode(request, env, session) {
+  const data = await readJson(request, 2048);
+  if (typeof data.currentPassword !== "string" || Array.from(data.currentPassword).length > 32) {
+    throw new HttpError(400, "Invalid current password.");
+  }
+  const user = await env.DB.prepare(
+    "SELECT password_verifier FROM users WHERE id = ? AND deletion_requested_at IS NULL",
+  ).bind(session.user_id).first();
+  if (!user || !await verifyStoredPassword(data.currentPassword, user.password_verifier)) {
+    throw new HttpError(401, "Current password is incorrect.");
+  }
+  const token = randomToken();
+  const timestamp = now();
+  await env.DB.prepare(
+    "UPDATE users SET recovery_code_hash = ?, recovery_code_created_at = ?, updated_at = ? WHERE id = ?",
+  ).bind(await digest(token), timestamp, timestamp, session.user_id).run();
+  return json({ success: true, recoveryCode: formatRecoveryCode(token) }, 201);
+}
+
+async function deleteOwnAccount(request, env, ctx, session) {
+  const data = await readJson(request, 2048);
+  if (data.username !== session.username) throw new HttpError(400, "Username confirmation does not match.");
+  if (typeof data.currentPassword !== "string" || Array.from(data.currentPassword).length > 32) {
+    throw new HttpError(400, "Invalid current password.");
+  }
+  const target = await env.DB.prepare(
+    "SELECT id, role, enabled, password_verifier FROM users WHERE id = ? AND deletion_requested_at IS NULL",
+  ).bind(session.user_id).first();
+  if (!target || !await verifyStoredPassword(data.currentPassword, target.password_verifier)) {
+    throw new HttpError(401, "Current password is incorrect.");
+  }
+  if (target.role === "admin" && target.enabled === 1) {
+    const remaining = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM users
+       WHERE role = 'admin' AND enabled = 1 AND id != ? AND deletion_requested_at IS NULL`,
+    ).bind(target.id).first();
+    if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
+  }
+  const timestamp = now();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE users SET enabled = 0, auth_version = auth_version + 1,
+       deletion_requested_at = ?, updated_at = ? WHERE id = ?`,
+    ).bind(timestamp, timestamp, target.id),
+    env.DB.prepare("UPDATE items SET state = 'deleting' WHERE owner_user_id = ?").bind(target.id),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target.id),
+  ]);
+  backgroundCleanup(env, ctx);
+  return json(
+    { success: true },
+    202,
+    { "Set-Cookie": sessionCookie(request, env, "", 0) },
+  );
 }
 
 function harden(response, request, env, session) {
@@ -229,93 +470,112 @@ async function asset(request, env, path) {
   return env.ASSETS.fetch(new Request(url, { method: request.method, headers }));
 }
 
-async function beginOperation(request, env, fingerprint) {
+async function beginOperation(request, env, userId, fingerprint) {
   const key = request.headers.get("Idempotency-Key") || crypto.randomUUID();
   if (!validId(key)) throw new HttpError(400, "Idempotency-Key must be a UUID v4.");
   const id = crypto.randomUUID();
   const claimed = await env.DB.prepare(
-    "INSERT OR IGNORE INTO operations(request_key, fingerprint, item_id, state, created_at) VALUES (?, ?, ?, 'pending', ?)",
-  ).bind(key, fingerprint, id, now()).run();
+    `INSERT OR IGNORE INTO operations(user_id, request_key, fingerprint, item_id, state, created_at)
+     VALUES (?, ?, ?, ?, 'pending', ?)`,
+  ).bind(userId, key, fingerprint, id, now()).run();
   if (claimed.meta.changes) return { id, key };
-  const previous = await env.DB.prepare("SELECT * FROM operations WHERE request_key = ?").bind(key).first();
+  const previous = await env.DB.prepare(
+    "SELECT * FROM operations WHERE user_id = ? AND request_key = ?",
+  ).bind(userId, key).first();
   if (!previous || previous.fingerprint !== fingerprint) throw new HttpError(409, "Idempotency key belongs to different content.");
   if (previous.state === "failed") {
     const retry = await env.DB.prepare(
-      "UPDATE operations SET state = 'pending', item_id = ?, created_at = ? WHERE request_key = ? AND state = 'failed' AND item_id = ?",
-    ).bind(id, now(), key, previous.item_id).run();
+      `UPDATE operations SET state = 'pending', item_id = ?, created_at = ?
+       WHERE user_id = ? AND request_key = ? AND state = 'failed' AND item_id = ?`,
+    ).bind(id, now(), userId, key, previous.item_id).run();
     if (retry.meta.changes) return { id, key };
   }
   if (previous.state !== "done") {
     throw new HttpError(409, "Operation is still processing. Retry later with the same key.");
   }
-  const item = await env.DB.prepare("SELECT id FROM items WHERE id = ? AND state = 'ready'").bind(previous.item_id).first();
+  const item = await env.DB.prepare(
+    "SELECT id FROM items WHERE id = ? AND owner_user_id = ? AND state = 'ready'",
+  ).bind(previous.item_id, userId).first();
   if (!item) throw new HttpError(410, "This operation completed but its item has been deleted.");
   return { id: previous.item_id, key, replay: true };
 }
 
-async function beginMultipartOperation(request, env, fingerprint) {
+async function beginMultipartOperation(request, env, userId, fingerprint) {
   const key = request.headers.get("Idempotency-Key") || crypto.randomUUID();
   if (!validId(key)) throw new HttpError(400, "Idempotency-Key must be a UUID v4.");
   const id = crypto.randomUUID();
   const claimed = await env.DB.prepare(
-    "INSERT OR IGNORE INTO operations(request_key, fingerprint, item_id, state, created_at) VALUES (?, ?, ?, 'pending', ?)",
-  ).bind(key, fingerprint, id, now()).run();
+    `INSERT OR IGNORE INTO operations(user_id, request_key, fingerprint, item_id, state, created_at)
+     VALUES (?, ?, ?, ?, 'pending', ?)`,
+  ).bind(userId, key, fingerprint, id, now()).run();
   if (claimed.meta.changes) return { id, key };
 
-  const previous = await env.DB.prepare("SELECT * FROM operations WHERE request_key = ?").bind(key).first();
+  const previous = await env.DB.prepare(
+    "SELECT * FROM operations WHERE user_id = ? AND request_key = ?",
+  ).bind(userId, key).first();
   if (!previous || previous.fingerprint !== fingerprint) throw new HttpError(409, "Idempotency key belongs to different content.");
   if (previous.state === "done") {
-    const item = await env.DB.prepare("SELECT id FROM items WHERE id = ? AND state = 'ready'").bind(previous.item_id).first();
+    const item = await env.DB.prepare(
+      "SELECT id FROM items WHERE id = ? AND owner_user_id = ? AND state = 'ready'",
+    ).bind(previous.item_id, userId).first();
     if (!item) throw new HttpError(410, "This operation completed but its item has been deleted.");
     return { id: previous.item_id, key, replay: true };
   }
   if (previous.state === "pending") {
     const active = await env.DB.prepare(
       `SELECT i.id, i.state, m.upload_id FROM items i
-       LEFT JOIN multipart_uploads m ON m.item_id = i.id WHERE i.id = ?`,
-    ).bind(previous.item_id).first();
+       LEFT JOIN multipart_uploads m ON m.item_id = i.id
+       WHERE i.id = ? AND i.owner_user_id = ?`,
+    ).bind(previous.item_id, userId).first();
     if (active?.state === "pending" && active.upload_id) return { id: previous.item_id, key, resume: true };
     const recovered = await env.DB.prepare(
-      `UPDATE operations SET item_id = ?, created_at = ? WHERE request_key = ? AND item_id = ?
+      `UPDATE operations SET item_id = ?, created_at = ? WHERE user_id = ? AND request_key = ? AND item_id = ?
        AND state = 'pending' AND created_at < ?
        AND NOT EXISTS (SELECT 1 FROM multipart_uploads WHERE item_id = ?)`,
-    ).bind(id, now(), key, previous.item_id, now() - 30, previous.item_id).run();
+    ).bind(id, now(), userId, key, previous.item_id, now() - 30, previous.item_id).run();
     if (recovered.meta.changes) {
-      await env.DB.prepare("UPDATE items SET state = 'deleting' WHERE id = ? AND state != 'ready'").bind(previous.item_id).run();
+      await env.DB.prepare(
+        "UPDATE items SET state = 'deleting' WHERE id = ? AND owner_user_id = ? AND state != 'ready'",
+      ).bind(previous.item_id, userId).run();
       return { id, key };
     }
     throw new HttpError(409, "Upload is still being initialized. Retry later with the same key.");
   }
 
   const retry = await env.DB.prepare(
-    "UPDATE operations SET state = 'pending', item_id = ?, created_at = ? WHERE request_key = ? AND state = 'failed' AND item_id = ?",
-  ).bind(id, now(), key, previous.item_id).run();
+    `UPDATE operations SET state = 'pending', item_id = ?, created_at = ?
+     WHERE user_id = ? AND request_key = ? AND state = 'failed' AND item_id = ?`,
+  ).bind(id, now(), userId, key, previous.item_id).run();
   if (!retry.meta.changes) throw new HttpError(409, "Upload state changed. Retry later with the same key.");
-  await env.DB.prepare("UPDATE items SET state = 'deleting' WHERE id = ? AND state != 'ready'").bind(previous.item_id).run();
+  await env.DB.prepare(
+    "UPDATE items SET state = 'deleting' WHERE id = ? AND owner_user_id = ? AND state != 'ready'",
+  ).bind(previous.item_id, userId).run();
   return { id, key };
 }
 
-async function publishFile(env, id, key) {
+async function publishFile(env, id, key, userId) {
   const [published] = await env.DB.batch([
-    env.DB.prepare(`UPDATE items SET state = 'ready' WHERE id = ? AND state = 'pending'
-      AND EXISTS (SELECT 1 FROM operations WHERE request_key = ? AND item_id = ? AND state = 'pending')`).bind(id, key, id),
-    revision(env),
-    env.DB.prepare(`UPDATE operations SET state = 'done' WHERE request_key = ? AND item_id = ?
-      AND EXISTS (SELECT 1 FROM items WHERE id = ? AND state = 'ready')`).bind(key, id, id),
+    env.DB.prepare(`UPDATE items SET state = 'ready' WHERE id = ? AND owner_user_id = ? AND state = 'pending'
+      AND EXISTS (SELECT 1 FROM operations
+       WHERE user_id = ? AND request_key = ? AND item_id = ? AND state = 'pending')`).bind(id, userId, userId, key, id),
+    revision(env, userId),
+    env.DB.prepare(`UPDATE operations SET state = 'done' WHERE user_id = ? AND request_key = ? AND item_id = ?
+      AND EXISTS (SELECT 1 FROM items WHERE id = ? AND owner_user_id = ? AND state = 'ready')`)
+      .bind(userId, key, id, id, userId),
     env.DB.prepare(`DELETE FROM multipart_parts WHERE item_id = ?
-      AND EXISTS (SELECT 1 FROM items WHERE id = ? AND state = 'ready')`).bind(id, id),
+      AND EXISTS (SELECT 1 FROM items WHERE id = ? AND owner_user_id = ? AND state = 'ready')`).bind(id, id, userId),
     env.DB.prepare(`DELETE FROM multipart_uploads WHERE item_id = ?
-      AND EXISTS (SELECT 1 FROM items WHERE id = ? AND state = 'ready')`).bind(id, id),
+      AND EXISTS (SELECT 1 FROM items WHERE id = ? AND owner_user_id = ? AND state = 'ready')`).bind(id, id, userId),
   ]);
   if (!published.meta.changes) throw new HttpError(409, "Upload was cancelled by a history clear.");
 }
 
-async function multipartPayload(env, id, config, touch = false) {
+async function multipartPayload(env, id, config, userId, touch = false) {
   const item = await env.DB.prepare(
     `SELECT i.id, i.name, i.size, i.state, m.chunk_size, m.total_parts, m.updated_at, m.state AS upload_state
      FROM items i LEFT JOIN multipart_uploads m ON m.item_id = i.id
-     WHERE i.id = ? AND i.type = 'file'`,
-  ).bind(id).first();
+     WHERE i.id = ? AND i.owner_user_id = ? AND i.type = 'file'`,
+  ).bind(id, userId).first();
   if (!item || item.state === "deleting") throw new HttpError(404, "Upload not found.");
   if (item.state === "ready") return { success: true, id, complete: true, uploadedParts: [] };
   if (!item.chunk_size) throw new HttpError(409, "Upload is still being initialized.");
@@ -323,7 +583,9 @@ async function multipartPayload(env, id, config, touch = false) {
     const timestamp = now();
     await env.DB.batch([
       env.DB.prepare("UPDATE multipart_uploads SET updated_at = ? WHERE item_id = ?").bind(timestamp, id),
-      env.DB.prepare(`UPDATE operations SET created_at = ? WHERE item_id = ? AND state = 'pending'`).bind(timestamp, id),
+      env.DB.prepare(
+        `UPDATE operations SET created_at = ? WHERE user_id = ? AND item_id = ? AND state = 'pending'`,
+      ).bind(timestamp, userId, id),
     ]);
     item.updated_at = timestamp;
   }
@@ -346,7 +608,7 @@ async function multipartPayload(env, id, config, touch = false) {
   };
 }
 
-async function initiateMultipart(request, env, config) {
+async function initiateMultipart(request, env, config, session) {
   const data = await readJson(request, 4096);
   validateFile(data.name, data.size, config);
   if (data.mediaType !== undefined && (typeof data.mediaType !== "string" || data.mediaType.length > 100)) {
@@ -359,22 +621,23 @@ async function initiateMultipart(request, env, config) {
   const fingerprint = await digest(JSON.stringify([
     "multipart-file-v1", data.name, data.size, data.chunkSize, data.fileFingerprint,
   ]));
-  const operation = await beginMultipartOperation(request, env, fingerprint);
+  const operation = await beginMultipartOperation(request, env, session.user_id, fingerprint);
   const { id, key } = operation;
   if (operation.replay) return json({ success: true, id, complete: true, replayed: true });
-  if (operation.resume) return json(await multipartPayload(env, id, config, true));
+  if (operation.resume) return json(await multipartPayload(env, id, config, session.user_id, true));
 
   let multipart;
   try {
     await env.DB.prepare(
-      "INSERT INTO items(id, type, name, size, media_type, state, created_at) VALUES (?, 'file', ?, ?, ?, 'pending', ?)",
-    ).bind(id, data.name, data.size, mediaType, now()).run();
+      `INSERT INTO items(id, owner_user_id, type, name, size, media_type, state, created_at)
+       VALUES (?, ?, 'file', ?, ?, ?, 'pending', ?)`,
+    ).bind(id, session.user_id, data.name, data.size, mediaType, now()).run();
     if (data.size === 0) {
       const object = await env.FILES.put(objectKey(id), new Uint8Array(), {
         httpMetadata: { contentType: "application/octet-stream" },
       });
       if (!object || object.size !== 0) throw new HttpError(500, "Empty file could not be stored.");
-      await publishFile(env, id, key);
+      await publishFile(env, id, key, session.user_id);
       return json({ success: true, id, complete: true }, 201);
     }
 
@@ -383,29 +646,40 @@ async function initiateMultipart(request, env, config) {
     });
     const totalParts = Math.ceil(data.size / config.uploadChunkBytes);
     const created = await env.DB.prepare(
-      `INSERT INTO multipart_uploads(item_id, upload_id, operation_key, chunk_size, total_parts, state, updated_at)
-       SELECT ?, ?, ?, ?, ?, 'uploading', ? WHERE EXISTS
-       (SELECT 1 FROM items WHERE id = ? AND state = 'pending')`,
-    ).bind(id, multipart.uploadId, key, config.uploadChunkBytes, totalParts, now(), id).run();
+      `INSERT INTO multipart_uploads(
+        item_id, user_id, upload_id, operation_key, chunk_size, total_parts, state, updated_at
+       )
+       SELECT ?, ?, ?, ?, ?, ?, 'uploading', ? WHERE EXISTS
+       (SELECT 1 FROM items WHERE id = ? AND owner_user_id = ? AND state = 'pending')`,
+    ).bind(
+      id, session.user_id, multipart.uploadId, key, config.uploadChunkBytes, totalParts,
+      now(), id, session.user_id,
+    ).run();
     if (!created.meta.changes) throw new HttpError(409, "Upload was cancelled while it was being initialized.");
-    return json(await multipartPayload(env, id, config), 201);
+    return json(await multipartPayload(env, id, config, session.user_id), 201);
   } catch (error) {
     if (multipart) await multipart.abort().catch(() => {});
     await env.DB.batch([
-      env.DB.prepare("UPDATE items SET state = 'deleting' WHERE id = ? AND state = 'pending'").bind(id),
-      env.DB.prepare("UPDATE operations SET state = 'failed' WHERE request_key = ? AND item_id = ?").bind(key, id),
+      env.DB.prepare(
+        "UPDATE items SET state = 'deleting' WHERE id = ? AND owner_user_id = ? AND state = 'pending'",
+      ).bind(id, session.user_id),
+      env.DB.prepare(
+        `UPDATE operations SET state = 'failed'
+         WHERE user_id = ? AND request_key = ? AND item_id = ?`,
+      ).bind(session.user_id, key, id),
     ]);
     throw error;
   }
 }
 
-async function uploadMultipartPart(request, env, id, rawPartNumber) {
+async function uploadMultipartPart(request, env, id, rawPartNumber, session) {
   if (!validId(id) || !/^[1-9]\d*$/.test(rawPartNumber)) throw new HttpError(404, "Upload part not found.");
   const partNumber = Number(rawPartNumber);
   const upload = await env.DB.prepare(
     `SELECT i.size, i.state AS item_state, m.upload_id, m.operation_key, m.chunk_size, m.total_parts, m.state
-     FROM items i JOIN multipart_uploads m ON m.item_id = i.id WHERE i.id = ?`,
-  ).bind(id).first();
+     FROM items i JOIN multipart_uploads m ON m.item_id = i.id
+     WHERE i.id = ? AND i.owner_user_id = ? AND m.user_id = ?`,
+  ).bind(id, session.user_id, session.user_id).first();
   if (!upload || upload.item_state !== "pending") throw new HttpError(404, "Upload not found.");
   if (upload.state !== "uploading") throw new HttpError(409, "Upload is being completed. Retry later.");
   if (partNumber > upload.total_parts) throw new HttpError(400, "Invalid upload part number.");
@@ -439,23 +713,35 @@ async function uploadMultipartPart(request, env, id, rawPartNumber) {
       `INSERT OR REPLACE INTO multipart_parts(item_id, part_number, etag, checksum, size, updated_at)
        SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS
        (SELECT 1 FROM multipart_uploads m JOIN items i ON i.id = m.item_id
-        WHERE m.item_id = ? AND m.state = 'uploading' AND i.state = 'pending')`,
-    ).bind(id, partNumber, uploaded.etag, checksum, expectedSize, timestamp, id),
-    env.DB.prepare("UPDATE multipart_uploads SET updated_at = ? WHERE item_id = ? AND state = 'uploading'").bind(timestamp, id),
-    env.DB.prepare("UPDATE operations SET created_at = ? WHERE request_key = ? AND state = 'pending'")
-      .bind(timestamp, upload.operation_key),
+        WHERE m.item_id = ? AND m.user_id = ? AND m.state = 'uploading'
+         AND i.owner_user_id = ? AND i.state = 'pending')`,
+    ).bind(
+      id, partNumber, uploaded.etag, checksum, expectedSize, timestamp,
+      id, session.user_id, session.user_id,
+    ),
+    env.DB.prepare(
+      "UPDATE multipart_uploads SET updated_at = ? WHERE item_id = ? AND user_id = ? AND state = 'uploading'",
+    ).bind(timestamp, id, session.user_id),
+    env.DB.prepare(
+      `UPDATE operations SET created_at = ?
+       WHERE user_id = ? AND request_key = ? AND state = 'pending'`,
+    ).bind(timestamp, session.user_id, upload.operation_key),
   ]);
   if (!saved.meta.changes) throw new HttpError(409, "Upload was cancelled while this part was being stored.");
   return json({ success: true, partNumber }, 201);
 }
 
-async function completeMultipart(env, id) {
+async function completeMultipart(env, id, session) {
   if (!validId(id)) throw new HttpError(404, "Upload not found.");
-  const item = await env.DB.prepare("SELECT id, size, state FROM items WHERE id = ? AND type = 'file'").bind(id).first();
+  const item = await env.DB.prepare(
+    "SELECT id, size, state FROM items WHERE id = ? AND owner_user_id = ? AND type = 'file'",
+  ).bind(id, session.user_id).first();
   if (!item || item.state === "deleting") throw new HttpError(404, "Upload not found.");
   if (item.state === "ready") return json({ success: true, id, complete: true, replayed: true });
 
-  const upload = await env.DB.prepare("SELECT * FROM multipart_uploads WHERE item_id = ?").bind(id).first();
+  const upload = await env.DB.prepare(
+    "SELECT * FROM multipart_uploads WHERE item_id = ? AND user_id = ?",
+  ).bind(id, session.user_id).first();
   if (!upload) throw new HttpError(409, "Upload is still being initialized.");
   const { results: parts } = await env.DB.prepare(
     "SELECT part_number, etag, size FROM multipart_parts WHERE item_id = ? ORDER BY part_number",
@@ -478,10 +764,12 @@ async function completeMultipart(env, id) {
       object = await multipart.complete(parts.map((part) => ({ partNumber: part.part_number, etag: part.etag })));
     }
     if (!object || object.size !== item.size) throw new HttpError(500, "Completed file size does not match the upload.");
-    await publishFile(env, id, upload.operation_key);
+    await publishFile(env, id, upload.operation_key, session.user_id);
     return json({ success: true, id, complete: true }, 201);
   } catch (error) {
-    const committed = await env.DB.prepare("SELECT state FROM operations WHERE request_key = ?").bind(upload.operation_key).first();
+    const committed = await env.DB.prepare(
+      "SELECT state FROM operations WHERE user_id = ? AND request_key = ?",
+    ).bind(session.user_id, upload.operation_key).first();
     if (committed?.state === "done") return json({ success: true, id, complete: true, replayed: true });
     await env.DB.prepare(
       "UPDATE multipart_uploads SET state = 'uploading', updated_at = ? WHERE item_id = ? AND state = 'completing'",
@@ -490,12 +778,16 @@ async function completeMultipart(env, id) {
   }
 }
 
-async function cancelMultipart(env, ctx, id) {
+async function cancelMultipart(env, ctx, id, session) {
   if (!validId(id)) throw new HttpError(404, "Upload not found.");
   const [cancelled] = await env.DB.batch([
-    env.DB.prepare("UPDATE items SET state = 'deleting' WHERE id = ? AND state = 'pending'").bind(id),
+    env.DB.prepare(
+      "UPDATE items SET state = 'deleting' WHERE id = ? AND owner_user_id = ? AND state = 'pending'",
+    ).bind(id, session.user_id),
     env.DB.prepare(`UPDATE operations SET state = 'failed' WHERE item_id = ? AND state = 'pending'
-      AND EXISTS (SELECT 1 FROM items WHERE id = ? AND state = 'deleting')`).bind(id, id),
+      AND user_id = ?
+      AND EXISTS (SELECT 1 FROM items WHERE id = ? AND owner_user_id = ? AND state = 'deleting')`)
+      .bind(id, session.user_id, id, session.user_id),
   ]);
   if (!cancelled.meta.changes) throw new HttpError(404, "Upload not found.");
   backgroundCleanup(env, ctx);
@@ -522,11 +814,12 @@ function rangeFor(header, size) {
   return { offset: start, length: end - start + 1 };
 }
 
-async function download(request, env, id, expectedName, knownItem = null) {
+async function download(request, env, id, expectedName, ownerUserId, knownItem = null) {
   if (!validId(id)) throw new HttpError(404, "File not found.");
   const item = knownItem || await env.DB.prepare(
-    "SELECT name, size FROM items WHERE id = ? AND type = 'file' AND state = 'ready'",
-  ).bind(id).first();
+    `SELECT name, size FROM items
+     WHERE id = ? AND owner_user_id = ? AND type = 'file' AND state = 'ready'`,
+  ).bind(id, ownerUserId).first();
   if (!item || item.name !== expectedName) throw new HttpError(404, "File not found.");
   const range = request.method === "HEAD" ? null : rangeFor(request.headers.get("Range"), item.size);
   const object = request.method === "HEAD"
@@ -556,18 +849,19 @@ async function temporaryDownload(request, env, token, expectedName) {
      WHERE s.token_hash = ? AND s.expires_at > ? AND i.type = 'file' AND i.state = 'ready'`,
   ).bind(await digest(token), now()).first();
   if (!item || item.name !== expectedName) throw new HttpError(404, "Temporary file link not found or expired.");
-  return download(request, env, item.id, expectedName, item);
+  return download(request, env, item.id, expectedName, null, item);
 }
 
-async function createTemporaryShare(request, env, id) {
+async function createTemporaryShare(request, env, id, session) {
   if (!validId(id)) throw new HttpError(404, "File not found.");
   const data = await readJson(request, 1024);
   if (!Number.isSafeInteger(data.hours) || data.hours < 1 || data.hours > 168) {
     throw new HttpError(400, "Temporary access duration must be an integer from 1 to 168 hours.");
   }
   const item = await env.DB.prepare(
-    "SELECT id, name FROM items WHERE id = ? AND type = 'file' AND state = 'ready'",
-  ).bind(id).first();
+    `SELECT id, name FROM items
+     WHERE id = ? AND owner_user_id = ? AND type = 'file' AND state = 'ready'`,
+  ).bind(id, session.user_id).first();
   if (!item) throw new HttpError(404, "File not found.");
   const token = randomToken();
   const timestamp = now();
@@ -578,7 +872,7 @@ async function createTemporaryShare(request, env, id) {
        ON CONFLICT(item_id) DO UPDATE SET
        token_hash = excluded.token_hash, expires_at = excluded.expires_at, created_at = excluded.created_at`,
     ).bind(await digest(token), id, expiresAt, timestamp),
-    revision(env),
+    revision(env, session.user_id),
   ]);
   return json({
     success: true,
@@ -587,24 +881,26 @@ async function createTemporaryShare(request, env, id) {
   }, 201);
 }
 
-async function revokeTemporaryShare(env, id) {
+async function revokeTemporaryShare(env, id, session) {
   if (!validId(id)) throw new HttpError(404, "File not found.");
   const [deleted] = await env.DB.batch([
     env.DB.prepare(
       `DELETE FROM file_shares WHERE item_id = ?
-       AND EXISTS (SELECT 1 FROM items WHERE id = ? AND type = 'file' AND state = 'ready')`,
-    ).bind(id, id),
-    revision(env),
+       AND EXISTS (SELECT 1 FROM items
+        WHERE id = ? AND owner_user_id = ? AND type = 'file' AND state = 'ready')`,
+    ).bind(id, id, session.user_id),
+    revision(env, session.user_id),
   ]);
   if (!deleted.meta.changes) throw new HttpError(404, "Active temporary file link not found.");
   return json({ success: true });
 }
 
-async function previewImage(request, env, id) {
+async function previewImage(request, env, id, session) {
   if (!validId(id)) throw new HttpError(404, "Image preview not found.");
   const item = await env.DB.prepare(
-    "SELECT name, size, media_type FROM items WHERE id = ? AND type = 'file' AND state = 'ready'",
-  ).bind(id).first();
+    `SELECT name, size, media_type FROM items
+     WHERE id = ? AND owner_user_id = ? AND type = 'file' AND state = 'ready'`,
+  ).bind(id, session.user_id).first();
   const contentType = item && imageMediaType(item.media_type, item.name);
   if (!contentType) throw new HttpError(404, "Image preview not found.");
   const object = request.method === "HEAD"
@@ -623,25 +919,30 @@ async function previewImage(request, env, id) {
 
 async function cleanupDeleted(env) {
   const { results } = await env.DB.prepare("SELECT id, type FROM items WHERE state = 'deleting' ORDER BY seq LIMIT 50").all();
-  if (!results.length) return 0;
-  const fileIds = results.filter((item) => item.type === "file").map((item) => item.id);
-  if (fileIds.length) {
-    const slots = fileIds.map(() => "?").join(",");
-    const { results: uploads } = await env.DB.prepare(
-      `SELECT item_id, upload_id FROM multipart_uploads WHERE item_id IN (${slots})`,
-    ).bind(...fileIds).all();
-    await Promise.allSettled(uploads.map((upload) =>
-      env.FILES.resumeMultipartUpload(objectKey(upload.item_id), upload.upload_id).abort()));
-    await env.FILES.delete(fileIds.map(objectKey));
+  if (results.length) {
+    const fileIds = results.filter((item) => item.type === "file").map((item) => item.id);
+    if (fileIds.length) {
+      const slots = fileIds.map(() => "?").join(",");
+      const { results: uploads } = await env.DB.prepare(
+        `SELECT item_id, upload_id FROM multipart_uploads WHERE item_id IN (${slots})`,
+      ).bind(...fileIds).all();
+      await Promise.allSettled(uploads.map((upload) =>
+        env.FILES.resumeMultipartUpload(objectKey(upload.item_id), upload.upload_id).abort()));
+      await env.FILES.delete(fileIds.map(objectKey));
+    }
+    const slots = results.map(() => "?").join(",");
+    const ids = results.map((item) => item.id);
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM file_shares WHERE item_id IN (${slots})`).bind(...ids),
+      env.DB.prepare(`DELETE FROM multipart_parts WHERE item_id IN (${slots})`).bind(...ids),
+      env.DB.prepare(`DELETE FROM multipart_uploads WHERE item_id IN (${slots})`).bind(...ids),
+      env.DB.prepare(`DELETE FROM items WHERE state = 'deleting' AND id IN (${slots})`).bind(...ids),
+    ]);
   }
-  const slots = results.map(() => "?").join(",");
-  const ids = results.map((item) => item.id);
-  await env.DB.batch([
-    env.DB.prepare(`DELETE FROM file_shares WHERE item_id IN (${slots})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM multipart_parts WHERE item_id IN (${slots})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM multipart_uploads WHERE item_id IN (${slots})`).bind(...ids),
-    env.DB.prepare(`DELETE FROM items WHERE state = 'deleting' AND id IN (${slots})`).bind(...ids),
-  ]);
+  await env.DB.prepare(
+    `DELETE FROM users WHERE deletion_requested_at IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM items WHERE owner_user_id = users.id)`,
+  ).run();
   return results.length;
 }
 
@@ -664,6 +965,9 @@ async function route(request, env, ctx, responseState) {
       { "Set-Cookie": sessionCookie(request, env, result.token, config.ttl) },
     );
   }
+  if (method === "GET" && path === "/api/auth/config") return authConfiguration(env);
+  if (method === "POST" && path === "/api/register") return registerUser(request, env, config);
+  if (method === "POST" && path === "/api/password/reset") return resetPassword(request, env, config);
   if ((method === "GET" || method === "HEAD") && publicAssets.has(path)) {
     return asset(request, env, publicAssets.get(path));
   }
@@ -673,8 +977,8 @@ async function route(request, env, ctx, responseState) {
   }
   const session = await getSession(request, env, config.ttl);
   if (session) responseState.session = { ...session, ttl: config.ttl };
-  if ((method === "GET" || method === "HEAD") && path === "/login") {
-    const target = safeDownloadPath(url.searchParams.get("next"));
+  if ((method === "GET" || method === "HEAD") && ["/login", "/register", "/reset-password"].includes(path)) {
+    const target = path === "/login" ? safeDownloadPath(url.searchParams.get("next")) : "/";
     return session ? Response.redirect(`${url.origin}${target}`, 303) : asset(request, env, "/login.html");
   }
   if (!session) {
@@ -695,7 +999,12 @@ async function route(request, env, ctx, responseState) {
   if (method === "GET" && path === "/api/session") {
     return json({
       csrfToken: session.csrf_token, expiresAt: session.expires_at,
-      user: { id: session.user_id, username: session.username, role: session.role },
+      user: {
+        id: session.user_id,
+        username: session.username,
+        role: session.role,
+        hasRecoveryCode: Boolean(session.has_recovery_code),
+      },
       maxUploadBytes: config.uploadLimit,
       uploadChunkBytes: config.uploadChunkBytes,
       uploadConcurrency: config.uploadConcurrency,
@@ -711,12 +1020,24 @@ async function route(request, env, ctx, responseState) {
   if (method === "GET" && path === "/api/revision") {
     return json({ revision: session.revision });
   }
+  if (method === "PATCH" && path === "/api/settings/registration") {
+    return updateRegistration(request, env, session);
+  }
+  if (method === "POST" && path === "/api/account/password") {
+    return changeOwnPassword(request, env, session);
+  }
+  if (method === "POST" && path === "/api/account/recovery-code") {
+    return createRecoveryCode(request, env, session);
+  }
+  if (method === "DELETE" && path === "/api/account") {
+    return deleteOwnAccount(request, env, ctx, session);
+  }
   if (method === "GET" && path === "/api/users") return listUsers(env, session);
   if (method === "POST" && path === "/api/users") return createUser(request, env, session);
   const userRoute = path.match(/^\/api\/users\/([a-f0-9-]+)$/);
   if (userRoute) {
     if (method === "PATCH") return updateUser(request, env, session, userRoute[1]);
-    if (method === "DELETE") return deleteUser(env, session, userRoute[1]);
+    if (method === "DELETE") return deleteUser(env, ctx, session, userRoute[1]);
   }
   if (method === "GET" && path === "/api/history") {
     const raw = url.searchParams.get("before");
@@ -724,79 +1045,99 @@ async function route(request, env, ctx, responseState) {
     const cursor = raw ? Number(raw) : Number.MAX_SAFE_INTEGER;
     // Bound the worst-case text allocation before fetching full bodies from D1.
     const pageSize = Math.min(config.pageSize, Math.max(1, Math.floor(1048576 / config.textLimit)));
-    const [items, state] = await env.DB.batch([
-      env.DB.prepare(
-        `SELECT i.seq, i.id, i.type, i.content, i.name, i.size, i.media_type, i.created_at,
-         CASE WHEN s.expires_at > ? THEN s.expires_at ELSE NULL END AS share_expires_at
-         FROM items i LEFT JOIN file_shares s ON s.item_id = i.id
-         WHERE i.state = 'ready' AND i.seq < ? ORDER BY i.seq DESC LIMIT ?`,
-      ).bind(now(), cursor, pageSize + 1),
-      env.DB.prepare("SELECT revision FROM app_state WHERE id = 1"),
-    ]);
+    const items = await env.DB.prepare(
+      `SELECT i.seq, i.id, i.type, i.content, i.name, i.size, i.media_type, i.created_at,
+       CASE WHEN s.expires_at > ? THEN s.expires_at ELSE NULL END AS share_expires_at
+       FROM items i LEFT JOIN file_shares s ON s.item_id = i.id
+       WHERE i.owner_user_id = ? AND i.state = 'ready' AND i.seq < ?
+       ORDER BY i.seq DESC LIMIT ?`,
+    ).bind(now(), session.user_id, cursor, pageSize + 1).all();
     return json({
       items: items.results.slice(0, pageSize).map((item) => ({
         ...item,
         media_type: item.type === "file" ? imageMediaType(item.media_type, item.name) : null,
       })),
       nextCursor: items.results.length > pageSize ? items.results[pageSize - 1].seq : null,
-      revision: state.results[0].revision,
+      revision: session.revision,
     });
   }
   if (method === "POST" && path === "/api/text") {
     const data = await readJson(request, config.textLimit * 6 + 1024);
     if (typeof data.text !== "string" || !data.text.trim()) throw new HttpError(400, "Text cannot be empty.");
     if (encoder.encode(data.text).length > config.textLimit) throw new HttpError(413, `Text exceeds ${config.textLimit} UTF-8 bytes.`);
-    const operation = await beginOperation(request, env, await digest(JSON.stringify(["text", data.text])));
+    const operation = await beginOperation(
+      request, env, session.user_id, await digest(JSON.stringify(["text", data.text])),
+    );
     const { id, key } = operation;
     if (operation.replay) return json({ success: true, id, replayed: true });
     try {
       await env.DB.batch([
-        env.DB.prepare("INSERT INTO items(id, type, content, state, created_at) VALUES (?, 'text', ?, 'ready', ?)").bind(id, data.text, now()),
-        revision(env),
-        env.DB.prepare("UPDATE operations SET state = 'done' WHERE request_key = ? AND item_id = ?").bind(key, id),
+        env.DB.prepare(
+          `INSERT INTO items(id, owner_user_id, type, content, state, created_at)
+           VALUES (?, ?, 'text', ?, 'ready', ?)`,
+        ).bind(id, session.user_id, data.text, now()),
+        revision(env, session.user_id),
+        env.DB.prepare(
+          `UPDATE operations SET state = 'done'
+           WHERE user_id = ? AND request_key = ? AND item_id = ?`,
+        ).bind(session.user_id, key, id),
       ]);
     } catch (error) {
-      const committed = await env.DB.prepare("SELECT state FROM operations WHERE request_key = ? AND item_id = ?").bind(key, id).first();
+      const committed = await env.DB.prepare(
+        `SELECT state FROM operations WHERE user_id = ? AND request_key = ? AND item_id = ?`,
+      ).bind(session.user_id, key, id).first();
       if (committed?.state === "done") return json({ success: true, id, replayed: true });
-      await env.DB.prepare("UPDATE operations SET state = 'failed' WHERE request_key = ? AND item_id = ?").bind(key, id).run();
+      await env.DB.prepare(
+        `UPDATE operations SET state = 'failed'
+         WHERE user_id = ? AND request_key = ? AND item_id = ?`,
+      ).bind(session.user_id, key, id).run();
       throw error;
     }
     return json({ success: true, id }, 201);
   }
-  if (method === "POST" && path === "/api/uploads") return initiateMultipart(request, env, config);
+  if (method === "POST" && path === "/api/uploads") return initiateMultipart(request, env, config, session);
   const multipartRoute = path.match(/^\/api\/uploads\/([a-f0-9-]+)(?:\/(complete|parts\/([1-9]\d*)))?$/);
   if (multipartRoute) {
     const [, id, action, partNumber] = multipartRoute;
-    if (method === "GET" && !action) return json(await multipartPayload(env, id, config));
-    if (method === "DELETE" && !action) return cancelMultipart(env, ctx, id);
-    if (method === "POST" && action === "complete") return completeMultipart(env, id);
-    if (method === "PUT" && partNumber) return uploadMultipartPart(request, env, id, partNumber);
+    if (method === "GET" && !action) return json(await multipartPayload(env, id, config, session.user_id));
+    if (method === "DELETE" && !action) return cancelMultipart(env, ctx, id, session);
+    if (method === "POST" && action === "complete") return completeMultipart(env, id, session);
+    if (method === "PUT" && partNumber) return uploadMultipartPart(request, env, id, partNumber, session);
   }
   if ((method === "GET" || method === "HEAD") && path.startsWith("/previews/")) {
-    return previewImage(request, env, path.slice(10));
+    return previewImage(request, env, path.slice(10), session);
   }
   if ((method === "GET" || method === "HEAD") && path.startsWith("/uploads/")) {
     const target = protectedDownloadPath(path);
     if (!target) throw new HttpError(404, "File not found.");
-    return download(request, env, target.id, target.name);
+    return download(request, env, target.id, target.name, session.user_id);
   }
   const temporaryShareRoute = path.match(/^\/api\/history\/([a-f0-9-]+)\/share$/);
   if (temporaryShareRoute) {
-    if (method === "POST") return createTemporaryShare(request, env, temporaryShareRoute[1]);
-    if (method === "DELETE") return revokeTemporaryShare(env, temporaryShareRoute[1]);
+    if (method === "POST") return createTemporaryShare(request, env, temporaryShareRoute[1], session);
+    if (method === "DELETE") return revokeTemporaryShare(env, temporaryShareRoute[1], session);
   }
   if (method === "DELETE" && path.startsWith("/api/history/")) {
     const id = path.slice("/api/history/".length);
     if (!validId(id)) throw new HttpError(404, "Item not found.");
     const [result] = await env.DB.batch([
-      env.DB.prepare("UPDATE items SET state = 'deleting' WHERE id = ? AND state = 'ready'").bind(id), revision(env),
+      env.DB.prepare(
+        `UPDATE items SET state = 'deleting'
+         WHERE id = ? AND owner_user_id = ? AND state = 'ready'`,
+      ).bind(id, session.user_id),
+      revision(env, session.user_id),
     ]);
     if (!result.meta.changes) throw new HttpError(404, "Item not found.");
     backgroundCleanup(env, ctx);
     return json({ success: true }, 202);
   }
   if (method === "POST" && path === "/api/clear_history") {
-    await env.DB.batch([env.DB.prepare("UPDATE items SET state = 'deleting' WHERE state != 'deleting'"), revision(env)]);
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE items SET state = 'deleting' WHERE owner_user_id = ? AND state != 'deleting'",
+      ).bind(session.user_id),
+      revision(env, session.user_id),
+    ]);
     backgroundCleanup(env, ctx);
     return json({ success: true }, 202);
   }
@@ -812,6 +1153,7 @@ export async function maintenance(env) {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(timestamp),
     env.DB.prepare("DELETE FROM login_attempts WHERE started_at < ?").bind(timestamp - 86400),
+    env.DB.prepare("DELETE FROM account_attempts WHERE started_at < ?").bind(timestamp - 86400),
     env.DB.prepare("DELETE FROM file_shares WHERE expires_at <= ?").bind(timestamp),
     env.DB.prepare(
       `UPDATE items SET state = 'deleting' WHERE state = 'pending' AND (

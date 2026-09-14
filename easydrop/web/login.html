@@ -11,15 +11,60 @@
 <body data-page="login">
   <main class="login-layout">
     <div class="brand"><img class="brand-icon" src="/favicon.svg" alt=""><h1>EasyDrop</h1></div>
-    <h2>登录</h2>
-    <form id="login-form">
-      <label for="username">用户名</label>
-      <input id="username" name="username" type="text" autocomplete="username" minlength="3" maxlength="32" required autofocus>
-      <label for="password">密码</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required minlength="12" maxlength="32"
-        pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
-      <button class="primary" type="submit"><i data-lucide="log-in"></i><span>登录</span></button>
-    </form>
+    <nav class="auth-tabs" aria-label="账户入口">
+      <a id="login-tab" href="/login">登录</a>
+      <a id="register-tab" href="/register" hidden>注册</a>
+    </nav>
+    <section id="login-view" class="auth-view">
+      <h2>登录</h2>
+      <form id="login-form">
+        <label for="username">用户名</label>
+        <input id="username" name="username" type="text" autocomplete="username" minlength="3" maxlength="32" required autofocus>
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required minlength="12" maxlength="32"
+          pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
+        <button class="primary" type="submit"><i data-lucide="log-in"></i><span>登录</span></button>
+      </form>
+      <a class="auth-secondary-link" href="/reset-password">忘记密码</a>
+    </section>
+    <section id="register-view" class="auth-view" hidden>
+      <h2>注册</h2>
+      <form id="register-form">
+        <label for="register-username">用户名</label>
+        <input id="register-username" name="username" type="text" autocomplete="username" minlength="3" maxlength="32" required>
+        <label for="register-password">密码</label>
+        <input id="register-password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="32"
+          pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
+        <label for="register-password-confirm">确认密码</label>
+        <input id="register-password-confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="32"
+          pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
+        <button class="primary" type="submit"><i data-lucide="user-plus"></i><span>提交注册</span></button>
+      </form>
+      <div id="registration-closed" class="auth-message" hidden>当前未开放注册</div>
+      <div id="registration-result" class="recovery-result" hidden>
+        <p>注册已提交，等待管理员启用。</p>
+        <code id="registration-recovery-code"></code>
+        <button id="copy-registration-code" class="secondary" type="button"><i data-lucide="copy"></i>复制恢复码</button>
+        <p id="registration-copy-notice" class="copy-notice" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+    <section id="reset-view" class="auth-view" hidden>
+      <h2>重置密码</h2>
+      <form id="reset-form">
+        <label for="reset-username">用户名</label>
+        <input id="reset-username" name="username" type="text" autocomplete="username" minlength="3" maxlength="32" required>
+        <label for="recovery-code">恢复码</label>
+        <input id="recovery-code" type="text" autocomplete="off" required maxlength="71">
+        <label for="reset-password">新密码</label>
+        <input id="reset-password" type="password" autocomplete="new-password" required minlength="12" maxlength="32"
+          pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
+        <label for="reset-password-confirm">确认新密码</label>
+        <input id="reset-password-confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="32"
+          pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
+        <button class="primary" type="submit"><i data-lucide="key-round"></i><span>重置密码</span></button>
+      </form>
+      <a class="auth-secondary-link" href="/login">返回登录</a>
+    </section>
     <div id="notice" role="status" aria-live="polite"></div>
     <details id="error-details" hidden><summary>错误详情</summary><pre id="error-body"></pre></details>
   </main>

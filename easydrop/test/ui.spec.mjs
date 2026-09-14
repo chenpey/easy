@@ -3,7 +3,13 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createPreview } from "../scripts/preview.mjs";
 
 let preview;
-test.beforeAll(async () => { preview = await createPreview({ POLL_INTERVAL_SECONDS: "5" }); });
+test.beforeAll(async () => {
+  preview = await createPreview({
+    POLL_INTERVAL_SECONDS: "5",
+    LOGIN_IP_LIMIT: "1000",
+    LOGIN_GLOBAL_LIMIT: "10000",
+  });
+});
 test.afterAll(async () => { await preview?.mf.dispose(); });
 
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
@@ -16,8 +22,8 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page).toHaveURL(`${preview.url}/login`);
     await expect(page).toHaveTitle("登录 | EasyDrop");
     await expect(page.getByRole("heading", { name: "EasyDrop" })).toBeVisible();
-    await expect(page.getByLabel("用户名")).toBeVisible();
-    await expect(page.getByLabel("密码", { exact: true })).toBeVisible();
+    await expect(page.locator("#login-view").getByLabel("用户名", { exact: true })).toBeVisible();
+    await expect(page.locator("#login-view").getByLabel("密码", { exact: true })).toBeVisible();
     await page.screenshot({ path: `test-results/login-${viewport.width}.png`, fullPage: true });
 
     // A disposable login through the real API installs its HttpOnly cookie into this test context.
@@ -139,8 +145,8 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await scanPage.goto(fileUrl);
     await expect(scanPage).toHaveURL(/\/login\?next=/);
     expect(new URL(scanPage.url()).searchParams.get("next")).toBe(new URL(fileUrl).pathname);
-    await scanPage.getByLabel("用户名").fill(preview.username);
-    await scanPage.getByLabel("密码", { exact: true }).fill(preview.password);
+    await scanPage.locator("#login-view").getByLabel("用户名", { exact: true }).fill(preview.username);
+    await scanPage.locator("#login-view").getByLabel("密码", { exact: true }).fill(preview.password);
     const scannedDownloadPromise = scanPage.waitForEvent("download");
     await scanPage.getByRole("button", { name: "登录", exact: true }).click();
     const scannedDownload = await scannedDownloadPromise;
@@ -207,7 +213,7 @@ test("administrator can create, edit, disable, enable and delete a user", async 
   await page.getByRole("button", { name: "用户管理" }).click();
   await expect(page.locator("#users-dialog")).toBeVisible();
 
-  await page.getByLabel("用户名").fill("ui-member");
+  await page.getByLabel("用户名", { exact: true }).fill("ui-member");
   await page.getByLabel("密码", { exact: true }).fill("UiMemberPass123!");
   await page.getByRole("button", { name: "添加用户" }).click();
   let row = page.locator(".user-row").filter({ hasText: "ui-member" });
@@ -219,7 +225,7 @@ test("administrator can create, edit, disable, enable and delete a user", async 
   await page.screenshot({ path: "test-results/users-390.png" });
 
   await row.getByRole("button", { name: "编辑用户" }).click();
-  await page.getByLabel("用户名").fill("ui-member-edited");
+  await page.getByLabel("用户名", { exact: true }).fill("ui-member-edited");
   await page.getByLabel("新密码（留空则不修改）").fill("ChangedPass456!");
   await page.getByRole("button", { name: "保存修改" }).click();
   row = page.locator(".user-row").filter({ hasText: "ui-member-edited" });
@@ -233,6 +239,101 @@ test("administrator can create, edit, disable, enable and delete a user", async 
   await row.getByRole("button", { name: "删除用户" }).click();
   await page.getByRole("button", { name: "确认删除" }).click();
   await expect(row).toHaveCount(0);
+});
+
+test("registration, recovery, password change and self-deletion work end to end", async ({ page, context, browser }) => {
+  const adminHeaders = await loginContext(context);
+  await page.goto(preview.url);
+  await page.getByRole("button", { name: "用户管理" }).click();
+  await page.getByLabel("自助注册").check();
+  await expect(page.locator("#notice")).toHaveText("已开放自助注册");
+  await expect(page.getByLabel("自助注册")).toBeChecked();
+  await page.locator("#users-dialog").getByRole("button", { name: "关闭" }).click();
+
+  const memberContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const memberPage = await memberContext.newPage();
+  await memberPage.goto(`${preview.url}/register`);
+  await expect(memberPage).toHaveTitle("注册 | EasyDrop");
+  const registerView = memberPage.locator("#register-view");
+  await registerView.getByLabel("用户名", { exact: true }).fill("ui-self-service");
+  await registerView.getByLabel("密码", { exact: true }).fill("UiSelfService123!");
+  await registerView.getByLabel("确认密码").fill("UiSelfService123!");
+  await registerView.getByRole("button", { name: "提交注册" }).click();
+  await expect(registerView.getByText("注册已提交，等待管理员启用。")).toBeVisible();
+  const registrationCode = await memberPage.locator("#registration-recovery-code").textContent();
+  expect(registrationCode).toMatch(/^(?:[a-f0-9]{8}-){7}[a-f0-9]{8}$/);
+  await memberPage.screenshot({ path: "test-results/registration-1280.png", fullPage: true });
+
+  const row = page.locator(".user-row").filter({ hasText: "ui-self-service" });
+  await page.getByRole("button", { name: "用户管理" }).click();
+  await expect(row).toContainText("待启用");
+  await row.getByRole("button", { name: "启用用户" }).click();
+  await expect(row).toContainText("已启用");
+
+  await memberPage.goto(`${preview.url}/login`);
+  const loginView = memberPage.locator("#login-view");
+  await loginView.getByLabel("用户名", { exact: true }).fill("ui-self-service");
+  await loginView.getByLabel("密码", { exact: true }).fill("UiSelfService123!");
+  await loginView.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(memberPage).toHaveURL(`${preview.url}/`);
+
+  await memberPage.getByRole("button", { name: "账户设置" }).click();
+  const accountDialog = memberPage.locator("#account-dialog");
+  await expect(accountDialog).toBeVisible();
+  await expect(accountDialog.locator("#account-username")).toHaveText("ui-self-service");
+  const recoveryForm = accountDialog.locator("#recovery-form");
+  await recoveryForm.getByLabel("当前密码").fill("UiSelfService123!");
+  await recoveryForm.getByRole("button", { name: "生成恢复码" }).click();
+  await expect(accountDialog.locator("#account-recovery-code")).toHaveText(/^(?:[a-f0-9]{8}-){7}[a-f0-9]{8}$/);
+  const recoveryCode = await accountDialog.locator("#account-recovery-code").textContent();
+  expect(recoveryCode).toMatch(/^(?:[a-f0-9]{8}-){7}[a-f0-9]{8}$/);
+  await memberPage.setViewportSize({ width: 390, height: 844 });
+  expect(await accountDialog.evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth)).toBe(true);
+  await memberPage.screenshot({ path: "test-results/account-390.png" });
+
+  const resetContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const resetPage = await resetContext.newPage();
+  await resetPage.goto(`${preview.url}/reset-password`);
+  await expect(resetPage).toHaveTitle("重置密码 | EasyDrop");
+  const resetView = resetPage.locator("#reset-view");
+  await resetView.getByLabel("用户名", { exact: true }).fill("ui-self-service");
+  await resetView.getByLabel("恢复码").fill(recoveryCode);
+  await resetView.getByLabel("新密码", { exact: true }).fill("UiRecoveredPass456!");
+  await resetView.getByLabel("确认新密码").fill("UiRecoveredPass456!");
+  await resetView.getByRole("button", { name: "重置密码" }).click();
+  await expect(resetPage.locator("#notice")).toHaveText("密码已重置，请返回登录");
+  await resetContext.close();
+
+  await memberPage.reload();
+  await expect(memberPage).toHaveURL(`${preview.url}/login`);
+  await memberPage.locator("#login-view").getByLabel("用户名", { exact: true }).fill("ui-self-service");
+  await memberPage.locator("#login-view").getByLabel("密码", { exact: true }).fill("UiRecoveredPass456!");
+  await memberPage.locator("#login-view").getByRole("button", { name: "登录", exact: true }).click();
+  await memberPage.getByRole("button", { name: "账户设置" }).click();
+  const passwordForm = memberPage.locator("#password-form");
+  await passwordForm.getByLabel("当前密码").fill("UiRecoveredPass456!");
+  await passwordForm.getByLabel("新密码", { exact: true }).fill("UiChangedPass789!");
+  await passwordForm.getByLabel("确认新密码").fill("UiChangedPass789!");
+  await passwordForm.getByRole("button", { name: "修改密码" }).click();
+  await expect(memberPage).toHaveURL(`${preview.url}/login`);
+
+  await memberPage.locator("#login-view").getByLabel("用户名", { exact: true }).fill("ui-self-service");
+  await memberPage.locator("#login-view").getByLabel("密码", { exact: true }).fill("UiChangedPass789!");
+  await memberPage.locator("#login-view").getByRole("button", { name: "登录", exact: true }).click();
+  await memberPage.getByRole("button", { name: "账户设置" }).click();
+  await memberPage.getByRole("button", { name: "注销账号" }).click();
+  const deleteDialog = memberPage.locator("#delete-account-dialog");
+  await deleteDialog.getByLabel("输入用户名确认").fill("ui-self-service");
+  await deleteDialog.getByLabel("当前密码").fill("UiChangedPass789!");
+  await deleteDialog.getByRole("button", { name: "确认注销" }).click();
+  await expect(memberPage).toHaveURL(`${preview.url}/login`);
+  await memberContext.close();
+
+  const closed = await context.request.patch(`${preview.url}/api/settings/registration`, {
+    headers: adminHeaders,
+    data: { enabled: false },
+  });
+  expect(closed.ok()).toBe(true);
 });
 
 test("editing during submit cannot send a second request or erase new input", async ({ page, context }) => {

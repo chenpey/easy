@@ -1,7 +1,7 @@
-import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink } from "lucide";
+import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound } from "lucide";
 import QRCode from "qrcode";
 
-const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink };
+const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound };
 const renderIcons = () => createIcons({ icons });
 const $ = (id) => document.getElementById(id);
 const isLogin = document.body.dataset.page === "login";
@@ -24,7 +24,7 @@ const activeUploads = new Set();
 const activeRequests = new Set();
 const busyButtons = new WeakSet();
 const copyFeedbackTimers = new WeakMap();
-const uploadStorageKey = "easydrop/resumable-uploads/v1";
+const uploadStorageKey = () => `easydrop/resumable-uploads/v2/${session?.user.id || "anonymous"}`;
 
 class UploadPaused extends Error {}
 
@@ -53,7 +53,7 @@ function apiError(method, path, status, body) {
   const error = new Error(message);
   error.status = status;
   error.details = `${method} ${path}\nHTTP ${status}\n${body}`;
-  if (status === 401 && !isLogin) expireSession();
+  if (status === 401 && message === "Authentication required." && !isLogin) expireSession();
   return error;
 }
 
@@ -149,7 +149,8 @@ function resetUserForm() {
 }
 
 async function loadUsers() {
-  const data = await api("/api/users");
+  const [data, authConfig] = await Promise.all([api("/api/users"), api("/api/auth/config")]);
+  $("registration-enabled").checked = authConfig.registrationEnabled;
   const list = $("user-list");
   list.replaceChildren();
   for (const user of data.users) {
@@ -162,7 +163,8 @@ async function loadUsers() {
     name.textContent = user.username;
     const detail = document.createElement("div");
     detail.className = "user-detail muted";
-    detail.textContent = `${user.role === "admin" ? "管理员" : "用户"} · ${user.enabled ? "已启用" : "已禁用"}`;
+    const state = user.pendingApproval ? "待启用" : user.enabled ? "已启用" : "已禁用";
+    detail.textContent = `${user.role === "admin" ? "管理员" : "用户"} · ${state}`;
     meta.append(name, detail);
     const actions = document.createElement("div");
     actions.className = "item-actions";
@@ -217,6 +219,92 @@ function showCopyFeedback(button, status, popover) {
 async function copy(value, button, status) {
   await navigator.clipboard.writeText(value);
   showCopyFeedback(button, status || $("copy-notice"), !status);
+}
+
+function requireMatchingPasswords(passwordId, confirmationId) {
+  if ($(passwordId).value !== $(confirmationId).value) throw new Error("两次输入的密码不一致");
+}
+
+async function initializeAuth() {
+  const path = location.pathname;
+  const view = path === "/register" ? "register" : path === "/reset-password" ? "reset" : "login";
+  for (const name of ["login", "register", "reset"]) $(`${name}-view`).hidden = name !== view;
+  document.title = `${view === "register" ? "注册" : view === "reset" ? "重置密码" : "登录"} | EasyDrop`;
+  for (const name of ["login", "register"]) {
+    const tab = $(`${name}-tab`);
+    if (name === view) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  }
+
+  const authConfig = await api("/api/auth/config");
+  $("register-tab").hidden = !authConfig.registrationEnabled;
+  if (view === "register" && !authConfig.registrationEnabled) {
+    $("register-form").hidden = true;
+    $("registration-closed").hidden = false;
+  }
+
+  $("login-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    busy(event.submitter, async () => {
+      await api("/api/login", {
+        method: "POST",
+        data: { username: $("username").value, password: $("password").value },
+      });
+      $("password").value = "";
+      const downloadPath = requestedDownloadPath();
+      if (!downloadPath) {
+        location.replace("/");
+        return;
+      }
+      notice("登录成功，正在下载文件");
+      const link = document.createElement("a");
+      link.href = downloadPath;
+      link.download = "";
+      link.hidden = true;
+      document.body.append(link);
+      link.click();
+      setTimeout(() => location.replace("/"), 500);
+    });
+  });
+
+  $("register-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    busy(event.submitter, async () => {
+      requireMatchingPasswords("register-password", "register-password-confirm");
+      const result = await api("/api/register", {
+        method: "POST",
+        data: {
+          username: $("register-username").value,
+          password: $("register-password").value,
+        },
+      });
+      $("register-form").reset();
+      $("register-form").hidden = true;
+      $("registration-recovery-code").textContent = result.recoveryCode;
+      $("registration-result").hidden = false;
+      notice("");
+    });
+  });
+  $("copy-registration-code").addEventListener("click", () => busy($("copy-registration-code"), () =>
+    copy($("registration-recovery-code").textContent, $("copy-registration-code"), $("registration-copy-notice"))));
+
+  $("reset-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    busy(event.submitter, async () => {
+      requireMatchingPasswords("reset-password", "reset-password-confirm");
+      await api("/api/password/reset", {
+        method: "POST",
+        data: {
+          username: $("reset-username").value,
+          recoveryCode: $("recovery-code").value,
+          newPassword: $("reset-password").value,
+        },
+      });
+      $("reset-form").reset();
+      $("reset-form").hidden = true;
+      notice("密码已重置，请返回登录");
+    });
+  });
 }
 
 function temporaryShareActive(item) {
@@ -410,7 +498,7 @@ function schedulePoll() {
 
 function savedUploads() {
   try {
-    const records = JSON.parse(localStorage.getItem(uploadStorageKey) || "[]");
+    const records = JSON.parse(localStorage.getItem(uploadStorageKey()) || "[]");
     const oldest = Date.now() - 7 * 86400 * 1000;
     return Array.isArray(records) ? records.filter((record) =>
       typeof record.key === "string" && typeof record.name === "string" &&
@@ -434,7 +522,7 @@ function saveUpload(entry) {
       fileFingerprint: entry.fileFingerprint || null,
       updatedAt: Date.now(),
     });
-    localStorage.setItem(uploadStorageKey, JSON.stringify(records));
+    localStorage.setItem(uploadStorageKey(), JSON.stringify(records));
   } catch {
     // Upload still resumes within this page when persistent browser storage is unavailable.
   }
@@ -442,7 +530,7 @@ function saveUpload(entry) {
 
 function forgetUpload(key) {
   try {
-    localStorage.setItem(uploadStorageKey, JSON.stringify(savedUploads().filter((record) => record.key !== key)));
+    localStorage.setItem(uploadStorageKey(), JSON.stringify(savedUploads().filter((record) => record.key !== key)));
   } catch {
     // Expired server-side upload state is cleaned independently.
   }
@@ -778,6 +866,71 @@ async function initializeApp() {
     await api("/api/logout", { method: "POST" });
     expireSession();
   }));
+  $("account-open").addEventListener("click", () => {
+    $("password-form").reset();
+    $("recovery-form").reset();
+    $("account-recovery-result").hidden = true;
+    $("account-recovery-code").textContent = "";
+    $("account-recovery-notice").textContent = "";
+    $("account-username").textContent = session.user.username;
+    $("recovery-status").textContent = session.user.hasRecoveryCode
+      ? "已设置恢复码"
+      : "尚未设置恢复码";
+    $("recovery-submit-label").textContent = session.user.hasRecoveryCode ? "重新生成恢复码" : "生成恢复码";
+    $("account-dialog").showModal();
+  });
+  $("account-close").addEventListener("click", () => $("account-dialog").close());
+  $("password-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    busy(event.submitter, async () => {
+      requireMatchingPasswords("new-password", "new-password-confirm");
+      await api("/api/account/password", {
+        method: "POST",
+        data: {
+          currentPassword: $("current-password").value,
+          newPassword: $("new-password").value,
+        },
+      });
+      expireSession();
+    });
+  });
+  $("recovery-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    busy(event.submitter, async () => {
+      const result = await api("/api/account/recovery-code", {
+        method: "POST",
+        data: { currentPassword: $("recovery-current-password").value },
+      });
+      $("recovery-form").reset();
+      $("account-recovery-code").textContent = result.recoveryCode;
+      $("account-recovery-result").hidden = false;
+      $("recovery-status").textContent = "恢复码已更新";
+      $("recovery-submit-label").textContent = "重新生成恢复码";
+      session.user.hasRecoveryCode = true;
+    });
+  });
+  $("copy-account-recovery").addEventListener("click", () => busy($("copy-account-recovery"), () =>
+    copy($("account-recovery-code").textContent, $("copy-account-recovery"), $("account-recovery-notice"))));
+  $("delete-account-open").addEventListener("click", () => {
+    $("delete-account-form").reset();
+    $("account-dialog").close();
+    $("delete-account-dialog").showModal();
+  });
+  $("delete-account-close").addEventListener("click", () => $("delete-account-dialog").close());
+  $("delete-account-cancel").addEventListener("click", () => $("delete-account-dialog").close());
+  $("delete-account-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    busy(event.submitter, async () => {
+      await api("/api/account", {
+        method: "DELETE",
+        data: {
+          username: $("delete-account-username").value,
+          currentPassword: $("delete-account-password").value,
+        },
+      });
+      expireSession();
+    });
+  });
   $("site-url-preview").textContent = location.origin;
   QRCode.toCanvas($("site-qr-preview"), location.origin, { width: 168, margin: 1 }).catch((error) => {
     console.error("Site QR preview generation failed:", error);
@@ -824,6 +977,20 @@ async function initializeApp() {
     $("users-dialog").showModal();
   }));
   $("users-close").addEventListener("click", () => $("users-dialog").close());
+  $("registration-enabled").addEventListener("change", async () => {
+    const input = $("registration-enabled");
+    const enabled = input.checked;
+    input.disabled = true;
+    try {
+      await api("/api/settings/registration", { method: "PATCH", data: { enabled } });
+      notice(enabled ? "已开放自助注册" : "已关闭自助注册");
+    } catch (error) {
+      input.checked = !enabled;
+      report(error);
+    } finally {
+      input.disabled = false;
+    }
+  });
   $("user-cancel").addEventListener("click", resetUserForm);
   $("user-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -861,28 +1028,5 @@ async function initializeApp() {
 }
 
 renderIcons();
-if (isLogin) {
-  $("login-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    busy(event.submitter, async () => {
-      await api("/api/login", {
-        method: "POST",
-        data: { username: $("username").value, password: $("password").value },
-      });
-      $("password").value = "";
-      const downloadPath = requestedDownloadPath();
-      if (!downloadPath) {
-        location.replace("/");
-        return;
-      }
-      notice("登录成功，正在下载文件");
-      const link = document.createElement("a");
-      link.href = downloadPath;
-      link.download = "";
-      link.hidden = true;
-      document.body.append(link);
-      link.click();
-      setTimeout(() => location.replace("/"), 500);
-    });
-  });
-} else initializeApp().catch(report);
+if (isLogin) initializeAuth().catch(report);
+else initializeApp().catch(report);

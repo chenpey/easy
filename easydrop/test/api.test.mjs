@@ -45,6 +45,20 @@ async function signIn() {
   return response;
 }
 
+async function credentialsFor(name, secret) {
+  const response = await jsonRequest("/api/login", { username: name, password: secret });
+  assert.equal(response.status, 200, await response.clone().text());
+  const userCookie = response.headers.get("Set-Cookie").split(";")[0];
+  const sessionResponse = await request("/api/session", { headers: { Cookie: userCookie } });
+  const userSession = await sessionResponse.json();
+  return { cookie: userCookie, csrf: userSession.csrfToken, session: userSession };
+}
+
+function useCredentials(credentials) {
+  cookie = credentials.cookie;
+  csrf = credentials.csrf;
+}
+
 before(async () => {
   const initialAdmin = await createInitialAdmin(username, password);
   const bundle = await build({ entryPoints: ["src/worker.js"], bundle: true, write: false, format: "esm", platform: "browser" });
@@ -67,9 +81,10 @@ before(async () => {
 
 beforeEach(async () => {
   await db.batch(["DELETE FROM file_shares", "DELETE FROM multipart_parts", "DELETE FROM multipart_uploads", "DELETE FROM items",
-    "DELETE FROM sessions", "DELETE FROM login_attempts", "DELETE FROM operations",
+    "DELETE FROM sessions", "DELETE FROM login_attempts", "DELETE FROM account_attempts", "DELETE FROM operations",
     "DELETE FROM users WHERE username != 'admin'",
-    "UPDATE app_state SET revision = 0, sweep_cursor = ''"].map((sql) => db.prepare(sql)));
+    "UPDATE users SET enabled = 1, recovery_code_hash = NULL, recovery_code_created_at = NULL, approved_at = created_at, deletion_requested_at = NULL, content_revision = 0 WHERE username = 'admin'",
+    "UPDATE app_state SET revision = 0, sweep_cursor = '', self_registration_enabled = 0"].map((sql) => db.prepare(sql)));
   const objects = await bucket.list();
   if (objects.objects.length) await bucket.delete(objects.objects.map((item) => item.key));
   cookie = "";
@@ -144,9 +159,11 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
     assert.equal((await request(path, { method: "POST" })).status, 401, path);
   }
   assert.equal((await request("/api/history/arbitrary", { method: "DELETE" })).status, 401);
-  const login = await request("/login");
-  assert.equal(login.status, 200);
-  assert.match(await login.text(), /<link rel="icon" href="\/favicon\.ico" type="image\/svg\+xml">/);
+  for (const path of ["/login", "/register", "/reset-password"]) {
+    const page = await request(path);
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /<link rel="icon" href="\/favicon\.ico" type="image\/svg\+xml">/);
+  }
   assert.equal((await request("/assets/app.js")).status, 200);
   const favicon = await request("/favicon.ico");
   assert.equal(favicon.status, 200);
@@ -208,6 +225,10 @@ test("all mutations require both matching origin and CSRF token", async () => {
     ["POST", "/api/logout"], ["DELETE", "/api/history/anything"],
     ["POST", `/api/history/${crypto.randomUUID()}/share`],
     ["DELETE", `/api/history/${crypto.randomUUID()}/share`],
+    ["PATCH", "/api/settings/registration"],
+    ["POST", "/api/account/password"],
+    ["POST", "/api/account/recovery-code"],
+    ["DELETE", "/api/account"],
   ]) {
     assert.equal((await request(path, { method, authenticated: true, headers: { "X-CSRF-Token": "wrong" } })).status, 403);
     assert.equal((await request(path, { method, authenticated: true, headers: { Origin: "https://evil.test" } })).status, 403);
@@ -269,7 +290,7 @@ test("administrators manage users and every account change revokes active sessio
     body: JSON.stringify({ enabled: true }), headers: { "Content-Type": "application/json" },
   })).status, 200);
   assert.equal((await jsonRequest("/api/login", { username: "member2", password: "ChangedPass456!" })).status, 200);
-  assert.equal((await request(`/api/users/${member.id}`, { method: "DELETE", authenticated: true })).status, 200);
+  assert.equal((await request(`/api/users/${member.id}`, { method: "DELETE", authenticated: true })).status, 202);
   assert.equal((await jsonRequest("/api/login", { username: "member2", password: "ChangedPass456!" })).status, 401);
 
   const admin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
@@ -278,6 +299,206 @@ test("administrators manage users and every account change revokes active sessio
     body: JSON.stringify({ enabled: false }), headers: { "Content-Type": "application/json" },
   })).status, 409);
   assert.equal((await request(`/api/users/${admin.id}`, { method: "DELETE", authenticated: true })).status, 409);
+});
+
+test("self-registration is gated, pending approval and supports one-time recovery", async () => {
+  assert.deepEqual(await (await request("/api/auth/config")).json(), { registrationEnabled: false });
+  assert.equal((await jsonRequest("/api/register", {
+    username: "new-member", password: "NewMemberPass123!",
+  })).status, 403);
+
+  await signIn();
+  const opened = await request("/api/settings/registration", {
+    method: "PATCH",
+    authenticated: true,
+    body: JSON.stringify({ enabled: true }),
+    headers: { "Content-Type": "application/json" },
+  });
+  assert.equal(opened.status, 200);
+  assert.deepEqual(await (await request("/api/auth/config")).json(), { registrationEnabled: true });
+  await db.prepare("INSERT INTO account_attempts VALUES (?, ?, 5)")
+    .bind(`register:ip:${await digest("192.0.2.55")}`, Math.floor(Date.now() / 1000)).run();
+  const blocked = await jsonRequest("/api/register", {
+    username: "rate-blocked", password: "NewMemberPass123!",
+  }, false, { "CF-Connecting-IP": "192.0.2.55" });
+  assert.equal(blocked.status, 429);
+  assert.equal(await db.prepare("SELECT * FROM account_attempts WHERE key = 'register:global'").first(), null);
+  assert.equal((await jsonRequest("/api/register", {
+    username: "cross-origin", password: "NewMemberPass123!",
+  }, false, { Origin: "https://evil.test" })).status, 403);
+
+  const registered = await jsonRequest("/api/register", {
+    username: "New-Member",
+    password: "NewMemberPass123!",
+    role: "admin",
+    enabled: true,
+  });
+  assert.equal(registered.status, 201, await registered.clone().text());
+  const registration = await registered.json();
+  assert.equal(registration.pendingApproval, true);
+  assert.match(registration.recoveryCode, /^(?:[a-f0-9]{8}-){7}[a-f0-9]{8}$/);
+  const stored = await db.prepare("SELECT * FROM users WHERE username = 'new-member'").first();
+  assert.equal(stored.role, "user");
+  assert.equal(stored.enabled, 0);
+  assert.equal(stored.approved_at, null);
+  assert.equal(stored.recovery_code_hash, await digest(registration.recoveryCode.replaceAll("-", "")));
+  assert.equal((await jsonRequest("/api/login", {
+    username: "new-member", password: "NewMemberPass123!",
+  })).status, 401);
+
+  const users = await (await request("/api/users", { authenticated: true })).json();
+  const pending = users.users.find((user) => user.username === "new-member");
+  assert.equal(pending.pendingApproval, true);
+  assert.equal((await request(`/api/users/${pending.id}`, {
+    method: "PATCH",
+    authenticated: true,
+    body: JSON.stringify({ enabled: true }),
+    headers: { "Content-Type": "application/json" },
+  })).status, 200);
+  const memberCredentials = await credentialsFor("new-member", "NewMemberPass123!");
+
+  assert.equal((await jsonRequest("/api/password/reset", {
+    username: "new-member",
+    recoveryCode: "0".repeat(64),
+    newPassword: "RecoveredPass456!",
+  })).status, 401);
+  assert.equal((await jsonRequest("/api/password/reset", {
+    username: "new-member",
+    recoveryCode: registration.recoveryCode,
+    newPassword: "RecoveredPass456!",
+  }, false, { Origin: "https://evil.test" })).status, 403);
+  const reset = await jsonRequest("/api/password/reset", {
+    username: "new-member",
+    recoveryCode: registration.recoveryCode,
+    newPassword: "RecoveredPass456!",
+  });
+  assert.equal(reset.status, 200, await reset.clone().text());
+  assert.equal((await request("/api/history", { headers: { Cookie: memberCredentials.cookie } })).status, 401);
+  assert.equal((await jsonRequest("/api/login", {
+    username: "new-member", password: "NewMemberPass123!",
+  })).status, 401);
+  assert.equal((await jsonRequest("/api/login", {
+    username: "new-member", password: "RecoveredPass456!",
+  })).status, 200);
+  assert.equal((await jsonRequest("/api/password/reset", {
+    username: "new-member",
+    recoveryCode: registration.recoveryCode,
+    newPassword: "AnotherPass789!",
+  })).status, 401);
+});
+
+test("users manage credentials and account deletion purges their private content", async () => {
+  await signIn();
+  assert.equal((await request("/api/account", {
+    method: "DELETE",
+    authenticated: true,
+    body: JSON.stringify({ username, currentPassword: password }),
+    headers: { "Content-Type": "application/json" },
+  })).status, 409);
+
+  const created = await jsonRequest("/api/users", {
+    username: "self-service", password: "SelfServicePass123!", role: "user",
+  }, true);
+  const member = (await created.json()).user;
+  useCredentials(await credentialsFor("self-service", "SelfServicePass123!"));
+
+  assert.equal((await jsonRequest("/api/account/recovery-code", {
+    currentPassword: "WrongPassword123!",
+  }, true)).status, 401);
+  assert.equal((await request("/api/history", { authenticated: true })).status, 200);
+  const recoveryResponse = await jsonRequest("/api/account/recovery-code", {
+    currentPassword: "SelfServicePass123!",
+  }, true);
+  assert.equal(recoveryResponse.status, 201);
+  const recoveryCode = (await recoveryResponse.json()).recoveryCode;
+  assert.equal(
+    (await db.prepare("SELECT recovery_code_hash FROM users WHERE id = ?").bind(member.id).first()).recovery_code_hash,
+    await digest(recoveryCode.replaceAll("-", "")),
+  );
+
+  assert.equal((await jsonRequest("/api/account/password", {
+    currentPassword: "WrongPassword123!", newPassword: "ChangedSelfPass456!",
+  }, true)).status, 401);
+  assert.equal((await request("/api/history", { authenticated: true })).status, 200);
+  const changed = await jsonRequest("/api/account/password", {
+    currentPassword: "SelfServicePass123!", newPassword: "ChangedSelfPass456!",
+  }, true);
+  assert.equal(changed.status, 200);
+  assert.match(changed.headers.get("Set-Cookie"), /Max-Age=0/);
+  assert.equal((await request("/api/history", { authenticated: true })).status, 401);
+  assert.equal(
+    (await db.prepare("SELECT recovery_code_hash FROM users WHERE id = ?").bind(member.id).first()).recovery_code_hash,
+    null,
+  );
+
+  useCredentials(await credentialsFor("self-service", "ChangedSelfPass456!"));
+  const uploaded = await uploadFile("private-delete.txt", "private contents");
+  const fileId = (await uploaded.json()).id;
+  await jsonRequest("/api/text", { text: "private text" }, true);
+  assert.equal((await request("/api/account", {
+    method: "DELETE",
+    authenticated: true,
+    body: JSON.stringify({ username: "wrong-name", currentPassword: "ChangedSelfPass456!" }),
+    headers: { "Content-Type": "application/json" },
+  })).status, 400);
+  assert.equal((await request("/api/account", {
+    method: "DELETE",
+    authenticated: true,
+    body: JSON.stringify({ username: "self-service", currentPassword: "WrongPassword123!" }),
+    headers: { "Content-Type": "application/json" },
+  })).status, 401);
+  assert.equal((await request("/api/history", { authenticated: true })).status, 200);
+  const deleted = await request("/api/account", {
+    method: "DELETE",
+    authenticated: true,
+    body: JSON.stringify({ username: "self-service", currentPassword: "ChangedSelfPass456!" }),
+    headers: { "Content-Type": "application/json" },
+  });
+  assert.equal(deleted.status, 202);
+  assert.match(deleted.headers.get("Set-Cookie"), /Max-Age=0/);
+  assert.equal((await request("/api/history", { authenticated: true })).status, 401);
+  await maintenance({ DB: db, FILES: bucket });
+  assert.equal(await db.prepare("SELECT id FROM users WHERE id = ?").bind(member.id).first(), null);
+  assert.equal(await bucket.head(`files/${fileId}`), null);
+});
+
+test("user tenants isolate history, files, mutations and idempotency keys", async () => {
+  await signIn();
+  const adminCredentials = { cookie, csrf };
+  const created = await jsonRequest("/api/users", {
+    username: "isolated-user", password: "IsolatedUserPass123!", role: "user",
+  }, true);
+  assert.equal(created.status, 201);
+  const sharedKey = crypto.randomUUID();
+  assert.equal((await jsonRequest("/api/text", {
+    text: "admin private text",
+  }, true, { "Idempotency-Key": sharedKey })).status, 201);
+  const adminFile = await uploadFile("admin-private.png", "admin bytes", "image/png");
+  const adminFileId = (await adminFile.json()).id;
+
+  useCredentials(await credentialsFor("isolated-user", "IsolatedUserPass123!"));
+  let history = await (await request("/api/history", { authenticated: true })).json();
+  assert.equal(history.items.length, 0);
+  assert.equal((await request(fileDownloadPath(adminFileId, "admin-private.png"), { authenticated: true })).status, 404);
+  assert.equal((await request(`/previews/${adminFileId}`, { authenticated: true })).status, 404);
+  assert.equal((await jsonRequest(`/api/history/${adminFileId}/share`, { hours: 1 }, true)).status, 404);
+  assert.equal((await request(`/api/history/${adminFileId}`, { method: "DELETE", authenticated: true })).status, 404);
+  assert.equal((await jsonRequest("/api/text", {
+    text: "member private text",
+  }, true, { "Idempotency-Key": sharedKey })).status, 201);
+  history = await (await request("/api/history", { authenticated: true })).json();
+  assert.deepEqual(history.items.map((item) => item.content), ["member private text"]);
+
+  useCredentials(adminCredentials);
+  history = await (await request("/api/history", { authenticated: true })).json();
+  assert.equal(history.items.some((item) => item.content === "admin private text"), true);
+  assert.equal(history.items.some((item) => item.content === "member private text"), false);
+
+  useCredentials(await credentialsFor("isolated-user", "IsolatedUserPass123!"));
+  await request("/api/clear_history", { method: "POST", authenticated: true });
+  useCredentials(adminCredentials);
+  history = await (await request("/api/history", { authenticated: true })).json();
+  assert.equal(history.items.some((item) => item.content === "admin private text"), true);
 });
 
 test("login rate limits survive parallel requests and apply globally", async () => {
@@ -297,6 +518,7 @@ test("login rate limits survive parallel requests and apply globally", async () 
 
 test("text validation, preservation, pagination and revisions", async () => {
   await signIn();
+  const admin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
   for (const text of ["", "   ", null, 123]) assert.equal((await jsonRequest("/api/text", { text }, true)).status, 400);
   assert.equal((await jsonRequest("/api/text", { text: "a".repeat(131073) }, true)).status, 413);
   const text = "  <script>alert('text')</script>\n中文内容  ";
@@ -305,8 +527,8 @@ test("text validation, preservation, pagination and revisions", async () => {
   assert.equal(history.items[0].content, text);
   assert.equal(history.revision, 1);
   await db.batch(Array.from({ length: 53 }, (_, i) => db.prepare(
-    "INSERT INTO items(id, type, content, state, created_at) VALUES (?, 'text', ?, 'ready', 1)",
-  ).bind(crypto.randomUUID(), `page-${i}`)));
+    "INSERT INTO items(id, owner_user_id, type, content, state, created_at) VALUES (?, ?, 'text', ?, 'ready', 1)",
+  ).bind(crypto.randomUUID(), admin.id, `page-${i}`)));
   history = await (await request("/api/history", { authenticated: true })).json();
   assert.equal(history.items.length, 8);
   const seen = [...history.items];
@@ -508,9 +730,11 @@ test("image previews are authenticated, inline and limited to safe raster types"
   assert.equal((await request(`/previews/${id}`, { authenticated: true })).status, 404);
 
   const legacyId = crypto.randomUUID();
+  const admin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
   await db.prepare(
-    "INSERT INTO items(id, type, name, size, state, created_at) VALUES (?, 'file', 'legacy.webp', 1, 'ready', 1)",
-  ).bind(legacyId).run();
+    `INSERT INTO items(id, owner_user_id, type, name, size, state, created_at)
+     VALUES (?, ?, 'file', 'legacy.webp', 1, 'ready', 1)`,
+  ).bind(legacyId, admin.id).run();
   await bucket.put(`files/${legacyId}`, Buffer.from([0]));
   const legacyHistory = await (await request("/api/history", { authenticated: true })).json();
   assert.equal(legacyHistory.items.find((item) => item.id === legacyId).media_type, "image/webp");
@@ -584,6 +808,7 @@ test("invalid filenames and oversized uploads never publish history", async () =
 
 test("delete and clear revoke downloads immediately and cleanup removes R2 objects", async () => {
   await signIn();
+  const admin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
   const { id } = await (await uploadFile("delete.txt")).json();
   const response = await request(`/api/history/${id}`, { method: "DELETE", authenticated: true });
   assert.equal(response.status, 202);
@@ -593,8 +818,9 @@ test("delete and clear revoke downloads immediately and cleanup removes R2 objec
   await uploadFile("clear.txt");
   await jsonRequest("/api/text", { text: "clear text" }, true);
   const pendingId = crypto.randomUUID();
-  await db.prepare("INSERT INTO items(id, type, state, created_at) VALUES (?, 'file', 'pending', ?)")
-    .bind(pendingId, Math.floor(Date.now() / 1000)).run();
+  await db.prepare(
+    "INSERT INTO items(id, owner_user_id, type, state, created_at) VALUES (?, ?, 'file', 'pending', ?)",
+  ).bind(pendingId, admin.id, Math.floor(Date.now() / 1000)).run();
   assert.equal((await request("/api/clear_history", { method: "POST", authenticated: true })).status, 202);
   assert.equal((await (await request("/api/history", { authenticated: true })).json()).items.length, 0);
   // A pending upload cannot be published once clear has marked it (or removed it).
@@ -609,17 +835,27 @@ test("expired sessions, login counters and abandoned uploads are cleaned", async
   const admin = await db.prepare("SELECT id, auth_version FROM users WHERE username = ?").bind(username).first();
   await db.prepare("UPDATE sessions SET expires_at = 1").run();
   const id = crypto.randomUUID();
-  await db.prepare("INSERT INTO items(id, type, state, created_at) VALUES (?, 'file', 'pending', 1)").bind(id).run();
+  await db.prepare(
+    "INSERT INTO items(id, owner_user_id, type, state, created_at) VALUES (?, ?, 'file', 'pending', 1)",
+  ).bind(id, admin.id).run();
   await bucket.put(`files/${id}`, "partial");
   const multipartId = crypto.randomUUID();
   const operationKey = crypto.randomUUID();
   const multipart = await bucket.createMultipartUpload(`files/${multipartId}`);
   await db.batch([
-    db.prepare("INSERT INTO items(id, type, name, size, state, created_at) VALUES (?, 'file', 'expired.bin', 1, 'pending', 1)")
-      .bind(multipartId),
-    db.prepare("INSERT INTO operations VALUES (?, 'expired', ?, 'pending', 1)").bind(operationKey, multipartId),
-    db.prepare("INSERT INTO multipart_uploads VALUES (?, ?, ?, 5242880, 1, 'uploading', 1)")
-      .bind(multipartId, multipart.uploadId, operationKey),
+    db.prepare(
+      `INSERT INTO items(id, owner_user_id, type, name, size, state, created_at)
+       VALUES (?, ?, 'file', 'expired.bin', 1, 'pending', 1)`,
+    ).bind(multipartId, admin.id),
+    db.prepare(
+      `INSERT INTO operations(user_id, request_key, fingerprint, item_id, state, created_at)
+       VALUES (?, ?, 'expired', ?, 'pending', 1)`,
+    ).bind(admin.id, operationKey, multipartId),
+    db.prepare(
+      `INSERT INTO multipart_uploads(
+        item_id, user_id, upload_id, operation_key, chunk_size, total_parts, state, updated_at
+       ) VALUES (?, ?, ?, ?, 5242880, 1, 'uploading', 1)`,
+    ).bind(multipartId, admin.id, multipart.uploadId, operationKey),
   ]);
   await db.prepare("INSERT INTO sessions VALUES ('old', ?, 'csrf', ?, 1)").bind(admin.id, admin.auth_version).run();
   await db.prepare("INSERT INTO login_attempts VALUES ('old', 1, 1)").run();
@@ -701,9 +937,11 @@ test("no-op deletes and clears do not change revision", async () => {
 });
 
 test("cleanup drains configured batches without R2 calls for text items", async () => {
+  const admin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
   await db.batch(Array.from({ length: 120 }, () => db.prepare(
-    "INSERT INTO items(id, type, content, state, created_at) VALUES (?, 'text', 'old', 'deleting', 1)",
-  ).bind(crypto.randomUUID())));
+    `INSERT INTO items(id, owner_user_id, type, content, state, created_at)
+     VALUES (?, ?, 'text', 'old', 'deleting', 1)`,
+  ).bind(crypto.randomUUID(), admin.id)));
   let deletes = 0;
   await maintenance({
     DB: db, CLEANUP_BATCHES: "4",
@@ -718,8 +956,11 @@ test("failed operations can be atomically retried while pending operations remai
   const key = crypto.randomUUID();
   const oldId = crypto.randomUUID();
   const fingerprint = await digest(JSON.stringify(["text", "retry after failure"]));
-  await db.prepare("INSERT INTO operations VALUES (?, ?, ?, 'pending', ?)")
-    .bind(key, fingerprint, oldId, Math.floor(Date.now() / 1000)).run();
+  const admin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
+  await db.prepare(
+    `INSERT INTO operations(user_id, request_key, fingerprint, item_id, state, created_at)
+     VALUES (?, ?, ?, ?, 'pending', ?)`,
+  ).bind(admin.id, key, fingerprint, oldId, Math.floor(Date.now() / 1000)).run();
   const send = () => jsonRequest("/api/text", { text: "retry after failure" }, true, { "Idempotency-Key": key });
   assert.equal((await send()).status, 409);
   await db.prepare("UPDATE operations SET state = 'failed' WHERE request_key = ?").bind(key).run();

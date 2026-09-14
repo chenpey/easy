@@ -67,6 +67,19 @@ function parseVerifier(value) {
   return verifier;
 }
 
+export async function verifyStoredPassword(password, value) {
+  let verifier = DUMMY_VERIFIER;
+  let valid = false;
+  try {
+    verifier = parseVerifier(value);
+    valid = true;
+  } catch {
+    // Invalid stored verifiers use the same expensive comparison path.
+  }
+  const matches = await verifyPassword(typeof password === "string" ? password : "", verifier);
+  return valid && matches;
+}
+
 export async function createInitialAdmin(username, password) {
   return JSON.stringify({
     username: normalizeUsername(username),
@@ -105,6 +118,11 @@ export function configuration(env) {
     window: number("LOGIN_WINDOW_SECONDS", 60, 86400),
     ipLimit: number("LOGIN_IP_LIMIT", 1, 1000),
     globalLimit: number("LOGIN_GLOBAL_LIMIT", 1, 10000),
+    accountWindow: number("ACCOUNT_ACTION_WINDOW_SECONDS", 60, 86400),
+    registrationIpLimit: number("REGISTRATION_IP_LIMIT", 1, 1000),
+    registrationGlobalLimit: number("REGISTRATION_GLOBAL_LIMIT", 1, 10000),
+    resetIpLimit: number("PASSWORD_RESET_IP_LIMIT", 1, 1000),
+    resetGlobalLimit: number("PASSWORD_RESET_GLOBAL_LIMIT", 1, 10000),
     pageSize: number("HISTORY_PAGE_SIZE", 1, 50),
     cleanupBatches: number("CLEANUP_BATCHES", 1, 8),
   };
@@ -140,15 +158,18 @@ export async function getSession(request, env, ttl) {
   const timestamp = now();
   const tokenHash = await digest(token);
   const session = await env.DB.prepare(
-    `SELECT s.token_hash, s.user_id, s.csrf_token, s.expires_at, u.username, u.role, u.auth_version, a.revision
-     FROM sessions s JOIN users u ON u.id = s.user_id CROSS JOIN app_state a
-     WHERE a.id = 1 AND s.token_hash = ? AND s.expires_at > ? AND s.auth_version = u.auth_version AND u.enabled = 1`,
+    `SELECT s.token_hash, s.user_id, s.csrf_token, s.expires_at, u.username, u.role, u.auth_version,
+      u.content_revision AS revision, u.recovery_code_hash IS NOT NULL AS has_recovery_code
+     FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.token_hash = ? AND s.expires_at > ? AND s.auth_version = u.auth_version
+      AND u.enabled = 1 AND u.deletion_requested_at IS NULL`,
   ).bind(tokenHash, timestamp).first();
   if (!session) return null;
   const expiresAt = timestamp + ttl;
   const renewed = await env.DB.prepare(
     `UPDATE sessions SET expires_at = ? WHERE token_hash = ? AND user_id = ? AND auth_version = ?
-     AND EXISTS (SELECT 1 FROM users WHERE id = ? AND enabled = 1 AND auth_version = ?)`,
+     AND EXISTS (SELECT 1 FROM users
+      WHERE id = ? AND enabled = 1 AND auth_version = ? AND deletion_requested_at IS NULL)`,
   ).bind(expiresAt, tokenHash, session.user_id, session.auth_version, session.user_id, session.auth_version).run();
   if (!renewed.meta.changes) return null;
   return { ...session, expires_at: expiresAt, token };
@@ -219,28 +240,26 @@ export async function login(request, env, config) {
     }
   }
   let user = await env.DB.prepare(
-    "SELECT id, username, password_verifier, role, enabled, auth_version FROM users WHERE username = ?",
+    `SELECT id, username, password_verifier, role, enabled, auth_version FROM users
+     WHERE username = ? AND deletion_requested_at IS NULL`,
   ).bind(username).first();
   if (!user && username === config.initialAdmin.username) {
     const createdAt = now();
     await env.DB.prepare(
-      `INSERT INTO users(id, username, password_verifier, role, enabled, auth_version, created_at, updated_at)
-       SELECT ?, ?, ?, 'admin', 1, 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)`,
+      `INSERT INTO users(
+        id, username, password_verifier, role, enabled, auth_version, created_at, updated_at, approved_at
+       )
+       SELECT ?, ?, ?, 'admin', 1, 1, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)`,
     ).bind(
-      crypto.randomUUID(), username, JSON.stringify(config.initialAdmin.verifier), createdAt, createdAt,
+      crypto.randomUUID(), username, JSON.stringify(config.initialAdmin.verifier), createdAt, createdAt, createdAt,
     ).run();
     user = await env.DB.prepare(
-      "SELECT id, username, password_verifier, role, enabled, auth_version FROM users WHERE username = ?",
+      `SELECT id, username, password_verifier, role, enabled, auth_version FROM users
+       WHERE username = ? AND deletion_requested_at IS NULL`,
     ).bind(username).first();
   }
-  let verifier = DUMMY_VERIFIER;
-  try {
-    if (user) verifier = JSON.parse(user.password_verifier);
-  } catch { /* Invalid stored verifier fails authentication below. */ }
-  const verifierValid = verifier.version === VERIFIER_VERSION && verifier.iterations === ITERATIONS &&
-    /^[a-f0-9]{64}$/.test(verifier.salt || "") && /^[a-f0-9]{64}$/.test(verifier.proof || "");
-  const passwordMatches = await verifyPassword(data.password, verifierValid ? verifier : DUMMY_VERIFIER);
-  if (!user?.enabled || !verifierValid || !passwordMatches) {
+  const passwordMatches = await verifyStoredPassword(data.password, user?.password_verifier);
+  if (!user?.enabled || !passwordMatches) {
     throw new HttpError(401, "Incorrect username or password.");
   }
   const token = randomToken();
