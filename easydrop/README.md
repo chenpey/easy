@@ -388,6 +388,7 @@ bash deploy.sh
 - 检查 R2 的 `r2.dev` 和桶自定义域名都未开启公开访问；发现开启则停止，不擅自更改已有权限。
 - 配置自定义域名时，关闭 `workers.dev` 和预览域名入口；不配置时使用 Wrangler 输出的 `workers.dev` URL。自定义域名需要属于此 Cloudflare 账户内可用的 Zone。
 - 部署目标原子保存到忽略的 `wrangler.deploy.json`，不包含密码或 Token。保留它以便后续部署复用同一 D1/R2；行为参数和迁移目录始终从 `wrangler.json` 读取。
+- 部署成功后自动删除可重建的 `node_modules/`、`dist/` 和本次 Wrangler 日志；部署失败时保留这些内容用于快速重试和排查。`wrangler.deploy.json`、`.dev.vars` 以及 `.wrangler/` 中可能存在的本地开发数据不会被删除。
 - 出错立即停止，Cloudflare API 错误包含 HTTP 方法、路径、状态和完整响应正文。已成功创建的资源不会自动删除，修复原因后再运行脚本。
 - 初次上传 Worker 时缺少初始管理员配置会返回 503，安装 Secret 后才开放服务；无管理员配置不会退化成公开访问。
 - 普通部署不重写 `INITIAL_ADMIN` Secret。用户创建后以 D1 中的账户和密码验证器为准。
@@ -518,7 +519,7 @@ bash deploy.sh
 | `npm test` | 运行 API 与部署协议集成测试 |
 | `npm run test:ui` | 运行 Playwright 浏览器测试 |
 
-`.dev.vars`、`wrangler.deploy.json`、`.wrangler/`、`dist/`、`node_modules/` 和 `test-results/` 已被 Git 忽略。`.wrangler/` 可能包含本地持久化数据库和对象，不能将整个目录当作无用日志随意删除；线上数据保存在 Cloudflare，不包含在这些本地文件中。
+`.dev.vars`、`wrangler.deploy.json`、`.wrangler/`、`dist/`、`node_modules/` 和 `test-results/` 已被 Git 忽略。`package-lock.json` 必须提交，用于锁定一键部署和测试的依赖版本。`.wrangler/` 可能包含本地持久化数据库和对象，不能将整个目录当作无用日志随意删除；成功部署只清理其 `logs/` 子目录，线上数据保存在 Cloudflare，不包含在这些本地文件中。
 
 ## 常见问题
 
