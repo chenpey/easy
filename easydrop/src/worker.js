@@ -828,13 +828,19 @@ export default {
     try {
       return harden(await route(request, env, ctx, responseState), request, env, responseState.session);
     } catch (error) {
-      const requestId = crypto.randomUUID();
+      const path = new URL(request.url).pathname;
       const known = error instanceof HttpError;
-      if (!known) console.error(JSON.stringify({ requestId, method: request.method, path: new URL(request.url).pathname }), error);
-      return harden(json({
-        success: false, message: known ? error.message : "Internal server error.",
-        method: request.method, path: new URL(request.url).pathname, requestId,
-      }, known ? error.status : 500, known ? error.headers : {}), request, env, responseState.session);
+      const temporaryShareMiss = known && error.status === 404 && path.startsWith("/shared/");
+      const requestId = temporaryShareMiss ? null : crypto.randomUUID();
+      if (!known) console.error(JSON.stringify({ requestId, method: request.method, path }), error);
+      const body = {
+        success: false,
+        message: temporaryShareMiss ? "Temporary file link not found or expired."
+          : known ? error.message : "Internal server error.",
+      };
+      if (!temporaryShareMiss) Object.assign(body, { method: request.method, path, requestId });
+      return harden(json(body, known ? error.status : 500, known ? error.headers : {}),
+        request, env, responseState.session);
     }
   },
   async scheduled(_controller, env, ctx) {

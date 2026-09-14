@@ -437,18 +437,33 @@ test("temporary file links enforce duration, replace old tokens and download wit
   assert.equal(replaced.status, 201);
   const second = await replaced.json();
   assert.notEqual(second.url, first.url);
-  assert.equal((await request(firstUrl.pathname)).status, 404);
+  const replacedLink = await request(firstUrl.pathname);
+  assert.equal(replacedLink.status, 404);
+  assert.deepEqual(await replacedLink.json(), {
+    success: false,
+    message: "Temporary file link not found or expired.",
+  });
   assert.equal((await request(new URL(second.url).pathname)).status, 200);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM file_shares WHERE item_id = ?").bind(id).first()).n, 1);
 
   await db.prepare("UPDATE file_shares SET expires_at = ? WHERE item_id = ?").bind(startedAt - 1, id).run();
-  assert.equal((await request(new URL(second.url).pathname)).status, 404);
+  const expiredLink = await request(new URL(second.url).pathname);
+  assert.equal(expiredLink.status, 404);
+  assert.deepEqual(await expiredLink.json(), {
+    success: false,
+    message: "Temporary file link not found or expired.",
+  });
   const expiredHistory = await (await request("/api/history", { authenticated: true })).json();
   assert.equal(expiredHistory.items.find((item) => item.id === id).share_expires_at, null);
   assert.equal((await request(`/api/history/${id}/share`, { method: "DELETE", authenticated: true })).status, 200);
   assert.equal((await request(new URL(second.url).pathname)).status, 404);
   assert.equal((await request(`/api/history/${id}/share`, { method: "DELETE", authenticated: true })).status, 404);
-  assert.equal((await request("/shared/not-a-token")).status, 404);
+  const invalidLink = await request("/shared/not-a-token");
+  assert.equal(invalidLink.status, 404);
+  assert.deepEqual(await invalidLink.json(), {
+    success: false,
+    message: "Temporary file link not found or expired.",
+  });
 });
 
 test("image previews are authenticated, inline and limited to safe raster types", async () => {
