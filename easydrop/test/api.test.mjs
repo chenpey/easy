@@ -73,17 +73,11 @@ beforeEach(async () => {
 
 after(async () => { await mf?.dispose(); });
 
-test("current and legacy password verifiers remain valid across the rename", async () => {
-  const current = JSON.parse(await createPasswordVerifier(password));
-  const versionOne = JSON.parse(await createPasswordVerifier(password, 1));
-  const versionTwo = JSON.parse(await createPasswordVerifier(password, 2));
-  assert.equal(current.version, 3);
-  assert.equal(versionOne.version, 1);
-  assert.equal(versionTwo.version, 2);
-  assert.equal(await verifyPassword(password, current), true);
-  assert.equal(await verifyPassword(password, versionOne), true);
-  assert.equal(await verifyPassword(password, versionTwo), true);
-  assert.equal(await verifyPassword("wrong-password-value", current), false);
+test("password verifier validates only the current EasyDrop format", async () => {
+  const verifier = JSON.parse(await createPasswordVerifier(password));
+  assert.equal(verifier.version, 3);
+  assert.equal(await verifyPassword(password, verifier), true);
+  assert.equal(await verifyPassword("wrong-password-value", verifier), false);
 });
 
 test("missing credentials and invalid settings fail closed; production refuses HTTP", async () => {

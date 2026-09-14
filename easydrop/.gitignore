@@ -5,6 +5,4 @@ dist/
 .env*
 wrangler.deploy.json
 wrangler.deploy.json.tmp
-wrangler.deploy.migration.json
-wrangler.deploy.migration.json.tmp
 test-results/

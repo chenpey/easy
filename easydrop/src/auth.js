@@ -1,11 +1,7 @@
 const encoder = new TextEncoder();
 const ITERATIONS = 100000;
-const CURRENT_VERIFIER_VERSION = 3;
-const PROOF_CONTEXTS = new Map([
-  [1, encoder.encode("local-share/password-verifier/v1")],
-  [2, encoder.encode("relaydrop/password-verifier/v2")],
-  [3, encoder.encode("easydrop/password-verifier/v3")],
-]);
+const VERIFIER_VERSION = 3;
+const PROOF = encoder.encode("easydrop/password-verifier/v3");
 
 export class HttpError extends Error {
   constructor(status, message, headers = {}) {
@@ -29,23 +25,19 @@ async function passwordKey(password, salt, usages) {
   );
 }
 
-export async function createPasswordVerifier(password, version = CURRENT_VERIFIER_VERSION) {
+export async function createPasswordVerifier(password) {
   if (typeof password !== "string" || password.length < 12 || encoder.encode(password).length > 1024) {
     throw new Error("Password must contain at least 12 characters and at most 1024 UTF-8 bytes.");
   }
-  const proofContext = PROOF_CONTEXTS.get(version);
-  if (!proofContext) throw new Error("Unsupported password verifier version.");
   const salt = randomToken();
   const key = await passwordKey(password, salt, ["sign"]);
-  const proof = hex(await crypto.subtle.sign("HMAC", key, proofContext));
-  return JSON.stringify({ version, iterations: ITERATIONS, salt, proof });
+  const proof = hex(await crypto.subtle.sign("HMAC", key, PROOF));
+  return JSON.stringify({ version: VERIFIER_VERSION, iterations: ITERATIONS, salt, proof });
 }
 
 export async function verifyPassword(password, verifier) {
-  const proofContext = PROOF_CONTEXTS.get(verifier.version);
-  if (!proofContext) return false;
   const key = await passwordKey(password, verifier.salt, ["verify"]);
-  return crypto.subtle.verify("HMAC", key, unhex(verifier.proof), proofContext);
+  return crypto.subtle.verify("HMAC", key, unhex(verifier.proof), PROOF);
 }
 
 export function configuration(env) {
@@ -60,7 +52,7 @@ export function configuration(env) {
   let verifier;
   try {
     verifier = JSON.parse(env.PASSWORD_VERIFIER);
-    if (!PROOF_CONTEXTS.has(verifier.version) || verifier.iterations !== ITERATIONS ||
+    if (verifier.version !== VERIFIER_VERSION || verifier.iterations !== ITERATIONS ||
         !/^[a-f0-9]{64}$/.test(verifier.salt) || !/^[a-f0-9]{64}$/.test(verifier.proof)) throw new Error();
   } catch {
     throw new HttpError(503, "PASSWORD_VERIFIER is missing or invalid. Run the interactive setup.");

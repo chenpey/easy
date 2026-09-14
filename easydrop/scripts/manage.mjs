@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename, rm } from "node:fs/promises";
+import { readFile, writeFile, rename } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
@@ -8,7 +8,6 @@ import {
   createCloudflareClient,
   deploymentConfig,
   inspectDeployment,
-  migrateDeploymentIdentity,
   provisionDeployment,
   resolvePublicHostname,
   selectAccount,
@@ -108,7 +107,8 @@ async function loadConfig(path) {
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
 
-async function saveConfig(config, path = "wrangler.deploy.json") {
+async function saveConfig(config) {
+  const path = "wrangler.deploy.json";
   const temporary = `${path}.tmp`;
   await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   await rename(temporary, path);
@@ -139,24 +139,11 @@ async function main() {
     console.log("Remote password rotated. Existing sessions are invalid.");
     return;
   }
-  const { legacyWorker, deploymentState } = migrateDeploymentIdentity(template, existing);
-  if (legacyWorker) {
-    console.log(`Checking legacy Worker ${legacyWorker} before renaming it to ${template.name}...`);
-    await inspectDeployment(api, existing, existing);
-  }
-  const name = deploymentState?.name || (await ask(`Worker name [${template.name}]: `)).trim() || template.name;
-  const previousDomain = existing?.routes?.[0]?.pattern || "";
+  const name = existing?.name || (await ask(`Worker name [${template.name}]: `)).trim() || template.name;
   const domain = await selectDeploymentDomain(existing, ask);
-  if (legacyWorker && domain && domain === previousDomain) {
-    const confirmation = await ask(
-      `Custom domain ${domain} is attached to ${legacyWorker}. Type the full domain to approve reassignment: `,
-    );
-    if (confirmation.trim().toLowerCase() !== domain) throw new Error("Cancelled.");
-    console.log("Domain reassignment approved. Confirm the same reassignment if Wrangler asks again.");
-  }
-  const config = deploymentConfig(template, deploymentState, account, name, domain);
+  const config = deploymentConfig(template, existing, account, name, domain);
   console.log("Checking token access, deployment target and private storage...");
-  const inspection = await inspectDeployment(api, config, deploymentState);
+  const inspection = await inspectDeployment(api, config, existing);
   if (inspection.adoptingDatabase || inspection.adoptingBucket) {
     if (await ask(`Existing storage found. Type ${name} to confirm it is dedicated to this app: `) !== name) throw new Error("Cancelled.");
   }
@@ -166,37 +153,25 @@ async function main() {
     bucket: config.r2_buckets[0].bucket_name, url: inspection.url,
     password: verifier ? "initialize" : "preserve existing password and sessions",
   };
-  if (legacyWorker) summary.replacesWorker = legacyWorker;
   console.log(JSON.stringify(summary, null, 2));
   if (await ask(`Type ${name} to create/update these Cloudflare resources: `) !== name) throw new Error("Cancelled.");
-  const configPath = legacyWorker ? "wrangler.deploy.migration.json" : "wrangler.deploy.json";
-  if (legacyWorker) await saveConfig(config, configPath);
-  try {
-    await withProgress("Building static assets", () => import("./build.mjs"));
-    await withProgress("Preparing D1 and R2 resources",
-      () => provisionDeployment(api, config, inspection, (value) => saveConfig(value, configPath)));
-    await withProgress("Applying remote D1 migrations",
-      () => run(["d1", "migrations", "apply", "DB", "--remote", "--config", configPath], authEnv));
-    // First deployment has no verifier and fails closed until the secret is installed.
-    await withProgress("Uploading Worker and configuring its public entrypoint",
-      () => run(["deploy", "--config", configPath], authEnv));
-    if (verifier) {
-      await withProgress("Installing the shared-password secret",
-        () => api.request("PUT", `/accounts/${account}/workers/scripts/${name}/secrets`, {
-          name: "PASSWORD_VERIFIER", type: "secret_text", text: verifier,
-        }));
-    }
-    await withProgress("Verifying public DNS and local HTTPS access", () => verifyDeploymentAccess(inspection.url));
-    if (legacyWorker) {
-      await withProgress(`Removing legacy Worker ${legacyWorker}`,
-        () => api.request("DELETE", `/accounts/${account}/workers/scripts/${legacyWorker}`));
-      await saveConfig(config);
-    }
-    console.log(`Deployment complete: ${inspection.url}`);
-    console.log("Cloudflare token and shared password were not saved locally.");
-  } finally {
-    if (legacyWorker) await rm(configPath, { force: true });
+  await withProgress("Building static assets", () => import("./build.mjs"));
+  await withProgress("Preparing D1 and R2 resources",
+    () => provisionDeployment(api, config, inspection, saveConfig));
+  await withProgress("Applying remote D1 migrations",
+    () => run(["d1", "migrations", "apply", "DB", "--remote", "--config", "wrangler.deploy.json"], authEnv));
+  // First deployment has no verifier and fails closed until the secret is installed.
+  await withProgress("Uploading Worker and configuring its public entrypoint",
+    () => run(["deploy", "--config", "wrangler.deploy.json"], authEnv));
+  if (verifier) {
+    await withProgress("Installing the shared-password secret",
+      () => api.request("PUT", `/accounts/${account}/workers/scripts/${name}/secrets`, {
+        name: "PASSWORD_VERIFIER", type: "secret_text", text: verifier,
+      }));
   }
+  await withProgress("Verifying public DNS and local HTTPS access", () => verifyDeploymentAccess(inspection.url));
+  console.log(`Deployment complete: ${inspection.url}`);
+  console.log("Cloudflare token and shared password were not saved locally.");
 }
 
 main().catch((error) => {

@@ -92,15 +92,6 @@ export async function selectAccount(api, saved, ask, log = console.log) {
   return selected.id;
 }
 
-export function migrateDeploymentIdentity(template, existing) {
-  const legacyNames = new Set(["local-share", "relaydrop"]);
-  const legacyWorker = template.name === "easydrop" && legacyNames.has(existing?.name) ? existing.name : null;
-  return {
-    legacyWorker,
-    deploymentState: legacyWorker ? { ...existing, name: template.name } : existing,
-  };
-}
-
 export async function selectDeploymentDomain(existing, ask) {
   const saved = existing?.routes?.[0]?.pattern || "";
   if (!existing) return (await ask("Custom domain (blank for workers.dev): ")).trim().toLowerCase();

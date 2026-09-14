@@ -6,7 +6,6 @@ import {
   createCloudflareClient,
   deploymentConfig,
   inspectDeployment,
-  migrateDeploymentIdentity,
   provisionDeployment,
   resolvePublicHostname,
   selectAccount,
@@ -72,23 +71,6 @@ test("multiple accounts require explicit selection", async () => {
   accounts.push({ id: "b".repeat(32), name: "Other" });
   assert.equal(await selectAccount(api, null, async () => "2", () => {}), "b".repeat(32));
   await assert.rejects(selectAccount(api, null, async () => "invalid", () => {}), /Invalid account/);
-});
-
-test("known legacy deployment identities migrate only to the EasyDrop default", () => {
-  for (const legacyName of ["local-share", "relaydrop"]) {
-    const legacy = {
-      name: legacyName,
-      account_id: account,
-      d1_databases: [{ database_name: legacyName, database_id: "d".repeat(32) }],
-      r2_buckets: [{ bucket_name: `${legacyName}-files` }],
-    };
-    const migrated = migrateDeploymentIdentity(template, legacy);
-    assert.equal(migrated.legacyWorker, legacyName);
-    assert.equal(migrated.deploymentState.name, "easydrop");
-    assert.equal(migrated.deploymentState.d1_databases[0].database_id, "d".repeat(32));
-    assert.equal(migrated.deploymentState.r2_buckets[0].bucket_name, `${legacyName}-files`);
-  }
-  assert.equal(migrateDeploymentIdentity(template, { name: "another-worker" }).legacyWorker, null);
 });
 
 test("deployment domain is confirmed on every run and can be changed", async () => {

@@ -370,7 +370,7 @@ bash deploy.sh
 
 后续运行：输入 Token 后重新确认公开入口。按回车保留当前域名，输入新主机名可修改，输入 `workers.dev` 可取消 Custom Domain 并切回账号子域名；其他资源继续复用，**保留现有共享密码和有效会话**。更改密码单独使用 `npm run password`。
 
-从旧名称升级时，部署脚本会识别既有部署并执行一次性迁移：校验旧 Worker 的资源归属，创建名为 `easydrop` 的新 Worker，复用原 D1/R2 数据，并使用本次重新确认的公开入口。继续使用原 Custom Domain 时必须再次输入完整域名批准接管，并在 Wrangler 再次询问时确认；部署完成后脚本删除旧 Worker，再保存新的部署记录。D1 数据库和 R2 bucket 的已有名称保持不变，因为它们是承载数据的资源标识，不为改名执行高风险复制。新版兼容既有密码验证器；Cookie 名称已更新，迁移后浏览器需要重新登录一次。
+部署脚本只负责安装和更新名为 `easydrop` 的 Worker，不包含旧名称识别、资源迁移或旧 Worker 删除逻辑。
 
 - 拒绝非交互式输入和预先设置的 Cloudflare Token/API Key 环境变量。
 - Token 仅在本次进程中使用，通过子进程环境交给 Wrangler，不写文件、不放命令行参数。共享密码派生出的验证器直接通过 HTTPS API 写入 Worker Secret `PASSWORD_VERIFIER`。
