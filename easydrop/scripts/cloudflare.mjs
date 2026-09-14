@@ -103,14 +103,6 @@ export async function selectDeploymentDomain(existing, ask) {
   return answer === "workers.dev" ? "" : answer;
 }
 
-export function storageResourceNames(value) {
-  const base = String(value || "").trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9-]{1,56}[a-z0-9]$/.test(base)) {
-    throw new Error("Storage name must be 3-58 lowercase letters, digits or hyphens, without leading or trailing hyphens.");
-  }
-  return { database: base, bucket: `${base}-files` };
-}
-
 export function deploymentConfig(template, existing, account, name, domain) {
   if (!/^[a-f0-9]{32}$/.test(account)) throw new Error("Invalid account ID.");
   if (!/^[a-z][a-z0-9-]{1,48}[a-z0-9]$/.test(name)) throw new Error("Worker name must be 3-50 lowercase letters, digits or hyphens.");
@@ -128,23 +120,7 @@ export function deploymentConfig(template, existing, account, name, domain) {
   };
   config.r2_buckets[0].bucket_name = existing?.r2_buckets[0].bucket_name || `${name}-files`;
   if (config.vars.ALLOW_LOCAL_HTTP !== "false") throw new Error("Production ALLOW_LOCAL_HTTP must be false.");
-  if (config.vars.STORAGE_MIGRATION_MODE !== "false") {
-    throw new Error("Production STORAGE_MIGRATION_MODE must be false.");
-  }
   return config;
-}
-
-export async function inspectPrivateBucket(api, account, name, allowMissing = false) {
-  const path = `/accounts/${account}/r2/buckets/${encodeURIComponent(name)}`;
-  const bucket = await api.request("GET", path, undefined, { allowMissing });
-  if (!bucket) return null;
-  const managed = await api.request("GET", `${path}/domains/managed`);
-  const custom = await api.request("GET", `${path}/domains/custom`);
-  if (managed.enabled !== false || !Array.isArray(custom.domains) ||
-      custom.domains.some((item) => item.enabled !== false)) {
-    throw new Error(`R2 bucket ${name} has public access enabled or its access could not be verified.`);
-  }
-  return bucket;
 }
 
 export async function inspectDeployment(api, config, existing) {
@@ -171,9 +147,15 @@ export async function inspectDeployment(api, config, existing) {
     if (matches.length > 1) throw new Error("Multiple D1 databases have the requested name.");
     foundDatabase = matches[0] || null;
   }
-  const foundBucket = await inspectPrivateBucket(
-    api, config.account_id, config.r2_buckets[0].bucket_name, true,
-  );
+  const bucketPath = `${prefix}/r2/buckets/${encodeURIComponent(config.r2_buckets[0].bucket_name)}`;
+  const foundBucket = await api.request("GET", bucketPath, undefined, { allowMissing: true });
+  if (foundBucket) {
+    const managed = await api.request("GET", `${bucketPath}/domains/managed`);
+    const custom = await api.request("GET", `${bucketPath}/domains/custom`);
+    if (managed.enabled !== false || !Array.isArray(custom.domains) || custom.domains.some((item) => item.enabled !== false)) {
+      throw new Error("R2 public access is enabled or could not be verified. Disable r2.dev and bucket custom domains first.");
+    }
+  }
   let url;
   if (config.routes?.length) {
     const hostname = config.routes[0].pattern;

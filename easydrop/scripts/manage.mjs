@@ -1,6 +1,4 @@
-import { createReadStream } from "node:fs";
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, writeFile, rename } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
@@ -10,18 +8,16 @@ import {
   createCloudflareClient,
   deploymentConfig,
   inspectDeployment,
-  inspectPrivateBucket,
   provisionDeployment,
   resolvePublicHostname,
   selectAccount,
   selectDeploymentDomain,
-  storageResourceNames,
 } from "./cloudflare.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 process.chdir(root);
 const mode = process.argv[2];
-if (!["local", "deploy", "migrate-storage"].includes(mode)) throw new Error("Expected local, deploy or migrate-storage.");
+if (!["local", "deploy"].includes(mode)) throw new Error("Expected local or deploy.");
 if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("An interactive terminal is required. Piped input is not supported.");
 if (process.env.CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_KEY || process.env.CF_API_KEY) {
   throw new Error("Remove Cloudflare credential environment variables. This script requires interactive credentials.");
@@ -83,28 +79,6 @@ function run(args, env = {}, interactive = true) {
   });
 }
 
-function runCapture(args, env = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["node_modules/wrangler/bin/wrangler.js", ...args], {
-      cwd: root,
-      env: { ...process.env, ...env, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: `${root}/.wrangler/logs/` },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-      process.stderr.write(chunk);
-    });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) resolve(stdout);
-      else reject(new Error(`wrangler ${args.join(" ")} failed (${code}).\n${stderr}${stdout}`.trim()));
-    });
-  });
-}
-
 async function withProgress(label, action) {
   const startedAt = Date.now();
   console.log(`\n${label}...`);
@@ -151,306 +125,11 @@ async function loadConfig(path) {
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
 
-async function saveJson(path, value) {
+async function saveConfig(config) {
+  const path = "wrangler.deploy.json";
   const temporary = `${path}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   await rename(temporary, path);
-}
-
-const saveConfig = (config) => saveJson("wrangler.deploy.json", config);
-
-function parseD1Rows(output) {
-  let payload;
-  try { payload = JSON.parse(output); } catch { throw new Error(`Invalid JSON from remote D1 query:\n${output}`); }
-  const statements = Array.isArray(payload) ? payload : [payload];
-  if (!statements.length || statements.some((entry) => entry?.success === false)) {
-    throw new Error(`Remote D1 query failed:\n${output}`);
-  }
-  const rows = statements.flatMap((entry) => Array.isArray(entry?.results) ? entry.results : []);
-  return rows.map((row) => {
-    const size = Number(row.size);
-    if (!/^[a-f0-9-]{36}$/.test(row.id || "") || !Number.isSafeInteger(size) || size < 0 ||
-        !["pending", "ready", "deleting"].includes(row.state)) {
-      throw new Error(`Remote D1 returned an invalid file record:\n${JSON.stringify(row)}`);
-    }
-    return { id: row.id, size, state: row.state };
-  });
-}
-
-async function remoteFileInventory(configPath, authEnv) {
-  const output = await runCapture([
-    "d1", "execute", "DB", "--remote", "--config", configPath, "--json",
-    "--command", "SELECT id, size, state FROM items WHERE type = 'file' ORDER BY id",
-  ], authEnv);
-  return parseD1Rows(output);
-}
-
-async function fileDigest(path) {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  return hash.digest("hex");
-}
-
-async function copyR2Files(files, sourceBucket, targetBucket, configPath, authEnv) {
-  const directory = ".wrangler/storage-migration";
-  const sourcePath = `${directory}/source.bin`;
-  const targetPath = `${directory}/target.bin`;
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  for (const [index, file] of files.entries()) {
-    await rm(sourcePath, { force: true });
-    await rm(targetPath, { force: true });
-    const key = `files/${file.id}`;
-    await run(["r2", "object", "get", `${sourceBucket}/${key}`, "--file", sourcePath, "--remote", "--config", configPath], authEnv, false);
-    const sourceSize = (await stat(sourcePath)).size;
-    if (sourceSize !== file.size) {
-      throw new Error(`Source R2 object ${key} is ${sourceSize} bytes; D1 expects ${file.size}.`);
-    }
-    const sourceHash = await fileDigest(sourcePath);
-    await run([
-      "r2", "object", "put", `${targetBucket}/${key}`, "--file", sourcePath,
-      "--content-type", "application/octet-stream", "--force", "--remote", "--config", configPath,
-    ], authEnv, false);
-    await run(["r2", "object", "get", `${targetBucket}/${key}`, "--file", targetPath, "--remote", "--config", configPath], authEnv, false);
-    if ((await stat(targetPath)).size !== sourceSize || await fileDigest(targetPath) !== sourceHash) {
-      throw new Error(`Copied R2 object ${key} failed size or SHA-256 verification.`);
-    }
-    console.log(`Copied and verified R2 object ${index + 1}/${files.length}: ${key}`);
-  }
-}
-
-async function publicUrl(api, config) {
-  if (config.routes?.[0]?.pattern) return `https://${config.routes[0].pattern}`;
-  const subdomain = await api.request("GET", `/accounts/${config.account_id}/workers/subdomain`);
-  if (!subdomain?.subdomain) throw new Error("Cloudflare workers.dev subdomain is unavailable.");
-  return `https://${config.name}.${subdomain.subdomain}.workers.dev`;
-}
-
-async function migrateStorage(template, existing) {
-  if (!existing) throw new Error("wrangler.deploy.json is required. Deploy the existing application before renaming storage.");
-  const statePath = "wrangler.storage-migration.json";
-  const temporaryConfigPath = "wrangler.storage.tmp.json";
-  const savedState = await loadConfig(statePath);
-  const sourceSaved = savedState?.sourceConfig || existing;
-  if (sourceSaved.account_id !== existing.account_id || sourceSaved.name !== existing.name) {
-    throw new Error("Saved storage migration belongs to a different deployment target.");
-  }
-  const target = savedState?.target || storageResourceNames(
-    (await ask("New storage base name [easy-drop]: ")).trim() || "easy-drop",
-  );
-  if (existing.d1_databases[0].database_name === target.database &&
-      existing.r2_buckets[0].bucket_name === target.bucket && savedState?.status !== "active") {
-    console.log(`Storage already uses D1 ${target.database} and R2 ${target.bucket}.`);
-    return;
-  }
-
-  const sourceDomain = sourceSaved.routes?.[0]?.pattern || "";
-  const sourceConfig = deploymentConfig(
-    template, sourceSaved, sourceSaved.account_id, sourceSaved.name, sourceDomain,
-  );
-  const finalConfig = structuredClone(sourceConfig);
-  finalConfig.d1_databases[0].database_name = target.database;
-  if (savedState?.targetDatabaseId) {
-    finalConfig.d1_databases[0].database_id = savedState.targetDatabaseId;
-  }
-  finalConfig.r2_buckets[0].bucket_name = target.bucket;
-  finalConfig.vars.STORAGE_MIGRATION_MODE = "false";
-  const summary = {
-    worker: sourceConfig.name,
-    database: `${sourceConfig.d1_databases[0].database_name} -> ${target.database}`,
-    bucket: `${sourceConfig.r2_buckets[0].bucket_name} -> ${target.bucket}`,
-    oldStorage: "source D1 and R2 retained after verified cutover",
-  };
-  console.log(JSON.stringify(summary, null, 2));
-  if (await ask(`Type migrate ${target.database} to continue: `) !== `migrate ${target.database}`) {
-    throw new Error("Cancelled.");
-  }
-
-  const token = (await ask("Cloudflare API token (hidden, used only for this run): ", true)).trim();
-  if (!token) throw new Error("API token is required.");
-  const authEnv = {
-    CLOUDFLARE_API_TOKEN: token,
-    CLOUDFLARE_ACCOUNT_ID: sourceConfig.account_id,
-  };
-  const api = createCloudflareClient(token);
-  const prefix = `/accounts/${sourceConfig.account_id}`;
-  const settings = await api.request("GET", `${prefix}/workers/scripts/${sourceConfig.name}/settings`);
-  const remoteDatabase = settings?.bindings?.find((entry) => entry.name === "DB" && entry.type === "d1");
-  const remoteBucket = settings?.bindings?.find((entry) => entry.name === "FILES" && entry.type === "r2_bucket");
-  const allowedDatabaseIds = [
-    sourceConfig.d1_databases[0].database_id,
-    savedState?.targetDatabaseId,
-  ].filter(Boolean);
-  if (!allowedDatabaseIds.includes(remoteDatabase?.id)) {
-    throw new Error("Remote DB binding differs from both the source and owned target database.");
-  }
-  if (![sourceConfig.r2_buckets[0].bucket_name, target.bucket].includes(remoteBucket?.bucket_name)) {
-    throw new Error("Remote FILES binding differs from both the source and target storage.");
-  }
-  const sourceDatabase = await api.request(
-    "GET", `${prefix}/d1/database/${sourceConfig.d1_databases[0].database_id}`,
-  );
-  if (sourceDatabase.name !== sourceConfig.d1_databases[0].database_name) {
-    throw new Error("Remote source D1 name differs from the saved deployment.");
-  }
-
-  let migrationState = savedState;
-  let targetBucket = await inspectPrivateBucket(api, sourceConfig.account_id, target.bucket, true);
-  if (!migrationState && targetBucket) {
-    throw new Error(`Target R2 bucket ${target.bucket} already exists. Refusing to adopt or overwrite it.`);
-  }
-  if (!migrationState) {
-    migrationState = {
-      version: 1,
-      status: "active",
-      sourceConfig,
-      target,
-      createdAt: new Date().toISOString(),
-    };
-    await saveJson(statePath, migrationState);
-  } else if (migrationState.version !== 1 || migrationState.target?.database !== target.database ||
-      migrationState.target?.bucket !== target.bucket) {
-    throw new Error("Saved storage migration state is invalid or targets different resources.");
-  }
-
-  if (!targetBucket) {
-    await withProgress(`Creating private R2 bucket ${target.bucket}`,
-      () => api.request("POST", `${prefix}/r2/buckets`, { name: target.bucket }));
-    targetBucket = await inspectPrivateBucket(api, sourceConfig.account_id, target.bucket);
-  }
-  if (!targetBucket) throw new Error(`Target R2 bucket ${target.bucket} could not be verified.`);
-
-  if (remoteBucket.bucket_name === target.bucket) {
-    if (!savedState?.targetDatabaseId || remoteDatabase.id !== savedState.targetDatabaseId) {
-      throw new Error("Worker already uses the target R2 bucket but not the owned target D1 database.");
-    }
-    const remoteTargetDatabase = await api.request(
-      "GET", `${prefix}/d1/database/${savedState.targetDatabaseId}`,
-    );
-    if (remoteTargetDatabase.name !== target.database) throw new Error("Target D1 database name is invalid.");
-    finalConfig.d1_databases[0].database_id = savedState.targetDatabaseId;
-    await saveConfig(finalConfig);
-    await saveJson(statePath, { ...migrationState, status: "complete", completedAt: new Date().toISOString() });
-    console.log("Remote storage already uses the migration target; local deployment configuration was repaired.");
-    return;
-  }
-
-  await inspectPrivateBucket(api, sourceConfig.account_id, sourceConfig.r2_buckets[0].bucket_name);
-  await withProgress("Building static assets", () => import("./build.mjs"));
-  let maintenanceDeployed = false;
-  let cutoverComplete = false;
-  try {
-    await saveJson(temporaryConfigPath, sourceConfig);
-    await withProgress("Applying pending migrations to source D1",
-      () => run(["d1", "migrations", "apply", "DB", "--remote", "--config", temporaryConfigPath], authEnv, false));
-    const maintenanceConfig = structuredClone(sourceConfig);
-    maintenanceConfig.vars.STORAGE_MIGRATION_MODE = "true";
-    await saveJson(temporaryConfigPath, maintenanceConfig);
-    await withProgress("Enabling read-only storage migration mode",
-      () => run(["deploy", "--config", temporaryConfigPath], authEnv));
-    maintenanceDeployed = true;
-    const inventory = await remoteFileInventory(temporaryConfigPath, authEnv);
-    const pending = inventory.filter((item) => item.state === "pending");
-    if (pending.length) {
-      throw new Error(`${pending.length} pending upload(s) exist. Finish or cancel them before migrating storage.`);
-    }
-    const ready = inventory.filter((item) => item.state === "ready");
-    console.log(`Ready R2 objects to migrate: ${ready.length}`);
-    await copyR2Files(
-      ready,
-      sourceConfig.r2_buckets[0].bucket_name,
-      target.bucket,
-      temporaryConfigPath,
-      authEnv,
-    );
-    const finalInventory = await remoteFileInventory(temporaryConfigPath, authEnv);
-    if (finalInventory.some((item) => item.state === "pending")) {
-      throw new Error("A pending upload appeared during storage migration.");
-    }
-    const verified = finalInventory.filter((item) => item.state === "ready");
-    if (JSON.stringify(verified) !== JSON.stringify(ready)) {
-      throw new Error("D1 file inventory changed during storage migration.");
-    }
-    const exportPath = ".wrangler/storage-migration/database.sql";
-    await rm(exportPath, { force: true });
-    await withProgress("Exporting source D1 database", () => run([
-      "d1", "export", "DB", "--remote", "--skip-confirmation",
-      "--output", exportPath, "--config", temporaryConfigPath,
-    ], authEnv, false));
-    const postExportInventory = await remoteFileInventory(temporaryConfigPath, authEnv);
-    if (postExportInventory.some((item) => item.state === "pending") ||
-        JSON.stringify(postExportInventory.filter((item) => item.state === "ready")) !== JSON.stringify(ready)) {
-      throw new Error("D1 file inventory changed while the database was exported.");
-    }
-
-    if (migrationState.targetDatabaseId) {
-      const previousTarget = await api.request(
-        "GET", `${prefix}/d1/database/${migrationState.targetDatabaseId}`, undefined, { allowMissing: true },
-      );
-      if (previousTarget) {
-        if (previousTarget.name !== target.database) throw new Error("Owned target D1 database name is invalid.");
-        await withProgress("Resetting incomplete target D1 database",
-          () => api.request("DELETE", `${prefix}/d1/database/${migrationState.targetDatabaseId}`));
-      }
-    } else {
-      const matches = (await api.list(`${prefix}/d1/database`, { name: target.database }))
-        .filter((item) => item.name === target.database);
-      if (matches.length) {
-        throw new Error(`Target D1 database ${target.database} already exists. Refusing to adopt or overwrite it.`);
-      }
-    }
-    const createBody = { name: target.database };
-    if (["eu", "fedramp", "us"].includes(sourceDatabase.jurisdiction)) {
-      createBody.jurisdiction = sourceDatabase.jurisdiction;
-    }
-    const targetDatabase = await withProgress(`Creating D1 database ${target.database}`,
-      () => api.request("POST", `${prefix}/d1/database`, createBody));
-    if (!targetDatabase?.uuid) throw new Error("D1 create response is missing the target UUID.");
-    migrationState = { ...migrationState, targetDatabaseId: targetDatabase.uuid };
-    await saveJson(statePath, migrationState);
-    finalConfig.d1_databases[0].database_id = targetDatabase.uuid;
-    await saveJson(temporaryConfigPath, finalConfig);
-    await withProgress("Importing source data into target D1", () => run([
-      "d1", "execute", "DB", "--remote", "--yes",
-      "--file", exportPath, "--config", temporaryConfigPath,
-    ], authEnv, false));
-    await withProgress("Applying remote D1 migrations",
-      () => run(["d1", "migrations", "apply", "DB", "--remote", "--config", temporaryConfigPath], authEnv, false));
-    const targetInventory = await remoteFileInventory(temporaryConfigPath, authEnv);
-    if (JSON.stringify(targetInventory) !== JSON.stringify(postExportInventory)) {
-      throw new Error("Target D1 file inventory does not match the exported source database.");
-    }
-    if (["auto", "disabled"].includes(sourceDatabase.read_replication?.mode)) {
-      await api.request("PATCH", `${prefix}/d1/database/${targetDatabase.uuid}`, {
-        read_replication: { mode: sourceDatabase.read_replication.mode },
-      });
-    }
-    await withProgress("Switching Worker to migrated storage",
-      () => run(["deploy", "--config", temporaryConfigPath], authEnv));
-    cutoverComplete = true;
-    await saveConfig(finalConfig);
-    await saveJson(statePath, { ...migrationState, status: "complete", completedAt: new Date().toISOString() });
-    const url = await publicUrl(api, finalConfig);
-    await withProgress("Verifying public DNS and local HTTPS access", () => verifyDeploymentAccess(url));
-    console.log(`Storage migration complete: D1 ${target.database}, R2 ${target.bucket}`);
-    console.log(`Old D1 database ${sourceConfig.d1_databases[0].database_name} was retained for manual verification and cleanup.`);
-    console.log(`Old R2 bucket ${sourceConfig.r2_buckets[0].bucket_name} was retained for manual verification and cleanup.`);
-  } catch (error) {
-    if (maintenanceDeployed && !cutoverComplete) {
-      const recoveryConfig = structuredClone(sourceConfig);
-      recoveryConfig.vars.STORAGE_MIGRATION_MODE = "false";
-      await saveJson(temporaryConfigPath, recoveryConfig);
-      try {
-        await withProgress("Restoring normal access to source storage",
-          () => run(["deploy", "--config", temporaryConfigPath], authEnv));
-      } catch (restoreError) {
-        throw new Error(`${error.message}\nRecovery deployment also failed:\n${restoreError.message}`, { cause: error });
-      }
-    }
-    throw error;
-  } finally {
-    await rm(temporaryConfigPath, { force: true });
-    await rm(".wrangler/storage-migration", { recursive: true, force: true });
-  }
 }
 
 async function main() {
@@ -462,10 +141,6 @@ async function main() {
   }
   const template = await loadConfig("wrangler.json");
   const existing = await loadConfig("wrangler.deploy.json");
-  if (mode === "migrate-storage") {
-    await migrateStorage(template, existing);
-    return;
-  }
   const token = (await ask("Cloudflare API token (hidden, used only for this run): ", true)).trim();
   if (!token) throw new Error("API token is required.");
   const api = createCloudflareClient(token);

@@ -10,7 +10,6 @@ import {
   resolvePublicHostname,
   selectAccount,
   selectDeploymentDomain,
-  storageResourceNames,
 } from "../scripts/cloudflare.mjs";
 
 const account = "a".repeat(32);
@@ -42,12 +41,7 @@ before(async () => {
       database = { uuid: crypto.randomUUID(), name: JSON.parse(body).name };
       return reply(database);
     }
-    if (url.pathname.includes("/d1/database/")) {
-      if (request.method === "PATCH") {
-        database = { ...database, read_replication: JSON.parse(body).read_replication };
-      }
-      return reply(database);
-    }
+    if (url.pathname.includes("/d1/database/")) return reply(database);
     if (url.pathname.endsWith("/domains/managed")) return reply({ enabled: publicBucket });
     if (url.pathname.endsWith("/domains/custom")) return reply({ domains: [] });
     if (url.pathname.endsWith("/r2/buckets") && request.method === "POST") {
@@ -86,39 +80,6 @@ test("deployment domain is confirmed on every run and can be changed", async () 
   assert.equal(await selectDeploymentDomain(custom, async () => "NEW.EXAMPLE.TEST"), "new.example.test");
   assert.equal(await selectDeploymentDomain(custom, async () => "workers.dev"), "");
   assert.equal(await selectDeploymentDomain({}, async () => "share.example.test"), "share.example.test");
-});
-
-test("storage migration names use an explicit validated base", () => {
-  assert.deepEqual(storageResourceNames("easy-drop"), {
-    database: "easy-drop",
-    bucket: "easy-drop-files",
-  });
-  assert.deepEqual(storageResourceNames("  PERSONAL-STORE  "), {
-    database: "personal-store",
-    bucket: "personal-store-files",
-  });
-  for (const invalid of ["ab", "-easy-drop", "easy_drop", "easy-drop-", "a".repeat(59)]) {
-    assert.throws(() => storageResourceNames(invalid), /Storage name/);
-  }
-  const unsafe = structuredClone(template);
-  unsafe.vars.STORAGE_MIGRATION_MODE = "true";
-  assert.throws(() => deploymentConfig(unsafe, null, account, "my-share", ""), /STORAGE_MIGRATION_MODE/);
-});
-
-test("D1 database updates send only supported replication settings", async () => {
-  database = { uuid: crypto.randomUUID(), name: "local-share" };
-  const updated = await api.request(
-    "PATCH", `/accounts/${account}/d1/database/${database.uuid}`,
-    { read_replication: { mode: "disabled" } },
-  );
-  assert.equal(updated.uuid, database.uuid);
-  assert.equal(updated.name, "local-share");
-  assert.deepEqual(updated.read_replication, { mode: "disabled" });
-  assert.deepEqual(records.at(-1), {
-    method: "PATCH",
-    path: `/accounts/${account}/d1/database/${database.uuid}`,
-    body: { read_replication: { mode: "disabled" } },
-  });
 });
 
 test("first deployment provisions private storage and subsequent deployment reuses it and users", async () => {

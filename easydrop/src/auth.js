@@ -93,9 +93,6 @@ export function configuration(env) {
   if (!["true", "false"].includes(env.ALLOW_LOCAL_HTTP)) {
     throw new HttpError(503, "Invalid configuration: ALLOW_LOCAL_HTTP");
   }
-  if (env.STORAGE_MIGRATION_MODE !== undefined && !["true", "false"].includes(env.STORAGE_MIGRATION_MODE)) {
-    throw new HttpError(503, "Invalid configuration: STORAGE_MIGRATION_MODE");
-  }
   return {
     initialAdmin,
     ttl: number("SESSION_TTL_SECONDS", 3600, 31536000),
@@ -110,7 +107,6 @@ export function configuration(env) {
     globalLimit: number("LOGIN_GLOBAL_LIMIT", 1, 10000),
     pageSize: number("HISTORY_PAGE_SIZE", 1, 50),
     cleanupBatches: number("CLEANUP_BATCHES", 1, 8),
-    storageMigrationMode: env.STORAGE_MIGRATION_MODE === "true",
   };
 }
 

@@ -636,9 +636,6 @@ async function route(request, env, ctx, responseState) {
   const method = request.method;
   if (url.protocol !== "https:" && !localHttp(request, env)) throw new HttpError(426, "HTTPS is required.");
 
-  if (config.storageMigrationMode && !["GET", "HEAD"].includes(method)) {
-    throw new HttpError(503, "Storage migration is in progress. Try again after deployment completes.");
-  }
   if (method === "POST" && path === "/api/login") {
     const result = await login(request, env, config);
     return json(
