@@ -6,6 +6,11 @@ import { Editor, Preview } from './Editor';
 import { useNotebook } from './useNotebook';
 import { exportArchive, importArchive } from './transfer';
 
+interface InstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
+
 function IconButton({ label, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
   return <button className="icon-button" title={label} aria-label={label} {...props}>{children}</button>;
 }
@@ -29,6 +34,7 @@ export default function App() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const applySession = (value: Session) => { setSession(value); updateSession(value); };
   const boot = () => {
     setBootError('');
@@ -42,10 +48,33 @@ export default function App() {
     });
     return () => setUnauthorizedHandler(null);
   }, []);
+  useEffect(() => {
+    const capturePrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+    const installed = () => setInstallPrompt(null);
+    window.addEventListener('beforeinstallprompt', capturePrompt);
+    window.addEventListener('appinstalled', installed);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', capturePrompt);
+      window.removeEventListener('appinstalled', installed);
+    };
+  }, []);
   useEffect(boot, []);
-  if (session?.user) return <AccountWorkspace key={session.user.id} session={session} logout={() => {
-    setPassword(''); applySession({ ...session, user: null, csrf: null });
-  }} />;
+  if (session?.user) return <AccountWorkspace
+    key={session.user.id}
+    session={session}
+    installApp={installPrompt ? async () => {
+      const prompt = installPrompt;
+      setInstallPrompt(null);
+      await prompt.prompt();
+      await prompt.userChoice;
+    } : undefined}
+    logout={() => {
+      setPassword(''); applySession({ ...session, user: null, csrf: null });
+    }}
+  />;
   return <main className="login">
     <form className="login-form" onSubmit={(e) => {
       e.preventDefault(); setBusy(true); setBootError('');
@@ -62,7 +91,7 @@ export default function App() {
   </main>;
 }
 
-function AccountWorkspace({ session, logout }: { session: Session; logout(): void }) {
+function AccountWorkspace({ session, installApp, logout }: { session: Session; installApp?(): Promise<void>; logout(): void }) {
   const [ownsLock, setOwnsLock] = useState<boolean | null>(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -76,7 +105,7 @@ function AccountWorkspace({ session, logout }: { session: Session; logout(): voi
     }).catch(() => { if (!cancelled) setOwnsLock(false); });
     return () => { cancelled = true; release?.(); };
   }, [session.user!.id, attempt]);
-  if (ownsLock) return <Notebook session={session} logout={logout} />;
+  if (ownsLock) return <Notebook session={session} installApp={installApp} logout={logout} />;
   return <main className="login"><div className="login-form">
     <div className="brand login-brand"><BrandIcon size={32} /><h1>EasyNote</h1></div>
     <div className="login-heading">{ownsLock === null ? '正在打开笔记' : navigator.locks ? '另一个标签页正在编辑' : '浏览器不支持安全编辑锁'}</div>
@@ -84,7 +113,7 @@ function AccountWorkspace({ session, logout }: { session: Session; logout(): voi
   </div></main>;
 }
 
-function Notebook({ session, logout }: { session: Session; logout(): void }) {
+function Notebook({ session, installApp, logout }: { session: Session; installApp?(): Promise<void>; logout(): void }) {
   const book = useNotebook(session);
   const [layout, setLayout] = useState<'edit' | 'preview'>('edit');
   const [mobileNote, setMobileNote] = useState(false);
@@ -300,6 +329,7 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
     {notice && <div className="toast" role="status"><Check size={16} />{notice.text}</div>}
     {settings && <Modal title="设置" close={() => { if (!transfer) setSettings(false); }}>
       <div className="setting-row"><span>深色外观</span><button role="switch" aria-checked={dark} aria-label="深色外观" className={`switch ${dark ? 'on' : ''}`} onClick={() => setDark(!dark)}>{dark ? <Moon size={14} /> : <Sun size={14} />}</button></div>
+      {installApp && <div className="setting-row"><span>应用</span><button disabled={disabled} onClick={() => void run(installApp)}><Download size={16} />安装 EasyNote</button></div>}
       <div className="setting-row"><span>数据</span><div className="button-group"><button disabled={!!transfer} onClick={() => void transferAction(() => exportArchive(setTransfer), '备份已下载')}><Download size={16} />导出 ZIP</button><button disabled={!!transfer} onClick={() => importInput.current?.click()}><Upload size={16} />导入</button></div></div>
       <input hidden ref={importInput} type="file" accept=".zip,.md,.txt" onChange={(e) => {
         const file = e.target.files?.[0];

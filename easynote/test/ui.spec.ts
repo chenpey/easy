@@ -15,6 +15,66 @@ async function newNote(page: Page, title: string, content = '') {
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
 }
 
+test('PWA metadata, install action, app-shell cache and API exclusion work', async ({ page, context }) => {
+  await page.goto('/');
+  const manifestLink = page.locator('link[rel="manifest"]');
+  await expect(manifestLink).toHaveAttribute('href', '/manifest.webmanifest');
+  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/apple-touch-icon.png');
+  const manifestResponse = await page.request.get('/manifest.webmanifest');
+  expect(manifestResponse.status()).toBe(200);
+  expect(manifestResponse.headers()['content-type']).toContain('manifest+json');
+  const manifest = await manifestResponse.json();
+  expect(manifest).toMatchObject({
+    name: 'EasyNote', start_url: '/', scope: '/', display: 'standalone',
+    theme_color: '#333344', background_color: '#e2e2e2',
+  });
+  expect(manifest.icons).toEqual(expect.arrayContaining([
+    expect.objectContaining({ sizes: '192x192', type: 'image/png' }),
+    expect.objectContaining({ sizes: '512x512', type: 'image/png' }),
+    expect.objectContaining({ sizes: '512x512', purpose: 'maskable' }),
+  ]));
+  for (const path of ['/pwa-192x192.png', '/pwa-512x512.png', '/pwa-maskable-512x512.png', '/apple-touch-icon.png']) {
+    const icon = await page.request.get(path);
+    expect(icon.status()).toBe(200);
+    expect(icon.headers()['content-type']).toContain('image/png');
+  }
+  const worker = await page.request.get('/sw.js');
+  expect(worker.status()).toBe(200);
+  expect(worker.headers()['content-type']).toContain('javascript');
+  await expect.poll(() => page.evaluate(async () => Boolean(await navigator.serviceWorker.getRegistration('/')))).toBe(true);
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  const cachedUrls = await page.evaluate(async () => {
+    const urls: string[] = [];
+    for (const name of await caches.keys()) {
+      for (const request of await (await caches.open(name)).keys()) urls.push(request.url);
+    }
+    return urls;
+  });
+  expect(cachedUrls.some((url) => new URL(url).pathname === '/index.html')).toBe(true);
+  expect(cachedUrls.some((url) => new URL(url).pathname.startsWith('/api/'))).toBe(false);
+
+  await page.evaluate(() => {
+    const state = window as typeof window & { installPrompted?: boolean };
+    const event = new Event('beforeinstallprompt', { cancelable: true }) as Event & {
+      prompt(): Promise<void>;
+      userChoice: Promise<{ outcome: 'accepted'; platform: string }>;
+    };
+    event.prompt = async () => { state.installPrompted = true; };
+    event.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
+    window.dispatchEvent(event);
+  });
+  await page.locator('.account').click();
+  await page.getByRole('button', { name: '安装 EasyNote' }).click();
+  expect(await page.evaluate(() => (window as typeof window & { installPrompted?: boolean }).installPrompted)).toBe(true);
+  await expect(page.getByRole('button', { name: '安装 EasyNote' })).toBeHidden();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+
+  await context.setOffline(true);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('heading', { name: 'EasyNote' })).toBeVisible();
+  await context.setOffline(false);
+});
+
 test('create, autosave, reload, edit Markdown and preview safely', async ({ page }) => {
   const title = `读书记录-${randomUUID().slice(0, 8)}`;
   await page.goto('/');
