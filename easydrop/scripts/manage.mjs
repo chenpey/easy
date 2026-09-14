@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { createInitialAdmin, normalizeUsername } from "../src/auth.js";
+import { createInitialAdmin, normalizeUsername, validatePassword } from "../src/auth.js";
 import {
   createCloudflareClient,
   deploymentConfig,
@@ -44,10 +44,28 @@ function ask(prompt, secret = false) {
 }
 
 async function askInitialAdmin() {
-  const username = normalizeUsername(await ask("Initial administrator username: "));
-  const password = await ask("Initial administrator password (12-32 chars, upper/lower/digit, hidden): ", true);
-  if (await ask("Confirm administrator password (hidden): ", true) !== password) throw new Error("Passwords do not match.");
-  return createInitialAdmin(username, password);
+  let username;
+  while (!username) {
+    try {
+      username = normalizeUsername(await ask("Initial administrator username: "));
+    } catch (error) {
+      console.error(error.message);
+    }
+  }
+  while (true) {
+    const password = await ask("Initial administrator password (12-32 chars, upper/lower/digit, hidden): ", true);
+    try {
+      validatePassword(password);
+    } catch (error) {
+      console.error(error.message);
+      continue;
+    }
+    if (await ask("Confirm administrator password (hidden): ", true) !== password) {
+      console.error("Passwords do not match. Try again.");
+      continue;
+    }
+    return createInitialAdmin(username, password);
+  }
 }
 
 function run(args, env = {}) {
