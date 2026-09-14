@@ -23,6 +23,7 @@ let temporaryShareItem;
 const activeUploads = new Set();
 const activeRequests = new Set();
 const busyButtons = new WeakSet();
+const copyFeedbackTimers = new WeakMap();
 const uploadStorageKey = "easydrop/resumable-uploads/v1";
 
 class UploadPaused extends Error {}
@@ -123,7 +124,7 @@ function actionButton(label, name, handler, danger = false) {
   button.title = label;
   button.setAttribute("aria-label", label);
   button.append(icon(name));
-  button.addEventListener("click", () => busy(button, handler));
+  button.addEventListener("click", () => busy(button, () => handler(button)));
   return button;
 }
 
@@ -197,9 +198,25 @@ async function loadUsers() {
   renderIcons();
 }
 
-async function copy(value) {
+function showCopyFeedback(button, status, popover) {
+  if (!button) return;
+  clearTimeout(copyFeedbackTimers.get(button));
+  status.textContent = "已复制";
+  if (popover) {
+    button.dataset.copyFeedback = "已复制";
+    button.classList.add("copy-confirmed");
+  }
+  copyFeedbackTimers.set(button, setTimeout(() => {
+    button.classList.remove("copy-confirmed");
+    delete button.dataset.copyFeedback;
+    status.textContent = "";
+    copyFeedbackTimers.delete(button);
+  }, 1600));
+}
+
+async function copy(value, button, status) {
   await navigator.clipboard.writeText(value);
-  notice("已复制");
+  showCopyFeedback(button, status || $("copy-notice"), !status);
 }
 
 function temporaryShareActive(item) {
@@ -217,6 +234,7 @@ function renderTemporaryShare(item, result = null) {
   $("temporary-share-revoke").hidden = !active;
   $("temporary-share-result").hidden = !result;
   $("temporary-share-copy").hidden = !result;
+  $("temporary-share-notice").textContent = "";
   if (!result) {
     $("temporary-share-url").removeAttribute("href");
     $("temporary-share-url").textContent = "";
@@ -257,7 +275,7 @@ function historyRow(item) {
   const actions = document.createElement("div");
   actions.className = "item-actions";
   if (item.type === "text") {
-    actions.append(actionButton("复制文本", "copy", () => copy(item.content)));
+    actions.append(actionButton("复制文本", "copy", (button) => copy(item.content, button)));
   } else {
     const fileUrl = new URL(`/uploads/${item.id}`, location.origin).href;
     if (item.media_type) {
@@ -308,7 +326,7 @@ function historyRow(item) {
       () => openTemporaryShare(item),
     );
     temporaryShare.classList.toggle("active-share", temporaryShareActive(item));
-    actions.append(preview, actionButton("复制文件链接", "copy", () => copy(fileUrl)), temporaryShare);
+    actions.append(preview, actionButton("复制文件链接", "copy", (button) => copy(fileUrl, button)), temporaryShare);
   }
   actions.append(actionButton("删除记录", "trash-2", async () => {
     if (!await confirmDelete("删除这条记录？")) return;
@@ -767,11 +785,13 @@ async function initializeApp() {
   });
   $("qr-open").addEventListener("click", () => busy($("qr-open"), async () => {
     $("site-url").textContent = location.origin;
+    $("site-copy-notice").textContent = "";
     await QRCode.toCanvas($("qr-canvas"), location.origin, { width: 200, margin: 2 });
     $("qr-dialog").showModal();
   }));
   $("qr-close").addEventListener("click", () => $("qr-dialog").close());
-  $("copy-url").addEventListener("click", () => busy($("copy-url"), () => copy(location.origin)));
+  $("copy-url").addEventListener("click", () => busy($("copy-url"), () =>
+    copy(location.origin, $("copy-url"), $("site-copy-notice"))));
   $("temporary-share-close").addEventListener("click", () => $("temporary-share-dialog").close());
   $("temporary-share-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -789,7 +809,7 @@ async function initializeApp() {
     });
   });
   $("temporary-share-copy").addEventListener("click", () => busy($("temporary-share-copy"), () =>
-    copy($("temporary-share-url").href)));
+    copy($("temporary-share-url").href, $("temporary-share-copy"), $("temporary-share-notice"))));
   $("temporary-share-revoke").addEventListener("click", () => busy($("temporary-share-revoke"), async () => {
     if (!temporaryShareItem) return;
     await api(`/api/history/${temporaryShareItem.id}/share`, { method: "DELETE" });

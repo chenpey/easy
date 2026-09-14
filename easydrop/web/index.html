@@ -27,6 +27,7 @@
   </header>
   <main class="workspace">
     <div id="notice" role="status" aria-live="polite">正在加载...</div>
+    <span id="copy-notice" class="sr-only" role="status" aria-live="polite"></span>
     <details id="error-details" hidden><summary>错误详情</summary><pre id="error-body"></pre></details>
     <div class="compose">
       <section aria-labelledby="text-title">
@@ -64,6 +65,7 @@
     <canvas id="qr-canvas" width="200" height="200" aria-label="站点访问二维码"></canvas>
     <p id="site-url"></p>
     <button id="copy-url" class="secondary"><i data-lucide="copy"></i>复制地址</button>
+    <p id="site-copy-notice" class="copy-notice" role="status" aria-live="polite"></p>
   </dialog>
   <dialog id="temporary-share-dialog">
     <div class="section-heading">
@@ -83,6 +85,7 @@
       <canvas id="temporary-share-qr" width="200" height="200" aria-label="临时文件链接二维码"></canvas>
       <a id="temporary-share-url" target="_blank" rel="noopener"></a>
       <p id="temporary-share-expiry" class="muted"></p>
+      <p id="temporary-share-notice" class="copy-notice" role="status" aria-live="polite"></p>
     </div>
     <div id="temporary-share-actions" class="dialog-actions">
       <button id="temporary-share-revoke" class="destructive" type="button" hidden><i data-lucide="unlink"></i>撤销链接</button>

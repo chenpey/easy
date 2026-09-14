@@ -87,6 +87,26 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .file-picker:focus
 .has-updates { color: var(--blue); background: #e8f3ff; }
 .active-share { color: var(--green); background: #eaf6ed; }
 
+button.copy-confirmed { position: relative; }
+
+button.copy-confirmed::after {
+  position: absolute;
+  z-index: 60;
+  left: 50%;
+  bottom: calc(100% + 7px);
+  padding: 4px 7px;
+  border-radius: 4px;
+  background: #1d1d1f;
+  color: #fff;
+  content: attr(data-copy-feedback);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  pointer-events: none;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
 .icon-button {
   width: 40px;
   height: 40px;
@@ -635,6 +655,16 @@ dialog::backdrop {
 }
 
 #temporary-share-expiry { margin: 8px 0 0; }
+
+.copy-notice {
+  min-height: 20px;
+  margin: 8px 0 0;
+  color: var(--green);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 #temporary-share-actions { flex-wrap: wrap; }
 
 .dialog-actions {

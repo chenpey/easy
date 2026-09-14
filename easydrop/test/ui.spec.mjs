@@ -31,9 +31,15 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const text = `<script>window.injected = true</script>\n${"long-text-".repeat(30)}`;
     await page.getByLabel("分享文本", { exact: true }).fill(text);
     await page.getByRole("button", { name: "分享文本", exact: true }).click();
-    await expect(page.locator(".item-text").filter({ hasText: text })).toBeVisible();
+    const textItem = page.locator(".history-item").filter({ hasText: text });
+    await expect(textItem).toBeVisible();
     expect(await page.evaluate(() => window.injected)).toBeUndefined();
     await expect(page.locator("#text-input")).toHaveValue("");
+    const copyText = textItem.getByRole("button", { name: "复制文本" });
+    await copyText.click();
+    await expect(copyText).toHaveClass(/copy-confirmed/);
+    await expect(page.locator("#copy-notice")).toHaveText("已复制");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(text);
 
     const filename = `qa-${viewport.width}-${"long-name-".repeat(16)}.txt`;
     const imageName = `preview-${viewport.width}.png`;
@@ -66,8 +72,10 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const fileLink = file.getByRole("link", { name: "打开文件链接" });
     const fileUrl = await fileLink.getAttribute("href");
     expect(fileUrl).toMatch(new RegExp(`^${preview.url}/uploads/[a-f0-9-]+$`));
-    await file.getByRole("button", { name: "复制文件链接" }).click();
-    await expect(page.locator("#notice")).toHaveText("已复制");
+    const copyFileLink = file.getByRole("button", { name: "复制文件链接" });
+    await copyFileLink.click();
+    await expect(copyFileLink).toHaveClass(/copy-confirmed/);
+    await expect(page.locator("#copy-notice")).toHaveText("已复制");
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(fileUrl);
     await file.getByRole("button", { name: "创建临时链接" }).click();
     const temporaryDialog = page.locator("#temporary-share-dialog");
@@ -84,9 +92,12 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 100 && pixels[i + 3] > 0) dark++;
       return dark;
     })).toBeGreaterThan(100);
-    await page.screenshot({ path: `test-results/temporary-share-${viewport.width}.png` });
-    await temporaryDialog.getByRole("button", { name: "复制链接" }).click();
+    const copyTemporaryLink = temporaryDialog.getByRole("button", { name: "复制链接" });
+    await copyTemporaryLink.click();
+    await expect(temporaryDialog.locator("#temporary-share-notice")).toBeVisible();
+    await expect(temporaryDialog.locator("#temporary-share-notice")).toHaveText("已复制");
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(temporaryUrl);
+    await page.screenshot({ path: `test-results/temporary-share-${viewport.width}.png` });
     const guestContext = await browser.newContext();
     const publicDownload = await guestContext.request.get(temporaryUrl);
     expect(publicDownload.status()).toBe(200);
@@ -154,6 +165,10 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 100 && pixels[i + 3] > 0) dark++;
       return dark > 100 && dark < canvas.width * canvas.height * 0.8;
     })).toBe(true);
+    await page.locator("#copy-url").click();
+    await expect(page.locator("#site-copy-notice")).toBeVisible();
+    await expect(page.locator("#site-copy-notice")).toHaveText("已复制");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(preview.url);
     await page.screenshot({ path: `test-results/qr-${viewport.width}.png` });
     await page.getByRole("button", { name: "关闭", exact: true }).click();
 
