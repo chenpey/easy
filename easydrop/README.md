@@ -515,7 +515,7 @@ bash migrate-storage.sh
 
 历史接口返回 `items`、`nextCursor` 和 `revision`。每条记录包含 `seq`、`id`、`type`、`created_at`，文本正文在 `content`，文件名和字节数在 `name`、`size`；文件存在有效临时链接时，`share_expires_at` 是 Unix 到期时间，否则为 `null`。`nextCursor=null` 表示没有下一页。
 
-新建成功返回 `201` 和记录 `id`，幂等重放成功返回 `200`，删除受理返回 `202`。应用错误 JSON 通常包含 `success: false`、`message`、HTTP 方法 `method`、请求路径 `path` 和排查用 `requestId`；失效的公开临时链接只返回 `success` 和通用 `message`，避免暴露额外请求信息。未知内部错误不向客户端返回堆栈。
+新建成功返回 `201` 和记录 `id`，幂等重放成功返回 `200`，删除受理返回 `202`。应用错误 JSON 通常包含 `success: false`、`message`、HTTP 方法 `method`、请求路径 `path` 和排查用 `requestId`；普通文件链接的未登录响应及失效的公开临时链接只返回 `success` 和通用 `message`，避免暴露额外请求信息。未知内部错误不向客户端返回堆栈。
 
 常见错误码：`400` 参数格式错误、`401` 未登录或密码错误、`403` 同源/CSRF 校验失败、`404` 记录不存在、`409` 操作冲突、`410` 幂等结果已删除、`411` 缺少上传长度、`413` 超限、`415` JSON 内容类型不正确、`416` 下载范围错误、`426` 需要 HTTPS、`429` 登录限流、`503` 必需配置不可用。
 

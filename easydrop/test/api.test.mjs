@@ -138,6 +138,12 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
   for (const path of ["/api/session", "/api/history", "/api/revision", "/uploads/arbitrary", "/login.html"]) {
     assert.equal((await request(path)).status, 401, path);
   }
+  const unauthorizedDownload = await request(`/uploads/${crypto.randomUUID()}`);
+  assert.equal(unauthorizedDownload.status, 401);
+  assert.deepEqual(await unauthorizedDownload.json(), {
+    success: false,
+    message: "Authentication required.",
+  });
   for (const path of ["/api/text", "/api/uploads", "/api/clear_history", "/api/logout"]) {
     assert.equal((await request(path, { method: "POST" })).status, 401, path);
   }

@@ -831,14 +831,16 @@ export default {
       const path = new URL(request.url).pathname;
       const known = error instanceof HttpError;
       const temporaryShareMiss = known && error.status === 404 && path.startsWith("/shared/");
-      const requestId = temporaryShareMiss ? null : crypto.randomUUID();
+      const unauthenticatedDownload = known && error.status === 401 && path.startsWith("/uploads/");
+      const minimalError = temporaryShareMiss || unauthenticatedDownload;
+      const requestId = minimalError ? null : crypto.randomUUID();
       if (!known) console.error(JSON.stringify({ requestId, method: request.method, path }), error);
       const body = {
         success: false,
         message: temporaryShareMiss ? "Temporary file link not found or expired."
           : known ? error.message : "Internal server error.",
       };
-      if (!temporaryShareMiss) Object.assign(body, { method: request.method, path, requestId });
+      if (!minimalError) Object.assign(body, { method: request.method, path, requestId });
       return harden(json(body, known ? error.status : 500, known ? error.headers : {}),
         request, env, responseState.session);
     }
