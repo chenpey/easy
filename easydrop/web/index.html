@@ -14,7 +14,13 @@
       <div class="brand"><img class="brand-icon" src="/favicon.svg" alt=""><h1>EasyDrop</h1></div>
       <div class="tools">
         <button id="users-open" class="icon-button" title="用户管理" aria-label="用户管理" hidden><i data-lucide="users"></i></button>
-        <button id="qr-open" class="icon-button" title="访问二维码" aria-label="访问二维码"><i data-lucide="qr-code"></i></button>
+        <div class="site-link-preview">
+          <button id="qr-open" class="icon-button" title="访问二维码" aria-label="访问二维码"><i data-lucide="qr-code"></i></button>
+          <div id="site-link-popover" class="qr-popover site-link-popover" role="tooltip">
+            <canvas id="site-qr-preview" width="168" height="168" aria-label="站点访问二维码预览"></canvas>
+            <span id="site-url-preview"></span>
+          </div>
+        </div>
         <button id="logout" class="icon-button" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button>
       </div>
     </div>
@@ -72,7 +78,7 @@
       <input id="user-id" type="hidden">
       <label for="user-name">用户名</label>
       <input id="user-name" type="text" autocomplete="off" minlength="3" maxlength="32" required>
-      <label for="user-password">密码</label>
+      <label id="user-password-label" for="user-password">密码</label>
       <input id="user-password" type="password" autocomplete="new-password" minlength="12" maxlength="32"
         pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
       <div class="user-options">

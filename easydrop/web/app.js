@@ -141,6 +141,7 @@ function resetUserForm() {
   $("user-id").value = "";
   $("user-enabled").checked = true;
   $("user-password").required = true;
+  $("user-password-label").textContent = "密码";
   $("user-submit-label").textContent = "添加用户";
   $("user-cancel").hidden = true;
 }
@@ -168,6 +169,7 @@ async function loadUsers() {
       $("user-name").value = user.username;
       $("user-password").value = "";
       $("user-password").required = false;
+      $("user-password-label").textContent = "新密码（留空则不修改）";
       $("user-role").value = user.role;
       $("user-enabled").checked = user.enabled;
       $("user-submit-label").textContent = "保存修改";
@@ -229,7 +231,7 @@ function historyRow(item) {
     link.setAttribute("aria-label", "打开文件链接");
     link.append(icon("link"));
     const qr = document.createElement("div");
-    qr.className = "file-link-qr";
+    qr.className = "qr-popover file-link-qr";
     const canvas = document.createElement("canvas");
     canvas.width = 168;
     canvas.height = 168;
@@ -693,6 +695,11 @@ async function initializeApp() {
     await api("/api/logout", { method: "POST" });
     expireSession();
   }));
+  $("site-url-preview").textContent = location.origin;
+  QRCode.toCanvas($("site-qr-preview"), location.origin, { width: 168, margin: 1 }).catch((error) => {
+    console.error("Site QR preview generation failed:", error);
+    $("site-link-popover").remove();
+  });
   $("qr-open").addEventListener("click", () => busy($("qr-open"), async () => {
     $("site-url").textContent = location.origin;
     await QRCode.toCanvas($("qr-canvas"), location.origin, { width: 200, margin: 2 });

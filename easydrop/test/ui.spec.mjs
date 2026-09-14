@@ -86,7 +86,20 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(scanPage).toHaveURL(`${preview.url}/`);
     await scanContext.close();
 
-    await page.getByRole("button", { name: "访问二维码" }).click();
+    const siteQrButton = page.getByRole("button", { name: "访问二维码" });
+    await siteQrButton.hover();
+    await expect(page.locator("#site-link-popover")).toBeVisible();
+    await expect(page.locator("#site-url-preview")).toHaveText(preview.url);
+    await expect.poll(() => page.locator("#site-qr-preview").evaluate((canvas) => {
+      const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      let dark = 0;
+      for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 100 && pixels[i + 3] > 0) dark++;
+      return dark;
+    })).toBeGreaterThan(100);
+    await page.screenshot({ path: `test-results/site-qr-hover-${viewport.width}.png` });
+    await page.locator("#history-title").hover();
+    await expect(page.locator("#site-link-popover")).toBeHidden();
+    await siteQrButton.click();
     await expect(page.locator("#qr-dialog")).toBeVisible();
     expect(await page.locator("#qr-canvas").evaluate((canvas) => {
       const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
@@ -140,7 +153,7 @@ test("administrator can create, edit, disable, enable and delete a user", async 
 
   await row.getByRole("button", { name: "编辑用户" }).click();
   await page.getByLabel("用户名").fill("ui-member-edited");
-  await page.getByLabel("密码", { exact: true }).fill("ChangedPass456!");
+  await page.getByLabel("新密码（留空则不修改）").fill("ChangedPass456!");
   await page.getByRole("button", { name: "保存修改" }).click();
   row = page.locator(".user-row").filter({ hasText: "ui-member-edited" });
   await expect(row).toBeVisible();

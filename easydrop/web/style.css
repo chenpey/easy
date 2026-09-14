@@ -339,18 +339,16 @@ progress {
 
 .item-actions { display: flex; gap: 3px; }
 
-.file-link-preview {
+.file-link-preview, .site-link-preview {
   position: relative;
   z-index: 1;
   display: flex;
 }
 
-.file-link-qr {
+.qr-popover {
   position: absolute;
   z-index: 20;
-  top: 50%;
-  right: calc(100% + 10px);
-  width: 190px;
+  width: 210px;
   padding: 10px 10px 9px;
   border: 1px solid var(--hairline);
   border-radius: 8px;
@@ -360,15 +358,11 @@ progress {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translateY(-50%) scale(.98);
-  transform-origin: right center;
   transition: opacity .16s ease, visibility .16s ease, transform .16s ease;
 }
 
-.file-link-qr::after {
+.qr-popover::after {
   position: absolute;
-  top: calc(50% - 7px);
-  right: -7px;
   width: 12px;
   height: 12px;
   border-top: 1px solid var(--hairline);
@@ -378,27 +372,63 @@ progress {
   transform: rotate(45deg);
 }
 
-.file-link-qr canvas {
+.qr-popover canvas {
   display: block;
+  margin: 0 auto;
   width: 168px;
   height: 168px;
 }
 
-.file-link-qr span {
+.qr-popover span {
   display: block;
   margin-top: 7px;
   text-align: center;
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.file-link-qr {
+  top: 50%;
+  right: calc(100% + 10px);
+  transform: translateY(-50%) scale(.98);
+  transform-origin: right center;
+}
+
+.file-link-qr::after {
+  top: calc(50% - 7px);
+  right: -7px;
+}
+
+.site-link-popover {
+  top: calc(100% + 10px);
+  right: -4px;
+  transform: translateY(-4px) scale(.98);
+  transform-origin: right top;
+}
+
+.site-link-popover::after {
+  top: -7px;
+  right: 17px;
+  transform: rotate(-45deg);
 }
 
 .file-link-preview:hover,
-.file-link-preview:focus-within { z-index: 30; }
+.file-link-preview:focus-within,
+.site-link-preview:hover,
+.site-link-preview:focus-within { z-index: 30; }
 
 .file-link-preview:hover .file-link-qr,
 .file-link-preview:focus-within .file-link-qr {
   opacity: 1;
   visibility: visible;
   transform: translateY(-50%) scale(1);
+}
+
+.site-link-preview:hover .site-link-popover,
+.site-link-preview:focus-within .site-link-popover {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
 }
 
 a.icon-button {
