@@ -83,8 +83,10 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
   const [sidebar, setSidebar] = useState(true);
   const [resizingList, setResizingList] = useState(false);
   const [noteListWidth, setNoteListWidth] = useState(() => {
-    const saved = Number(localStorage.getItem('easynote-note-list-width'));
-    return Number.isFinite(saved) ? Math.min(480, Math.max(240, saved)) : 292;
+    const stored = localStorage.getItem('easynote-note-list-width');
+    if (stored === null) return 200;
+    const saved = Number(stored);
+    return Number.isFinite(saved) ? Math.min(360, Math.max(180, saved)) : 200;
   });
   const noteListWidthRef = useRef(noteListWidth);
   const resizeStart = useRef<{ pointerId: number; x: number; width: number } | null>(null);
@@ -104,7 +106,7 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
   const importInput = useRef<HTMLInputElement>(null);
   const note = book.note;
   const updateNoteListWidth = (value: number) => {
-    const next = Math.min(480, Math.max(240, Math.round(value)));
+    const next = Math.min(360, Math.max(180, Math.round(value)));
     noteListWidthRef.current = next;
     setNoteListWidth(next);
   };
@@ -130,13 +132,13 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
     const widths: Record<string, number> = {
       ArrowLeft: noteListWidthRef.current - 12,
       ArrowRight: noteListWidthRef.current + 12,
-      Home: 240,
-      End: 480,
+      Home: 180,
+      End: 360,
     };
     if (!(event.key in widths)) return;
     event.preventDefault();
     updateNoteListWidth(widths[event.key]);
-    localStorage.setItem('easynote-note-list-width', String(Math.min(480, Math.max(240, widths[event.key]))));
+    localStorage.setItem('easynote-note-list-width', String(Math.min(360, Math.max(180, widths[event.key]))));
   };
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('easynote-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { setTagText(note?.tags.join(', ') ?? ''); }, [note?.id, JSON.stringify(note?.tags)]);
@@ -235,8 +237,8 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
       role="separator"
       aria-label="调整笔记列表宽度"
       aria-orientation="vertical"
-      aria-valuemin={240}
-      aria-valuemax={480}
+      aria-valuemin={180}
+      aria-valuemax={360}
       aria-valuenow={noteListWidth}
       tabIndex={0}
       title="拖动调整宽度，双击恢复默认"
@@ -245,8 +247,8 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
       onPointerUp={finishNoteListResize}
       onPointerCancel={finishNoteListResize}
       onDoubleClick={() => {
-        updateNoteListWidth(292);
-        localStorage.setItem('easynote-note-list-width', '292');
+        updateNoteListWidth(200);
+        localStorage.setItem('easynote-note-list-width', '200');
       }}
       onKeyDown={resizeNoteListWithKeyboard}
     />

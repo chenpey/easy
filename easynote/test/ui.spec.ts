@@ -129,6 +129,9 @@ test('note list width is adjustable, persistent, and both footers align', async 
   const handle = await separator.boundingBox();
   expect(initial).not.toBeNull();
   expect(handle).not.toBeNull();
+  expect(initial!.width).toBeCloseTo(200, 0);
+  await expect(separator).toHaveAttribute('aria-valuemin', '180');
+  await expect(separator).toHaveAttribute('aria-valuemax', '360');
   await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + 140);
   await page.mouse.down();
   await page.mouse.move(handle!.x + handle!.width / 2 + 84, handle!.y + 140, { steps: 5 });
@@ -146,12 +149,15 @@ test('note list width is adjustable, persistent, and both footers align', async 
   });
   expect(Math.abs(footers.listTop - footers.documentTop)).toBeLessThanOrEqual(1);
   expect(Math.abs(footers.listHeight - footers.documentHeight)).toBeLessThanOrEqual(1);
+  expect(footers.listHeight).toBeCloseTo(32, 0);
+  expect(footers.documentHeight).toBeCloseTo(32, 0);
+  await page.screenshot({ path: 'test-results/desktop-resized.png', fullPage: true });
   await page.getByRole('button', { name: '收起侧栏' }).click();
   expect((await list.boundingBox())!.width).toBeCloseTo(resized!.width, 0);
   await page.reload();
   expect((await list.boundingBox())!.width).toBeCloseTo(resized!.width, 0);
   await separator.dblclick();
-  await expect(separator).toHaveAttribute('aria-valuenow', '292');
+  await expect(separator).toHaveAttribute('aria-valuenow', '200');
 });
 
 test('typing while a save response is delayed preserves the newer draft', async ({ page }) => {

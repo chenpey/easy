@@ -16,7 +16,7 @@
   --accent-text: #12604f;
   --danger: #b84444;
   --warning: #9a6b1d;
-  --footer-height: 55px;
+  --footer-height: 32px;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -58,7 +58,7 @@ h1, h2, h3, p { margin-top: 0; }
 .brand { display: flex; align-items: center; gap: 9px; font-size: 18px; font-weight: 600; white-space: nowrap; }
 .brand-icon { display: block; flex: 0 0 auto; border-radius: 6px; }
 .brand .icon-button { margin-left: auto; }
-.app-shell { display: grid; grid-template-columns: 212px var(--note-list-width, 292px) 6px minmax(0,1fr); height: 100dvh; min-height: 420px; background: var(--paper); }
+.app-shell { display: grid; grid-template-columns: 212px var(--note-list-width, 200px) 6px minmax(0,1fr); height: 100dvh; min-height: 420px; background: var(--paper); }
 .sidebar { background: var(--sidebar); border-right: 1px solid var(--line); padding: 25px 16px 12px; display: flex; flex-direction: column; min-height: 0; }
 .sidebar .brand { padding: 0 3px 26px; }
 .new-note { width: 100%; justify-content: flex-start; margin-bottom: 24px; border-color: var(--line); background: var(--paper); font-weight: 500; height: 38px; }
@@ -119,6 +119,7 @@ nav button.active { background: var(--accent-soft); color: var(--accent-text); }
 .cm-cursor { border-left-color: var(--ink)!important; }
 .cm-selectionBackground { background: var(--accent-soft)!important; }
 .document-footer { height: var(--footer-height); min-height: var(--footer-height); flex: 0 0 var(--footer-height); padding: 0 25px; border-top: 1px solid var(--line); display: flex; gap: 14px; align-items: center; }
+.document-footer .icon-button { width: 28px; height: 28px; flex-basis: 28px; }
 .tags-input { display: flex; gap: 10px; color: var(--muted); align-items: center; flex: 1; min-width: 0; }
 .tags-input input { font-size: 12px; width: 100%; background: transparent; border: 0; padding: 4px 0; }
 .word-count { font-size: 11px; white-space: nowrap; color: var(--muted); }
@@ -147,7 +148,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 .trash-banner { display: flex; justify-content: space-between; padding: 10px 25px; background: var(--soft); color: var(--muted); font-size: 12px; align-items: center; }
 .trash-banner button { color: var(--danger); }
 .mobile-filters,.mobile-back { display: none; }
-.sidebar-hidden { grid-template-columns: var(--note-list-width, 292px) 6px minmax(0,1fr); }
+.sidebar-hidden { grid-template-columns: var(--note-list-width, 200px) 6px minmax(0,1fr); }
 .sidebar-hidden .sidebar { display: none; }
 dialog { border: 1px solid var(--line); background: var(--paper); color: var(--ink); border-radius: 8px; padding: 24px; width: min(580px, calc(100% - 28px)); max-height: 85dvh; overflow: auto; box-shadow: 0 10px 40px #00000018; }
 dialog::backdrop { background: #00000055; }
@@ -181,14 +182,14 @@ dialog::backdrop { background: #00000055; }
 .login-form>.primary { width: 100%; height: 41px; margin-top: 5px; }
 .error-box { color: var(--danger); margin-top: 20px; }
 @media(max-width:1100px) {
-  .app-shell { grid-template-columns: 180px var(--note-list-width, 292px) 6px minmax(0,1fr); }
-  .sidebar-hidden { grid-template-columns: var(--note-list-width, 292px) 6px minmax(0,1fr); }
+  .app-shell { grid-template-columns: 180px var(--note-list-width, 200px) 6px minmax(0,1fr); }
+  .sidebar-hidden { grid-template-columns: var(--note-list-width, 200px) 6px minmax(0,1fr); }
   .document { padding: 35px 30px 60px; }
   .workspace-toolbar { padding: 0 16px; }
   .toolbar-right { gap: 1px; }.segmented { margin-right: 4px; }
 }
 @media(max-width:900px) {
-  .app-shell,.sidebar-hidden { grid-template-columns: var(--note-list-width, 292px) 6px minmax(0,1fr); }
+  .app-shell,.sidebar-hidden { grid-template-columns: var(--note-list-width, 200px) 6px minmax(0,1fr); }
   .sidebar { display: none; }
   .mobile-filters { display: flex; justify-content: space-between; margin-top: 12px; }
   .mobile-filters select { border: 0; font-size: 12px; padding: 0; }
@@ -209,6 +210,6 @@ dialog::backdrop { background: #00000055; }
   .save-status { gap: 4px; font-size: 10px; }
   .document { padding: 27px 22px 50px; }.note-title { font-size: 24px; }
   .document-meta { padding-bottom: 24px; }.cm-scroller { font-size: 14px; }
-  .document-footer { padding: 9px 16px; gap: 10px; }.word-count { font-size: 10px; }
+  .document-footer { padding: 0 16px; gap: 10px; }.word-count { font-size: 10px; }
   .setting-row { flex-wrap: wrap; }.dialog-header { margin-bottom: 15px; }
 }

@@ -38,7 +38,15 @@ export async function createRuntime(port?: number) {
   const db = await runtime.getD1Database('DB');
   const schema = await readFile(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8');
   await db.batch(schema.split(';').map((sql) => sql.trim()).filter(Boolean).map((sql) => db.prepare(sql)));
+  await db.batch([
+    'DELETE FROM image_refs', 'DELETE FROM note_versions', 'DELETE FROM notes',
+    'DELETE FROM sessions', 'DELETE FROM login_attempts', 'DELETE FROM images',
+    'DELETE FROM purged_notes', 'DELETE FROM users',
+  ].map((sql) => db.prepare(sql)));
+  const bucket = await runtime.getR2Bucket('IMAGES');
+  const objects = await bucket.list();
+  if (objects.objects.length) await bucket.delete(objects.objects.map((object) => object.key));
   await db.prepare('INSERT INTO users VALUES(?,?,?,?)').bind(testUserId, 'tester', JSON.stringify(verifier), Date.now()).run();
   await db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(testToken), testUserId, testCsrf, Date.now() + 86400_000).run();
-  return { runtime, db, bucket: await runtime.getR2Bucket('IMAGES') };
+  return { runtime, db, bucket };
 }
