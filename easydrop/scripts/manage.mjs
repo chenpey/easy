@@ -12,6 +12,7 @@ import {
   provisionDeployment,
   resolvePublicHostname,
   selectAccount,
+  selectDeploymentDomain,
 } from "./cloudflare.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -144,8 +145,15 @@ async function main() {
     await inspectDeployment(api, existing, existing);
   }
   const name = deploymentState?.name || (await ask(`Worker name [${template.name}]: `)).trim() || template.name;
-  const previousDomain = deploymentState?.routes?.[0]?.pattern || "";
-  const domain = deploymentState ? previousDomain : (await ask("Custom domain (blank for workers.dev): ")).trim();
+  const previousDomain = existing?.routes?.[0]?.pattern || "";
+  const domain = await selectDeploymentDomain(existing, ask);
+  if (legacyWorker && domain && domain === previousDomain) {
+    const confirmation = await ask(
+      `Custom domain ${domain} is attached to ${legacyWorker}. Type the full domain to approve reassignment: `,
+    );
+    if (confirmation.trim().toLowerCase() !== domain) throw new Error("Cancelled.");
+    console.log("Domain reassignment approved. Confirm the same reassignment if Wrangler asks again.");
+  }
   const config = deploymentConfig(template, deploymentState, account, name, domain);
   console.log("Checking token access, deployment target and private storage...");
   const inspection = await inspectDeployment(api, config, deploymentState);

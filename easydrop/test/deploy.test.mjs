@@ -10,6 +10,7 @@ import {
   provisionDeployment,
   resolvePublicHostname,
   selectAccount,
+  selectDeploymentDomain,
 } from "../scripts/cloudflare.mjs";
 
 const account = "a".repeat(32);
@@ -88,6 +89,15 @@ test("known legacy deployment identities migrate only to the EasyDrop default", 
     assert.equal(migrated.deploymentState.r2_buckets[0].bucket_name, `${legacyName}-files`);
   }
   assert.equal(migrateDeploymentIdentity(template, { name: "another-worker" }).legacyWorker, null);
+});
+
+test("deployment domain is confirmed on every run and can be changed", async () => {
+  const custom = { routes: [{ pattern: "share.example.test", custom_domain: true }] };
+  assert.equal(await selectDeploymentDomain(null, async () => ""), "");
+  assert.equal(await selectDeploymentDomain(custom, async () => ""), "share.example.test");
+  assert.equal(await selectDeploymentDomain(custom, async () => "NEW.EXAMPLE.TEST"), "new.example.test");
+  assert.equal(await selectDeploymentDomain(custom, async () => "workers.dev"), "");
+  assert.equal(await selectDeploymentDomain({}, async () => "share.example.test"), "share.example.test");
 });
 
 test("first deployment provisions private storage and subsequent deployment reuses it and password", async () => {

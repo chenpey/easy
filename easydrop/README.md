@@ -313,7 +313,7 @@ R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。
 
 1. 确认根域名已经添加到同一 Cloudflare 账号，Zone 状态为 **Active**。
 2. 准备一个未被占用的主机名，例如 `share.example.com`。该主机名不能已有 CNAME，也不要提前创建同名 DNS 记录。
-3. 部署时在 `Custom domain` 提示处输入完整主机名。脚本通过 Wrangler 创建 Worker Custom Domain；Cloudflare 自动创建对应 DNS 记录和边缘证书。
+3. 每次部署都会显示当前公开入口。在 `Custom domain` 提示处输入完整主机名，或在已有部署中按回车保留当前值；脚本通过 Wrangler 创建 Worker Custom Domain，Cloudflare 自动创建对应 DNS 记录和边缘证书。
 
 ### 4. 创建 API Token
 
@@ -368,9 +368,9 @@ bash deploy.sh
 
 以 Worker 名称 `my-share` 为例，默认创建 D1 数据库 `my-share` 和 R2 存储桶 `my-share-files`。Worker 名称要求 3～50 位小写字母、数字或连字符，以字母开头，以字母或数字结尾。
 
-后续运行：输入 Token、确认已保存的目标即可，**保留现有共享密码和有效会话**。更改密码单独使用 `npm run password`。
+后续运行：输入 Token 后重新确认公开入口。按回车保留当前域名，输入新主机名可修改，输入 `workers.dev` 可取消 Custom Domain 并切回账号子域名；其他资源继续复用，**保留现有共享密码和有效会话**。更改密码单独使用 `npm run password`。
 
-从旧名称升级时，部署脚本会识别既有部署并执行一次性迁移：校验旧 Worker 的资源归属，创建名为 `easydrop` 的新 Worker，复用原 D1/R2 数据和 Custom Domain，设置共享密码，确认部署完成后删除旧 Worker，再保存新的部署记录。D1 数据库和 R2 bucket 的已有名称保持不变，因为它们是承载数据的资源标识，不为改名执行高风险复制。新版兼容既有密码验证器；Cookie 名称已更新，迁移后浏览器需要重新登录一次。
+从旧名称升级时，部署脚本会识别既有部署并执行一次性迁移：校验旧 Worker 的资源归属，创建名为 `easydrop` 的新 Worker，复用原 D1/R2 数据，并使用本次重新确认的公开入口。继续使用原 Custom Domain 时必须再次输入完整域名批准接管，并在 Wrangler 再次询问时确认；部署完成后脚本删除旧 Worker，再保存新的部署记录。D1 数据库和 R2 bucket 的已有名称保持不变，因为它们是承载数据的资源标识，不为改名执行高风险复制。新版兼容既有密码验证器；Cookie 名称已更新，迁移后浏览器需要重新登录一次。
 
 - 拒绝非交互式输入和预先设置的 Cloudflare Token/API Key 环境变量。
 - Token 仅在本次进程中使用，通过子进程环境交给 Wrangler，不写文件、不放命令行参数。共享密码派生出的验证器直接通过 HTTPS API 写入 Worker Secret `PASSWORD_VERIFIER`。
@@ -387,7 +387,7 @@ bash deploy.sh
 
 如果首次安装 Secret 失败，可以在修复 Token 权限后执行 `npm run password` 完成设置。不要通过 Cloudflare 控制台开启 R2 公共访问，也不要添加绕过 Worker 的缓存规则。
 
-自定义域名只在首次部署时询问，后续沿用 `wrangler.deploy.json` 中保存的目标；当前没有交互式切换域名或账户的专用命令。不要通过删除该文件来尝试“重新部署”，否则无法正常识别原有 Worker 与存储绑定。
+每次部署都会重新确认公开入口，但不会重新选择账户、D1 或 R2。不要通过删除 `wrangler.deploy.json` 尝试切换目标，否则无法正常识别原有 Worker 与存储绑定。
 
 ## 改密码
 

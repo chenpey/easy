@@ -101,6 +101,17 @@ export function migrateDeploymentIdentity(template, existing) {
   };
 }
 
+export async function selectDeploymentDomain(existing, ask) {
+  const saved = existing?.routes?.[0]?.pattern || "";
+  if (!existing) return (await ask("Custom domain (blank for workers.dev): ")).trim().toLowerCase();
+  const current = saved || "workers.dev";
+  const answer = (await ask(
+    `Custom domain [${current}] (Enter keeps it; type a hostname or workers.dev): `,
+  )).trim().toLowerCase();
+  if (!answer) return saved;
+  return answer === "workers.dev" ? "" : answer;
+}
+
 export function deploymentConfig(template, existing, account, name, domain) {
   if (!/^[a-f0-9]{32}$/.test(account)) throw new Error("Invalid account ID.");
   if (!/^[a-z][a-z0-9-]{1,48}[a-z0-9]$/.test(name)) throw new Error("Worker name must be 3-50 lowercase letters, digits or hyphens.");
