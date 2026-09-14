@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="EasyNote">
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="#167766"/>
+  <rect x="4" y="4" width="56" height="56" rx="10" fill="#334"/>
   <path d="M17 13h24l8 8v30H17z" fill="#ffffff"/>
-  <path d="M41 13v9h8z" fill="#bfe4d8"/>
-  <path d="M24 28h17M24 34h13" fill="none" stroke="#167766" stroke-width="3" stroke-linecap="round"/>
-  <path d="m23 47 3-9 16-16 6 6-16 16z" fill="#f2bd55" stroke="#a66e17" stroke-width="1.2" stroke-linejoin="round"/>
-  <path d="m23 47 3-9 6 6z" fill="#f7d89c" stroke="#a66e17" stroke-width="1.2" stroke-linejoin="round"/>
-  <path d="m23 47 1.7-5.2 3.5 3.5z" fill="#34443f"/>
+  <path d="M41 13v9h8z" fill="#d9dbe2"/>
+  <path d="M24 28h17M24 34h13" fill="none" stroke="#778087" stroke-width="3" stroke-linecap="round"/>
+  <path d="m23 47 3-9 16-16 6 6-16 16z" fill="#e3ae54" stroke="#8a641f" stroke-width="1.2" stroke-linejoin="round"/>
+  <path d="m23 47 3-9 6 6z" fill="#f1d59a" stroke="#8a641f" stroke-width="1.2" stroke-linejoin="round"/>
+  <path d="m23 47 1.7-5.2 3.5 3.5z" fill="#334"/>
   <path d="m42 22 6 6" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
 </svg>

@@ -86,7 +86,7 @@ test('images render, export includes bytes, and import creates a readable copy',
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '预览模式' }).click();
   await expect(page.locator('.markdown img')).toBeVisible();
-  expect(await page.locator('.markdown img').evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
+  await expect.poll(() => page.locator('.markdown img').evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
   await page.screenshot({ path: 'test-results/desktop-image.png', fullPage: true });
   await page.locator('.account').click();
   const downloadPromise = page.waitForEvent('download');
@@ -129,9 +129,9 @@ test('note list width is adjustable, persistent, and both footers align', async 
   const handle = await separator.boundingBox();
   expect(initial).not.toBeNull();
   expect(handle).not.toBeNull();
-  expect(initial!.width).toBeCloseTo(200, 0);
-  await expect(separator).toHaveAttribute('aria-valuemin', '180');
-  await expect(separator).toHaveAttribute('aria-valuemax', '360');
+  expect(initial!.width).toBeCloseTo(300, 0);
+  await expect(separator).toHaveAttribute('aria-valuemin', '220');
+  await expect(separator).toHaveAttribute('aria-valuemax', '440');
   await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + 140);
   await page.mouse.down();
   await page.mouse.move(handle!.x + handle!.width / 2 + 84, handle!.y + 140, { steps: 5 });
@@ -162,7 +162,7 @@ test('note list width is adjustable, persistent, and both footers align', async 
   await page.reload();
   expect((await list.boundingBox())!.width).toBeCloseTo(resized!.width, 0);
   await separator.dblclick();
-  await expect(separator).toHaveAttribute('aria-valuenow', '200');
+  await expect(separator).toHaveAttribute('aria-valuenow', '300');
 });
 
 test('typing while a save response is delayed preserves the newer draft', async ({ page }) => {
