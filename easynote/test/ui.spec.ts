@@ -193,6 +193,32 @@ test('typing while a save response is delayed preserves the newer draft', async 
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('完整保留第二段修改');
 });
 
+test('a stalled save times out and remains retryable without reloading', async ({ page }) => {
+  await page.goto('/');
+  await newNote(page, `超时恢复-${randomUUID().slice(0, 6)}`, '已保存内容');
+  await page.clock.install();
+  await page.evaluate(() => {
+    const state = window as typeof window & { stalledPuts: number };
+    state.stalledPuts = 0;
+    const original = window.fetch.bind(window);
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method !== 'PUT') return original(input, init);
+      state.stalledPuts++;
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    }) as typeof fetch;
+  });
+  await page.getByRole('textbox', { name: '笔记正文' }).fill('等待超时的本地草稿');
+  await page.getByRole('button', { name: '立即同步', exact: true }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { stalledPuts: number }).stalledPuts)).toBe(1);
+  await page.clock.runFor(31_000);
+  await expect(page.getByRole('alert')).toContainText('Request timed out after 30 seconds.');
+  await expect(page.getByText('待处理草稿', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '立即同步', exact: true })).toBeEnabled();
+});
+
 test('polling still refreshes the selected note after loading more than 50 notes', async ({ page }) => {
   const marker = randomUUID().slice(0, 8);
   const targetId = randomUUID();

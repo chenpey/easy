@@ -1,5 +1,7 @@
 import type { Note, NoteInput, NoteSummary, Session, Version, ImageRecord } from '../shared/types';
 
+const API_TIMEOUT_MS = 30_000;
+const UPLOAD_TIMEOUT_MS = 120_000;
 let csrf: string | null = null;
 let unauthorizedHandler: (() => void) | null = null;
 export function setSession(session: Session) { csrf = session.csrf; }
@@ -11,6 +13,30 @@ function handleUnauthorized(status: number, requestCsrf: string | null): void {
   unauthorizedHandler?.();
 }
 
+async function timedFetch(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<{ response: Response; raw: string }> {
+  const controller = init.signal ? null : new AbortController();
+  let timedOut = false;
+  const timer = controller ? setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs) : null;
+  const method = init.method ?? 'GET';
+  try {
+    const response = await fetch(path, { ...init, signal: init.signal ?? controller!.signal });
+    return { response, raw: await response.text() };
+  } catch (error) {
+    if (timedOut) throw new Error(`${method} ${path}\nRequest timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+    if (init.signal?.aborted) throw error;
+    throw new Error(`${method} ${path}\n${String(error)}`);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export class ApiError extends Error {
   constructor(public status: number, public body: { error?: { message?: string; current?: Note } }, method: string, path: string) {
     super(`${method} ${path} [${status}]\n${JSON.stringify(body, null, 2)}`);
@@ -19,15 +45,11 @@ export class ApiError extends Error {
 
 export async function request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const requestCsrf = csrf;
-  const response = await fetch(path, {
+  const { response, raw } = await timedFetch(path, {
     method, credentials: 'same-origin', signal,
     headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(requestCsrf ? { 'X-CSRF-Token': requestCsrf } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }).catch((error: unknown) => {
-    if (signal?.aborted) throw error;
-    throw new Error(`${method} ${path}\n${String(error)}`);
-  });
-  const raw = await response.text();
+  }, API_TIMEOUT_MS);
   handleUnauthorized(response.status, requestCsrf);
   let result;
   try { result = JSON.parse(raw); } catch { throw new Error(`${method} ${path} [${response.status}]\n${raw}`); }
@@ -58,12 +80,11 @@ export async function uploadImage(file: File, maxBytes: number, maxPixels: numbe
   if (pixels > maxPixels) throw new Error('图片尺寸超过限制。');
   const path = `/api/images/${crypto.randomUUID()}`;
   const requestCsrf = csrf;
-  const response = await fetch(path, {
+  const { response, raw } = await timedFetch(path, {
     method: 'PUT', credentials: 'same-origin',
     headers: { 'Content-Type': file.type, 'X-Filename': encodeURIComponent(file.name), 'X-CSRF-Token': requestCsrf ?? '' },
     body: file,
-  }).catch((error: unknown) => { throw new Error(`PUT ${path}\n${String(error)}`); });
-  const raw = await response.text();
+  }, UPLOAD_TIMEOUT_MS);
   handleUnauthorized(response.status, requestCsrf);
   let body;
   try { body = JSON.parse(raw); } catch { throw new Error(`PUT ${path} [${response.status}]\n${raw}`); }
