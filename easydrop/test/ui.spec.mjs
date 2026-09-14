@@ -146,11 +146,17 @@ test("editing during submit cannot send a second request or erase new input", as
 test("lost upload response can be retried without duplicate history", async ({ page, context }) => {
   await loginContext(context);
   let interrupted = false;
+  let completeReached;
+  let releaseComplete;
+  const reachedComplete = new Promise((resolve) => { completeReached = resolve; });
+  const holdComplete = new Promise((resolve) => { releaseComplete = resolve; });
   await page.route("**/api/uploads/*/complete", async (route) => {
     if (!interrupted) {
       interrupted = true;
       const response = await route.fetch();
       expect(response.status()).toBe(201);
+      completeReached();
+      await holdComplete;
       await route.abort("failed");
     } else await route.continue();
   });
@@ -158,6 +164,12 @@ test("lost upload response can be retried without duplicate history", async ({ p
   await expect(page.locator("#file-input")).toBeEnabled();
   await page.locator("#file-input").setInputFiles({ name: "retry.txt", mimeType: "text/plain", buffer: Buffer.from("retry") });
   await page.getByRole("button", { name: "上传文件", exact: true }).click();
+  try {
+    await reachedComplete;
+    await expect(page.locator("#upload-list .upload-row > .muted")).toHaveText("上传分片 1/1");
+  } finally {
+    releaseComplete();
+  }
   await expect(page.locator("#notice")).toHaveText("1 个文件上传失败");
   await page.getByRole("button", { name: "继续上传", exact: true }).click();
   await expect(page.locator("#notice")).toHaveText("上传完成");

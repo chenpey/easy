@@ -510,7 +510,7 @@ async function uploadFile(entry) {
   if (firstError) throw firstError;
   if (pauseRequested) throw new UploadPaused("Upload paused.");
 
-  entry.state.textContent = "正在合并";
+  if (upload.totalParts > 1) entry.state.textContent = "正在合并";
   await api(`/api/uploads/${entry.id}/complete`, { method: "POST" });
   entry.done = true;
   entry.progress.value = 100;
