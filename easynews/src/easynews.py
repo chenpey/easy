@@ -1,4 +1,4 @@
-"""统一入口：prepare 采集粗筛并准备语义分片；finish 校验判断并统计导出。"""
+"""EasyNews 命令入口：准备语义任务，或合并判断并导出报表。"""
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -88,9 +88,9 @@ def prepare(args):
     print(f"运行目录：{output}")
     if missing:
         print(f"等待当前会话模型判断 {len(missing)} 个分片：{output / 'judge' / 'INSTRUCTIONS.md'}")
-        print(f"判断写回后执行：uv run --locked src/pipeline.py finish {output}")
+        print(f"判断写回后执行：uv run --locked src/easynews.py finish {output}")
     else:
-        print(f"已无待判文章，可执行：uv run --locked src/pipeline.py finish {output}")
+        print(f"已无待判文章，可执行：uv run --locked src/easynews.py finish {output}")
     return output
 
 
@@ -107,7 +107,7 @@ def finish(args):
     print_summary(data)
     if missing:
         raise ValueError(f"语义判断未完成，不导出成品；待补齐：{', '.join(missing)}")
-    target = args.excel or args.output / "innovation_news.xlsx"
+    target = args.excel or args.output / "easynews.xlsx"
     export_excel(data, target)
     print(f"统计：{args.output / 'summary.json'}")
     print(f"Excel：{target.resolve()}")
@@ -121,25 +121,31 @@ def positive(value):
     return number
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+def build_parser():
+    parser = argparse.ArgumentParser(prog="easynews", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    p = commands.add_parser("prepare", help="采集、按日期和关键词粗筛、准备 AI 判断分片")
-    p.add_argument("--config", type=Path, default=ROOT / "config.json")
-    p.add_argument("--start", help="覆盖开始日期，YYYY-MM-DD")
-    p.add_argument("--end", help="覆盖结束日期，YYYY-MM-DD")
-    p.add_argument("--output", type=Path)
-    p.add_argument("--source", action="append", choices=list(news.SOURCES))
-    p.add_argument("--max-pages", type=positive, default=300)
-    p.add_argument("--full-history", action="store_true")
-    p.add_argument("--refresh", action="store_true")
-    p.add_argument("--batch-size", type=positive, default=10)
-    p.add_argument("--from-run", type=Path, help="复用已有运行的原始正文，不联网、不复用旧判断")
-    p.set_defaults(action=prepare)
-    p = commands.add_parser("finish", help="合并 AI 判断，全部完成后统计并导出 Excel")
-    p.add_argument("output", type=Path)
-    p.add_argument("--excel", type=Path, help="自定义导出位置，已有文件拒绝覆盖")
-    p.set_defaults(action=finish)
+    prepare_parser = commands.add_parser("prepare", help="采集、粗筛并准备 AI 判断分片")
+    prepare_parser.add_argument("--config", type=Path, default=ROOT / "config.json")
+    prepare_parser.add_argument("--start", help="覆盖开始日期，YYYY-MM-DD")
+    prepare_parser.add_argument("--end", help="覆盖结束日期，YYYY-MM-DD")
+    prepare_parser.add_argument("--output", type=Path)
+    prepare_parser.add_argument("--source", action="append", choices=list(news.SOURCES))
+    prepare_parser.add_argument("--max-pages", type=positive, default=300)
+    prepare_parser.add_argument("--full-history", action="store_true")
+    prepare_parser.add_argument("--refresh", action="store_true")
+    prepare_parser.add_argument("--batch-size", type=positive, default=10)
+    prepare_parser.add_argument("--from-run", type=Path, help="复用已有运行的原始正文，不联网、不复用旧判断")
+    prepare_parser.set_defaults(action=prepare)
+
+    finish_parser = commands.add_parser("finish", help="合并 AI 判断，全部完成后统计并导出 Excel")
+    finish_parser.add_argument("output", type=Path)
+    finish_parser.add_argument("--excel", type=Path, help="自定义导出位置，已有文件拒绝覆盖")
+    finish_parser.set_defaults(action=finish)
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
     args = parser.parse_args((sys.argv[1:] if argv is None else argv) or ["prepare"])
     try:
         return args.action(args)

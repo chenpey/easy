@@ -1,4 +1,4 @@
-"""离线回归：uv run src/test_news.py；不联网，不调用模型。"""
+"""EasyNews 离线回归；不联网，不调用模型。"""
 from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from io import StringIO
@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
+import easynews
 from export_excel import export_excel
 import news
-import pipeline
 import semantic
 
 CONFIG = {
@@ -47,7 +47,7 @@ def answer(batch):
     ]}
 
 
-class PipelineTests(unittest.TestCase):
+class EasyNewsTests(unittest.TestCase):
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -63,7 +63,7 @@ class PipelineTests(unittest.TestCase):
         self.enterContext(redirect_stderr(StringIO()))
 
     def prepare(self, *extra, output=None):
-        return pipeline.main(["prepare", "--config", str(self.config_path), "--output",
+        return easynews.main(["prepare", "--config", str(self.config_path), "--output",
                               str(output or self.output), "--batch-size", "2", *extra])
 
     def judge(self):
@@ -83,8 +83,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(data["summary"]["judged_count"], 2)
         self.assertTrue(missing)
         with self.assertRaises(SystemExit):
-            pipeline.main(["finish", str(self.output)])
-        self.assertFalse((self.output / "innovation_news.xlsx").exists())
+            easynews.main(["finish", str(self.output)])
+        self.assertFalse((self.output / "easynews.xlsx").exists())
         self.fetch.reset_mock()
         self.prepare()
         self.fetch.assert_not_called()
@@ -92,7 +92,7 @@ class PipelineTests(unittest.TestCase):
         self.judge()
         # finish 只读取冻结配置，即使根配置失效，也不重新采集或改变判断口径。
         news.write_json(self.config_path, {})
-        target = pipeline.main(["finish", str(self.output)])
+        target = easynews.main(["finish", str(self.output)])
         data = news.read_json(self.output / "results.json")
         s = data["summary"]
         self.assertEqual((s["candidate_count"], s["coarse_count"], s["keyword_excluded_count"]), (4, 3, 1))
@@ -116,7 +116,7 @@ class PipelineTests(unittest.TestCase):
         wb.close()
         original = target.read_bytes()
         with self.assertRaises(SystemExit):
-            pipeline.main(["finish", str(self.output)])
+            easynews.main(["finish", str(self.output)])
         self.assertEqual(original, target.read_bytes())
 
     def test_validation_is_strict_and_preserves_previous_results(self):
@@ -205,7 +205,7 @@ class PipelineTests(unittest.TestCase):
         changed["keywords"] = {"title": ["完全无匹配"], "content": []}
         news.write_json(self.config_path, changed)
         empty = self.prepare(output=self.root / "empty")
-        target = pipeline.main(["finish", str(empty)])
+        target = easynews.main(["finish", str(empty)])
         self.assertEqual(news.read_json(empty / "summary.json")["coarse_count"], 0)
         wb = load_workbook(target)
         self.assertEqual(wb["新闻台账"].max_row, 1)

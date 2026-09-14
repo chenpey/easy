@@ -1,6 +1,7 @@
-# 新闻筛选与统计
+# EasyNews
 
-一个使用 uv 管理的纯 Python 脚本项目：4 个运行模块、1 个测试文件。
+面向新闻采集、语义筛选、统计与 Excel 台账的纯 Python 工具。
+项目使用 uv 管理，保持 4 个运行模块和 1 个回归测试文件。
 没有 Web 服务、数据库或独立模型服务，阶段之间通过 JSON 文件衔接。
 
 ```text
@@ -27,7 +28,7 @@
 ```mermaid
 %%{init: {"theme": "neutral", "flowchart": {"curve": "linear", "nodeSpacing": 20}}}%%
 flowchart TB
-    root["新闻筛选与统计"]
+    root["EasyNews"]
 
     root --- config["配置与环境"]
     root --- modules["处理模块"]
@@ -36,10 +37,10 @@ flowchart TB
     root --- quality["质量控制"]
 
     config --- config_detail["config.json<br/>日期、关键词、语义要求<br/><br/>uv<br/>依赖与虚拟环境管理"]
-    modules --- modules_detail["pipeline.py：流程编排<br/>news.py：采集与粗筛<br/>semantic.py：校验与统计<br/>export_excel.py：报表导出"]
+    modules --- modules_detail["easynews.py：命令入口与流程编排<br/>news.py：采集与粗筛<br/>semantic.py：校验与统计<br/>export_excel.py：报表导出"]
     model --- model_detail["当前会话模型<br/>理解筛选要求与全文<br/>返回逐篇结论及原文证据"]
     storage --- storage_detail["data/：参考资料与缓存<br/>outputs/：运行数据与结果<br/>deliverables/：正式交付文件"]
-    quality --- quality_detail["test_news.py：离线回归<br/>各类判断结果分别统计<br/>全部判断完成且校验通过后导出<br/>不覆盖已有 Excel"]
+    quality --- quality_detail["test_easynews.py：离线回归<br/>各类判断结果分别统计<br/>全部判断完成且校验通过后导出<br/>不覆盖已有 Excel"]
 ```
 
 连线表示职责归属，不表示执行顺序或自动调用关系。Python 脚本不调用模型；
@@ -54,7 +55,7 @@ flowchart TB
 
 ```sh
 uv sync --locked
-uv run --locked src/test_news.py
+uv run --locked src/test_easynews.py
 ```
 
 不要使用系统 Python、共享虚拟环境、pip 或 Node 运行项目。增加依赖使用 `uv add`。
@@ -92,10 +93,10 @@ uv run --locked src/test_news.py
 ### 1. 准备粗筛池
 
 ```sh
-uv run --locked src/pipeline.py prepare --output outputs/my-run
+uv run --locked src/easynews.py prepare --output outputs/my-run
 ```
 
-双击 `开始采集.command` 也会执行此步骤，自动创建独立目录。
+双击 `EasyNews.command` 也会执行此步骤，自动创建独立目录。
 这一步不调用模型，只采集、粗筛并生成 `judge/` 下的全文分片，默认每片 10 篇。
 
 常用参数：`--config` 更换配置，`--start` / `--end` 覆盖日期，
@@ -106,7 +107,7 @@ uv run --locked src/pipeline.py prepare --output outputs/my-run
 已有原始文章时，可以离线重新筛选，不复用旧判断：
 
 ```sh
-uv run --locked src/pipeline.py prepare --from-run outputs/current --output outputs/new-run
+uv run --locked src/easynews.py prepare --from-run outputs/current --output outputs/new-run
 ```
 
 日期及栏目必须落在原采集范围内；原始数据的缺项会保留。
@@ -132,10 +133,10 @@ uv run --locked src/pipeline.py prepare --from-run outputs/current --output outp
 ### 3. 统计与导出
 
 ```sh
-uv run --locked src/pipeline.py finish outputs/my-run
+uv run --locked src/easynews.py finish outputs/my-run
 
 # 指定交付位置
-uv run --locked src/pipeline.py finish outputs/my-run --excel deliverables/我的台账.xlsx
+uv run --locked src/easynews.py finish outputs/my-run --excel deliverables/我的台账.xlsx
 ```
 
 `finish` 只读取本轮冻结数据和判断，不联网或重新粗筛。
@@ -145,23 +146,22 @@ uv run --locked src/pipeline.py finish outputs/my-run --excel deliverables/我�
 ## 目录结构
 
 ```text
-innovation_news/
+easynews/
 ├── config.json              日期、关键词、语义筛选要求
 ├── pyproject.toml           Python 依赖声明
 ├── uv.lock                  依赖版本锁定
 ├── .python-version          Python 版本，目前为 3.12
 ├── .venv/                   uv 管理的项目虚拟环境
-├── .git/                    Git 版本记录
 ├── .gitignore               虚拟环境、缓存和运行产物的忽略规则
 ├── AGENTS.md                AI 协作、模型使用和环境约束
 ├── README.md                使用说明和架构文档
-├── 开始采集.command         macOS 双击入口
+├── EasyNews.command         macOS 双击入口
 ├── src/
-│   ├── pipeline.py          命令入口与流程编排
+│   ├── easynews.py          命令入口与流程编排
 │   ├── news.py              配置、采集、解析、去重和关键词粗筛
 │   ├── semantic.py          语义任务准备、判断校验和统计
 │   ├── export_excel.py      Excel 导出
-│   └── test_news.py         离线回归测试
+│   └── test_easynews.py     离线回归测试
 ├── data/
 │   ├── 人工筛选版/          人工参考 Excel
 │   └── news_cache/pages/    按 URL 缓存的原始网页
@@ -183,12 +183,12 @@ innovation_news/
 ## 代码结构
 
 模块采用普通函数组织，不引入服务层、仓储层或插件框架。
-`pipeline.py` 调用其他三个模块；`semantic.py` 复用 `news.py` 的 JSON 读写函数；
+`easynews.py` 调用其他三个模块；`semantic.py` 复用 `news.py` 的 JSON 读写函数；
 `export_excel.py` 只接收结果数据，不依赖采集和模型判断逻辑。
 
-### pipeline.py：流程编排
+### easynews.py：命令入口与流程编排
 
-[源文件](src/pipeline.py)。只负责串联步骤，不判断文章是否符合业务要求。
+[源文件](src/easynews.py)。只负责解析命令并串联步骤，不判断文章是否符合业务要求。
 
 | 函数 | 职责 |
 |---|---|
@@ -256,9 +256,9 @@ innovation_news/
 新闻台账仅包含符合项，待确认单独列出。Excel 单元格文本超长时明确报错，
 不静默截断；完整数据仍在 JSON 中。导出不依赖 Node 或系统 Python。
 
-### test_news.py：离线回归
+### test_easynews.py：离线回归
 
-[源文件](src/test_news.py)。使用标准库 `unittest`，包括两组测试：
+[源文件](src/test_easynews.py)。使用标准库 `unittest`，包括两组测试：
 
 - `PipelineTests`：完整流程、统计、结果校验、输入变更、日期覆盖、离线复用、断点续跑、Excel 边界。
 - `ParsingTests`：日期与正文解析、列表分页、跨栏目去重、关键词匹配、采集失败状态。
@@ -270,10 +270,10 @@ innovation_news/
 ### 1. prepare：从配置到判断任务
 
 ```text
-pipeline.main()
+easynews.main()
   → news.load_config()
-  → pipeline.collect() → news.crawl_source() → fetch / parse_listing / parse_detail
-    或 pipeline.reuse() → 已有运行的 raw_articles.json
+  → easynews.collect() → news.crawl_source() → fetch / parse_listing / parse_detail
+    或 easynews.reuse() → 已有运行的 raw_articles.json
   → 按发布日期过滤
   → news.merge_articles()
   → news.coarse_filter()
@@ -298,7 +298,7 @@ judge/INSTRUCTIONS.md + chunk_*.json 中的 topic 和文章全文
 ### 3. finish：从判断到统计与 Excel
 
 ```text
-pipeline.finish()
+easynews.finish()
   → semantic.merge()
       → load_run() 核对冻结输入
       → validate() 校验已完成分片
@@ -326,7 +326,7 @@ pipeline.finish()
 | `judge/judged_0000.json` 等 | 当前模型 | 与输入分片对应的逐篇结论、主题、理由及原文证据 |
 | `results.json` | prepare / finish 合并时 | 符合项、待确认项、全部已完成判断、采集缺项和统计 |
 | `summary.json` | prepare / finish 合并时 | 各阶段数量，以及符合项的月度、主题、来源统计 |
-| `innovation_news.xlsx` | finish | 全部判断完成后生成；可用 `--excel` 更改输出位置 |
+| `easynews.xlsx` | finish | 全部判断完成后生成；可用 `--excel` 更改输出位置 |
 
 原始记录用于复用，粗筛池用于固定判断范围，分片用于模型处理，
 结果和汇总用于核对与交付；不要把这些文件当作可互换的输入。
@@ -347,14 +347,14 @@ pipeline.finish()
 |---|---|
 | 日期、粗筛关键词、真正想找的文章类型 | `config.json` |
 | 新增栏目、网站结构变化、发布日期或正文解析 | `src/news.py` |
-| 命令参数、采集和导出的衔接 | `src/pipeline.py` |
+| 命令参数、采集和导出的衔接 | `src/easynews.py` |
 | 判断说明、字段校验、统计口径 | `src/semantic.py` |
 | Excel 列、工作表和样式 | `src/export_excel.py` |
 | 模型使用及开发协作约束 | `AGENTS.md` |
 | Python 依赖 | 使用 `uv add` 更新声明与锁文件 |
 
 ```sh
-uv run --locked src/test_news.py
+uv run --locked src/test_easynews.py
 ```
 
 运行时不读取人工参考 Excel，不用历史交付件反向改写当前配置。

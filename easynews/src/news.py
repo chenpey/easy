@@ -106,7 +106,7 @@ def fetch(url, refresh=False):
         return path.read_text(encoding="utf-8")
     for attempt in range(3):
         try:
-            req = Request(url, headers={"User-Agent": "SUES-News-Collector/2.0 (public academic news)"})
+            req = Request(url, headers={"User-Agent": "EasyNews/1.0 (public academic news collector)"})
             with urlopen(req, timeout=20) as response:
                 raw = response.read()
                 try:

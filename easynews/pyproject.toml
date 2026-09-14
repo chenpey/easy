@@ -1,7 +1,7 @@
 [project]
-name = "innovation-news"
-version = "0.1.0"
-description = "新闻采集：日期与关键词粗筛、语义筛选、统计及 Excel 台账"
+name = "easynews"
+version = "1.0.0"
+description = "EasyNews：新闻采集、语义筛选、统计与 Excel 台账"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
