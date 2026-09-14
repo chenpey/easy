@@ -171,7 +171,7 @@ export async function inspectDeployment(api, config, existing) {
   }
   return {
     foundDatabase, foundBucket, url,
-    hasPassword: !!settings?.bindings?.some((entry) => entry.name === "PASSWORD_VERIFIER" && entry.type === "secret_text"),
+    hasInitialAdmin: !!settings?.bindings?.some((entry) => entry.name === "INITIAL_ADMIN" && entry.type === "secret_text"),
     adoptingDatabase: !!foundDatabase && database.database_id === EMPTY_DATABASE,
     adoptingBucket: !!foundBucket && !existing,
   };

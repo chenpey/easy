@@ -13,6 +13,7 @@
     <div class="header-inner">
       <div class="brand"><img class="brand-icon" src="/favicon.svg" alt=""><h1>EasyDrop</h1></div>
       <div class="tools">
+        <button id="users-open" class="icon-button" title="用户管理" aria-label="用户管理" hidden><i data-lucide="users"></i></button>
         <button id="qr-open" class="icon-button" title="访问二维码" aria-label="访问二维码"><i data-lucide="qr-code"></i></button>
         <button id="logout" class="icon-button" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button>
       </div>
@@ -64,6 +65,27 @@
       <button value="cancel" class="secondary">取消</button>
       <button value="confirm" class="destructive">确认删除</button>
     </form>
+  </dialog>
+  <dialog id="users-dialog">
+    <div class="section-heading"><h2>用户管理</h2><button id="users-close" class="icon-button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button></div>
+    <form id="user-form">
+      <input id="user-id" type="hidden">
+      <label for="user-name">用户名</label>
+      <input id="user-name" type="text" autocomplete="off" minlength="3" maxlength="32" required>
+      <label for="user-password">密码</label>
+      <input id="user-password" type="password" autocomplete="new-password" minlength="12" maxlength="32"
+        pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
+      <div class="user-options">
+        <label for="user-role">角色</label>
+        <select id="user-role"><option value="user">用户</option><option value="admin">管理员</option></select>
+        <label class="toggle"><input id="user-enabled" type="checkbox" checked><span>启用</span></label>
+      </div>
+      <div class="dialog-actions">
+        <button id="user-cancel" class="secondary" type="button" hidden>取消编辑</button>
+        <button class="primary" type="submit"><i data-lucide="user-plus"></i><span id="user-submit-label">添加用户</span></button>
+      </div>
+    </form>
+    <div id="user-list" class="user-list"></div>
   </dialog>
 </body>
 </html>

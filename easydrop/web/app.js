@@ -1,7 +1,7 @@
-import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText } from "lucide";
+import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX } from "lucide";
 import QRCode from "qrcode";
 
-const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText };
+const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX };
 const renderIcons = () => createIcons({ icons });
 const $ = (id) => document.getElementById(id);
 const isLogin = document.body.dataset.page === "login";
@@ -134,6 +134,64 @@ function confirmDelete(title) {
     dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), { once: true });
     dialog.showModal();
   });
+}
+
+function resetUserForm() {
+  $("user-form").reset();
+  $("user-id").value = "";
+  $("user-enabled").checked = true;
+  $("user-password").required = true;
+  $("user-submit-label").textContent = "添加用户";
+  $("user-cancel").hidden = true;
+}
+
+async function loadUsers() {
+  const data = await api("/api/users");
+  const list = $("user-list");
+  list.replaceChildren();
+  for (const user of data.users) {
+    const row = document.createElement("div");
+    row.className = `user-row${user.enabled ? "" : " user-disabled"}`;
+    const meta = document.createElement("div");
+    meta.className = "user-meta";
+    const name = document.createElement("div");
+    name.className = "user-name";
+    name.textContent = user.username;
+    const detail = document.createElement("div");
+    detail.className = "user-detail muted";
+    detail.textContent = `${user.role === "admin" ? "管理员" : "用户"} · ${user.enabled ? "已启用" : "已禁用"}`;
+    meta.append(name, detail);
+    const actions = document.createElement("div");
+    actions.className = "item-actions";
+    const edit = actionButton("编辑用户", "pencil", () => {
+      $("user-id").value = user.id;
+      $("user-name").value = user.username;
+      $("user-password").value = "";
+      $("user-password").required = false;
+      $("user-role").value = user.role;
+      $("user-enabled").checked = user.enabled;
+      $("user-submit-label").textContent = "保存修改";
+      $("user-cancel").hidden = false;
+      $("user-name").focus();
+    });
+    const toggle = actionButton(user.enabled ? "禁用用户" : "启用用户", user.enabled ? "user-x" : "user-check", async () => {
+      await api(`/api/users/${user.id}`, { method: "PATCH", data: { enabled: !user.enabled } });
+      await loadUsers();
+    });
+    const remove = actionButton("删除用户", "trash-2", async () => {
+      if (!await confirmDelete(`删除用户 ${user.username}？`)) return;
+      await api(`/api/users/${user.id}`, { method: "DELETE" });
+      await loadUsers();
+    }, true);
+    if (user.id === session.user.id) {
+      toggle.disabled = true;
+      remove.disabled = true;
+    }
+    actions.append(edit, toggle, remove);
+    row.append(meta, actions);
+    list.append(row);
+  }
+  renderIcons();
 }
 
 async function copy(value) {
@@ -573,6 +631,7 @@ function pauseUpload() {
 
 async function initializeApp() {
   session = await api("/api/session");
+  $("users-open").hidden = session.user.role !== "admin";
   $("upload-limit").textContent = `单文件上限 ${size(session.maxUploadBytes)}`;
   const updateCount = () => {
     const bytes = new TextEncoder().encode($("text-input").value).length;
@@ -641,6 +700,36 @@ async function initializeApp() {
   }));
   $("qr-close").addEventListener("click", () => $("qr-dialog").close());
   $("copy-url").addEventListener("click", () => busy($("copy-url"), () => copy(location.origin)));
+  $("users-open").addEventListener("click", () => busy($("users-open"), async () => {
+    resetUserForm();
+    await loadUsers();
+    $("users-dialog").showModal();
+  }));
+  $("users-close").addEventListener("click", () => $("users-dialog").close());
+  $("user-cancel").addEventListener("click", resetUserForm);
+  $("user-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    busy(event.submitter, async () => {
+      const id = $("user-id").value;
+      const data = {
+        username: $("user-name").value,
+        role: $("user-role").value,
+        enabled: $("user-enabled").checked,
+      };
+      if ($("user-password").value) data.password = $("user-password").value;
+      const result = await api(id ? `/api/users/${id}` : "/api/users", {
+        method: id ? "PATCH" : "POST",
+        data,
+      });
+      if (result.signedOut) {
+        expireSession();
+        return;
+      }
+      resetUserForm();
+      await loadUsers();
+      notice(id ? "用户已更新并下线" : "用户已添加");
+    });
+  });
   window.addEventListener("pageshow", (event) => { if (event.persisted) location.reload(); });
   window.addEventListener("beforeunload", (event) => {
     if (uploading || textSubmitting) {
@@ -658,7 +747,10 @@ if (isLogin) {
   $("login-form").addEventListener("submit", (event) => {
     event.preventDefault();
     busy(event.submitter, async () => {
-      await api("/api/login", { method: "POST", data: { password: $("password").value } });
+      await api("/api/login", {
+        method: "POST",
+        data: { username: $("username").value, password: $("password").value },
+      });
       $("password").value = "";
       const downloadPath = requestedDownloadPath();
       if (!downloadPath) {

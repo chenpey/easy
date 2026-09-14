@@ -12,7 +12,6 @@
     "dev": "npm run build && WRANGLER_LOG_PATH=.wrangler/logs/ WRANGLER_SEND_METRICS=false wrangler d1 migrations apply DB --local && WRANGLER_LOG_PATH=.wrangler/logs/ WRANGLER_SEND_METRICS=false wrangler dev --ip 127.0.0.1",
     "preview": "npm run build && node scripts/preview.mjs",
     "deploy": "bash deploy.sh",
-    "password": "node scripts/manage.mjs password",
     "test": "npm run build && node --test test/api.test.mjs test/deploy.test.mjs",
     "test:ui": "npm run build && playwright test test/ui.spec.mjs --workers=1",
     "check": "node --check src/worker.js && node --check src/auth.js && node --check web/app.js && node --check scripts/manage.mjs && node --check scripts/cloudflare.mjs"

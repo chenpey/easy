@@ -12,7 +12,7 @@
   </defs>
   <rect width="1600" height="1220" fill="#f5f7fb"/>
   <text x="70" y="70" class="title">Cloudflare API Token：创建位置、权限和资源范围</text>
-  <text x="70" y="108" class="small muted">这是 User API Token，不是 Global API Key、R2 S3 Access Key、Account ID 或共享登录密码。</text>
+  <text x="70" y="108" class="small muted">这是 User API Token，不是 Global API Key、R2 S3 Access Key、Account ID 或用户登录密码。</text>
 
   <rect x="70" y="145" width="1460" height="142" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="199" r="24" fill="#f48120"/><text x="107" y="208" class="heading white">1</text>

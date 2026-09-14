@@ -82,10 +82,10 @@ test("deployment domain is confirmed on every run and can be changed", async () 
   assert.equal(await selectDeploymentDomain({}, async () => "share.example.test"), "share.example.test");
 });
 
-test("first deployment provisions private storage and subsequent deployment reuses it and password", async () => {
+test("first deployment provisions private storage and subsequent deployment reuses it and users", async () => {
   const config = deploymentConfig(template, null, account, "my-share", "");
   const inspection = await inspectDeployment(api, config, null);
-  assert.equal(inspection.hasPassword, false);
+  assert.equal(inspection.hasInitialAdmin, false);
   assert.equal(inspection.url, "https://my-share.personal.workers.dev");
   const saves = [];
   await provisionDeployment(api, config, inspection, async (value) => saves.push(structuredClone(value)));
@@ -93,12 +93,12 @@ test("first deployment provisions private storage and subsequent deployment reus
   settings = { bindings: [
     { name: "DB", type: "d1", id: database.uuid },
     { name: "FILES", type: "r2_bucket", bucket_name: bucket.name },
-    { name: "PASSWORD_VERIFIER", type: "secret_text" },
+    { name: "INITIAL_ADMIN", type: "secret_text" },
   ] };
   records = [];
   const next = deploymentConfig(template, config, account, config.name, "");
   const repeated = await inspectDeployment(api, next, config);
-  assert.equal(repeated.hasPassword, true);
+  assert.equal(repeated.hasInitialAdmin, true);
   await provisionDeployment(api, next, repeated, async () => {});
   assert.equal(records.filter((request) => request.method !== "GET").length, 0);
 });

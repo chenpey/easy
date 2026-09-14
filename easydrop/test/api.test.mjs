@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { createPasswordVerifier, digest, verifyPassword } from "../src/auth.js";
+import { createInitialAdmin, createPasswordVerifier, digest, verifyPassword } from "../src/auth.js";
 import { maintenance } from "../src/worker.js";
 import { applyLocalMigrations } from "../scripts/preview.mjs";
 
-const password = "test-only-share-password-38!";
+const password = "Test-only-share-Password-38!";
+const username = "admin";
 const origin = "https://share.example.test";
 let mf, db, bucket, script;
 let cookie, csrf;
@@ -34,7 +35,7 @@ async function jsonRequest(path, data, authenticated = false, headers = {}) {
 }
 
 async function signIn() {
-  const response = await jsonRequest("/api/login", { password });
+  const response = await jsonRequest("/api/login", { username, password });
   assert.equal(response.status, 200, await response.clone().text());
   cookie = response.headers.get("Set-Cookie").split(";")[0];
   const session = await request("/api/session", { authenticated: true });
@@ -43,12 +44,13 @@ async function signIn() {
 }
 
 before(async () => {
+  const initialAdmin = await createInitialAdmin(username, password);
   const bundle = await build({ entryPoints: ["src/worker.js"], bundle: true, write: false, format: "esm", platform: "browser" });
   script = bundle.outputFiles[0].text;
   mf = new Miniflare(convertV4MiniflareOptions({
     name: "easydrop-test",
     modules: true, script: bundle.outputFiles[0].text, compatibilityDate: config.compatibility_date,
-    bindings: { ...config.vars, MAX_UPLOAD_BYTES: "6291456", PASSWORD_VERIFIER: await createPasswordVerifier(password) },
+    bindings: { ...config.vars, MAX_UPLOAD_BYTES: "6291456", INITIAL_ADMIN: initialAdmin },
     d1Databases: ["DB"], r2Buckets: ["FILES"],
     assets: {
       directory: new URL("../dist", import.meta.url).pathname, binding: "ASSETS", run_worker_first: true,
@@ -64,6 +66,7 @@ before(async () => {
 beforeEach(async () => {
   await db.batch(["DELETE FROM multipart_parts", "DELETE FROM multipart_uploads", "DELETE FROM items",
     "DELETE FROM sessions", "DELETE FROM login_attempts", "DELETE FROM operations",
+    "DELETE FROM users WHERE username != 'admin'",
     "UPDATE app_state SET revision = 0, sweep_cursor = ''"].map((sql) => db.prepare(sql)));
   const objects = await bucket.list();
   if (objects.objects.length) await bucket.delete(objects.objects.map((item) => item.key));
@@ -74,6 +77,17 @@ beforeEach(async () => {
 after(async () => { await mf?.dispose(); });
 
 test("password verifier validates only the current EasyDrop format", async () => {
+  for (const invalid of [
+    "Short1A",
+    "lowercase-only-password1",
+    "UPPERCASE-ONLY-PASSWORD1",
+    "MissingNumberPassword!",
+    `Aa1!${"x".repeat(29)}`,
+  ]) {
+    await assert.rejects(createPasswordVerifier(invalid), /12-32 characters/);
+  }
+  await createPasswordVerifier("Abcdefghij1!");
+  await createPasswordVerifier(`Aa1!${"x".repeat(28)}`);
   const verifier = JSON.parse(await createPasswordVerifier(password));
   assert.equal(verifier.version, 3);
   assert.equal(await verifyPassword(password, verifier), true);
@@ -87,10 +101,10 @@ test("missing credentials and invalid settings fail closed; production refuses H
   try {
     const missing = await runtime.dispatchFetch(`${origin}/`);
     assert.equal(missing.status, 503);
-    assert.match((await missing.json()).message, /PASSWORD_VERIFIER/);
+    assert.match((await missing.json()).message, /INITIAL_ADMIN/);
     await runtime.setOptions(convertV4MiniflareOptions({
       modules: true, script, compatibilityDate: config.compatibility_date,
-      bindings: { ...config.vars, MAX_UPLOAD_BYTES: "invalid", PASSWORD_VERIFIER: await createPasswordVerifier(password) },
+      bindings: { ...config.vars, MAX_UPLOAD_BYTES: "invalid", INITIAL_ADMIN: await createInitialAdmin(username, password) },
     }));
     assert.equal((await runtime.dispatchFetch(`${origin}/`)).status, 503);
   } finally {
@@ -131,19 +145,25 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
 });
 
 test("login validates inputs and origin, issues secure cookies and stores only token hashes", async () => {
-  assert.equal((await jsonRequest("/api/login", { password }, false, { Origin: "https://evil.test" })).status, 403);
-  assert.equal((await jsonRequest("/api/login", { password: "wrong" })).status, 401);
-  assert.equal((await jsonRequest("/api/login", { password: null })).status, 400);
+  assert.equal((await jsonRequest("/api/login", { username, password }, false, { Origin: "https://evil.test" })).status, 403);
+  assert.equal((await jsonRequest("/api/login", { username, password: "wrong" })).status, 401);
+  assert.equal((await jsonRequest("/api/login", { username, password: null })).status, 400);
+  assert.equal((await jsonRequest("/api/login", { username: "x", password })).status, 400);
   assert.equal((await request("/api/login", { method: "POST", body: "{" , headers: { "Content-Type": "application/json" } })).status, 400);
   assert.equal((await request("/api/login", { method: "POST", body: "password=test" })).status, 415);
   const response = await signIn();
   const header = response.headers.get("Set-Cookie");
   assert.match(header, /^__Host-easydrop=[a-f0-9]{64};/);
-  for (const attribute of ["Secure", "HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=604800"]) assert.ok(header.includes(attribute));
+  for (const attribute of ["Secure", "HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=2592000"]) assert.ok(header.includes(attribute));
   const stored = await db.prepare("SELECT * FROM sessions").first();
   assert.equal(stored.token_hash, await digest(cookie.split("=")[1]));
   assert.notEqual(stored.token_hash, cookie.split("=")[1]);
-  assert.equal((await request("/", { authenticated: true })).status, 200);
+  await db.prepare("UPDATE sessions SET expires_at = ?").bind(Math.floor(Date.now() / 1000) + 60).run();
+  const renewed = await request("/", { authenticated: true });
+  assert.equal(renewed.status, 200);
+  assert.match(renewed.headers.get("Set-Cookie"), /Max-Age=2592000/);
+  const sliding = await db.prepare("SELECT expires_at FROM sessions").first();
+  assert.ok(sliding.expires_at > Math.floor(Date.now() / 1000) + 2591900);
   const downloadPath = `/uploads/${crypto.randomUUID()}`;
   const resumed = await request(`/login?next=${encodeURIComponent(downloadPath)}`, { authenticated: true });
   assert.equal(resumed.status, 303);
@@ -184,18 +204,76 @@ test("logout revokes the session and expires its cookie", async () => {
   assert.equal((await request("/api/history", { authenticated: true })).status, 401);
 });
 
+test("administrators manage users and every account change revokes active sessions", async () => {
+  await signIn();
+  assert.equal((await jsonRequest("/api/users", {
+    username: "member", password: "weakpassword", role: "user",
+  }, true)).status, 400);
+  const created = await jsonRequest("/api/users", {
+    username: "member", password: "MemberPass123!", role: "user",
+  }, true);
+  assert.equal(created.status, 201, await created.clone().text());
+  const member = (await created.json()).user;
+  assert.equal(member.username, "member");
+  assert.equal(member.role, "user");
+  assert.equal(Object.hasOwn(member, "password_verifier"), false);
+  assert.equal((await jsonRequest("/api/users", {
+    username: "member", password: "MemberPass123!",
+  }, true)).status, 409);
+
+  const memberLogin = await jsonRequest("/api/login", { username: "member", password: "MemberPass123!" });
+  assert.equal(memberLogin.status, 200);
+  let memberCookie = memberLogin.headers.get("Set-Cookie").split(";")[0];
+  assert.equal((await request("/api/users", { headers: { Cookie: memberCookie } })).status, 403);
+
+  const updated = await request(`/api/users/${member.id}`, {
+    method: "PATCH", authenticated: true,
+    body: JSON.stringify({ username: "member2", password: "ChangedPass456!", role: "user", enabled: true }),
+    headers: { "Content-Type": "application/json" },
+  });
+  assert.equal(updated.status, 200, await updated.clone().text());
+  assert.equal((await request("/api/history", { headers: { Cookie: memberCookie } })).status, 401);
+  assert.equal((await jsonRequest("/api/login", { username: "member", password: "MemberPass123!" })).status, 401);
+
+  const changedLogin = await jsonRequest("/api/login", { username: "member2", password: "ChangedPass456!" });
+  assert.equal(changedLogin.status, 200);
+  memberCookie = changedLogin.headers.get("Set-Cookie").split(";")[0];
+  assert.equal((await request(`/api/users/${member.id}`, {
+    method: "PATCH", authenticated: true,
+    body: JSON.stringify({ enabled: false }), headers: { "Content-Type": "application/json" },
+  })).status, 200);
+  assert.equal((await request("/api/history", { headers: { Cookie: memberCookie } })).status, 401);
+  assert.equal((await jsonRequest("/api/login", { username: "member2", password: "ChangedPass456!" })).status, 401);
+
+  assert.equal((await request(`/api/users/${member.id}`, {
+    method: "PATCH", authenticated: true,
+    body: JSON.stringify({ enabled: true }), headers: { "Content-Type": "application/json" },
+  })).status, 200);
+  assert.equal((await jsonRequest("/api/login", { username: "member2", password: "ChangedPass456!" })).status, 200);
+  assert.equal((await request(`/api/users/${member.id}`, { method: "DELETE", authenticated: true })).status, 200);
+  assert.equal((await jsonRequest("/api/login", { username: "member2", password: "ChangedPass456!" })).status, 401);
+
+  const admin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
+  assert.equal((await request(`/api/users/${admin.id}`, {
+    method: "PATCH", authenticated: true,
+    body: JSON.stringify({ enabled: false }), headers: { "Content-Type": "application/json" },
+  })).status, 409);
+  assert.equal((await request(`/api/users/${admin.id}`, { method: "DELETE", authenticated: true })).status, 409);
+});
+
 test("login rate limits survive parallel requests and apply globally", async () => {
   await db.prepare("INSERT INTO login_attempts VALUES ('global', ?, 100)").bind(Math.floor(Date.now() / 1000)).run();
-  const blocked = await jsonRequest("/api/login", { password }, false, { "CF-Connecting-IP": "192.0.2.9" });
+  const blocked = await jsonRequest("/api/login", { username, password }, false, { "CF-Connecting-IP": "192.0.2.9" });
   assert.equal(blocked.status, 429);
   assert.ok(Number(blocked.headers.get("Retry-After")) > 0);
   await db.prepare("DELETE FROM login_attempts").run();
   await db.prepare("INSERT INTO login_attempts VALUES (?, ?, 9)")
     .bind(`ip:${await digest("192.0.2.1")}`, Math.floor(Date.now() / 1000)).run();
-  const statuses = await Promise.all([1, 2, 3].map(async () => (await jsonRequest("/api/login", { password: "wrong" })).status));
+  const statuses = await Promise.all([1, 2, 3].map(async () =>
+    (await jsonRequest("/api/login", { username, password: "wrong" })).status));
   assert.deepEqual(statuses.sort(), [401, 429, 429]);
   await db.prepare("UPDATE login_attempts SET started_at = 1").run();
-  assert.equal((await jsonRequest("/api/login", { password })).status, 200);
+  assert.equal((await jsonRequest("/api/login", { username, password })).status, 200);
 });
 
 test("text validation, preservation, pagination and revisions", async () => {
@@ -386,6 +464,9 @@ test("delete and clear revoke downloads immediately and cleanup removes R2 objec
 });
 
 test("expired sessions, login counters and abandoned uploads are cleaned", async () => {
+  await signIn();
+  const admin = await db.prepare("SELECT id, auth_version FROM users WHERE username = ?").bind(username).first();
+  await db.prepare("UPDATE sessions SET expires_at = 1").run();
   const id = crypto.randomUUID();
   await db.prepare("INSERT INTO items(id, type, state, created_at) VALUES (?, 'file', 'pending', 1)").bind(id).run();
   await bucket.put(`files/${id}`, "partial");
@@ -399,8 +480,9 @@ test("expired sessions, login counters and abandoned uploads are cleaned", async
     db.prepare("INSERT INTO multipart_uploads VALUES (?, ?, ?, 5242880, 1, 'uploading', 1)")
       .bind(multipartId, multipart.uploadId, operationKey),
   ]);
-  await db.prepare("INSERT INTO sessions VALUES ('old', 'csrf', 'version', 1)").run();
+  await db.prepare("INSERT INTO sessions VALUES ('old', ?, 'csrf', ?, 1)").bind(admin.id, admin.auth_version).run();
   await db.prepare("INSERT INTO login_attempts VALUES ('old', 1, 1)").run();
+  await db.prepare("UPDATE login_attempts SET started_at = 1").run();
   await maintenance({ DB: db, FILES: bucket });
   assert.equal(await bucket.head(`files/${id}`), null);
   await assert.rejects(multipart.uploadPart(1, "late"));
@@ -428,10 +510,10 @@ test("blocked IP does not consume global login budget", async () => {
   await db.prepare("INSERT INTO login_attempts VALUES (?, ?, 10)")
     .bind(`ip:${await digest("192.0.2.1")}`, Math.floor(Date.now() / 1000)).run();
   for (let i = 0; i < 5; i++) {
-    assert.equal((await jsonRequest("/api/login", { password: "wrong" })).status, 429);
+    assert.equal((await jsonRequest("/api/login", { username, password: "wrong" })).status, 429);
   }
   assert.equal(await db.prepare("SELECT * FROM login_attempts WHERE key = 'global'").first(), null);
-  assert.equal((await jsonRequest("/api/login", { password }, false, { "CF-Connecting-IP": "192.0.2.2" })).status, 200);
+  assert.equal((await jsonRequest("/api/login", { username, password }, false, { "CF-Connecting-IP": "192.0.2.2" })).status, 200);
 });
 
 test("text idempotency survives response loss and rejects changed content or deleted results", async () => {

@@ -24,7 +24,7 @@
     { "binding": "FILES", "bucket_name": "easydrop-files" }
   ],
   "vars": {
-    "SESSION_TTL_SECONDS": "604800",
+    "SESSION_TTL_SECONDS": "2592000",
     "MAX_UPLOAD_BYTES": "52428800",
     "UPLOAD_CHUNK_BYTES": "5242880",
     "UPLOAD_CONCURRENCY": "3",

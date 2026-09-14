@@ -13,8 +13,11 @@
     <div class="brand"><img class="brand-icon" src="/favicon.svg" alt=""><h1>EasyDrop</h1></div>
     <h2>登录</h2>
     <form id="login-form">
-      <label for="password">共享密码</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024" autofocus>
+      <label for="username">用户名</label>
+      <input id="username" name="username" type="text" autocomplete="username" minlength="3" maxlength="32" required autofocus>
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required minlength="12" maxlength="32"
+        pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{12,32}">
       <button class="primary" type="submit"><i data-lucide="log-in"></i><span>登录</span></button>
     </form>
     <div id="notice" role="status" aria-live="polite"></div>

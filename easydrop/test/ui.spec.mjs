@@ -16,12 +16,13 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page).toHaveURL(`${preview.url}/login`);
     await expect(page).toHaveTitle("登录 | EasyDrop");
     await expect(page.getByRole("heading", { name: "EasyDrop" })).toBeVisible();
-    await expect(page.getByLabel("共享密码")).toBeVisible();
+    await expect(page.getByLabel("用户名")).toBeVisible();
+    await expect(page.getByLabel("密码", { exact: true })).toBeVisible();
     await page.screenshot({ path: `test-results/login-${viewport.width}.png`, fullPage: true });
 
     // A disposable login through the real API installs its HttpOnly cookie into this test context.
     const login = await context.request.post(`${preview.url}/api/login`, {
-      headers: { Origin: preview.url }, data: { password: preview.password },
+      headers: { Origin: preview.url }, data: { username: preview.username, password: preview.password },
     });
     expect(login.status()).toBe(200);
     await page.goto(preview.url);
@@ -75,7 +76,8 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await scanPage.goto(fileUrl);
     await expect(scanPage).toHaveURL(/\/login\?next=/);
     expect(new URL(scanPage.url()).searchParams.get("next")).toBe(new URL(fileUrl).pathname);
-    await scanPage.getByLabel("共享密码").fill(preview.password);
+    await scanPage.getByLabel("用户名").fill(preview.username);
+    await scanPage.getByLabel("密码", { exact: true }).fill(preview.password);
     const scannedDownloadPromise = scanPage.waitForEvent("download");
     await scanPage.getByRole("button", { name: "登录", exact: true }).click();
     const scannedDownload = await scannedDownloadPromise;
@@ -110,7 +112,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
 
 async function loginContext(context) {
   const login = await context.request.post(`${preview.url}/api/login`, {
-    headers: { Origin: preview.url }, data: { password: preview.password },
+    headers: { Origin: preview.url }, data: { username: preview.username, password: preview.password },
   });
   expect(login.ok()).toBe(true);
   const session = await (await context.request.get(`${preview.url}/api/session`)).json();
@@ -118,6 +120,40 @@ async function loginContext(context) {
   await context.request.post(`${preview.url}/api/clear_history`, { headers });
   return headers;
 }
+
+test("administrator can create, edit, disable, enable and delete a user", async ({ page, context }) => {
+  await loginContext(context);
+  await page.goto(preview.url);
+  await page.getByRole("button", { name: "用户管理" }).click();
+  await expect(page.locator("#users-dialog")).toBeVisible();
+
+  await page.getByLabel("用户名").fill("ui-member");
+  await page.getByLabel("密码", { exact: true }).fill("UiMemberPass123!");
+  await page.getByRole("button", { name: "添加用户" }).click();
+  let row = page.locator(".user-row").filter({ hasText: "ui-member" });
+  await expect(row).toContainText("用户 · 已启用");
+  await page.screenshot({ path: "test-results/users-1280.png" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#users-dialog")).toBeVisible();
+  expect(await page.locator("#users-dialog").evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth)).toBe(true);
+  await page.screenshot({ path: "test-results/users-390.png" });
+
+  await row.getByRole("button", { name: "编辑用户" }).click();
+  await page.getByLabel("用户名").fill("ui-member-edited");
+  await page.getByLabel("密码", { exact: true }).fill("ChangedPass456!");
+  await page.getByRole("button", { name: "保存修改" }).click();
+  row = page.locator(".user-row").filter({ hasText: "ui-member-edited" });
+  await expect(row).toBeVisible();
+
+  await row.getByRole("button", { name: "禁用用户" }).click();
+  await expect(row).toContainText("已禁用");
+  await row.getByRole("button", { name: "启用用户" }).click();
+  await expect(row).toContainText("已启用");
+
+  await row.getByRole("button", { name: "删除用户" }).click();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(row).toHaveCount(0);
+});
 
 test("editing during submit cannot send a second request or erase new input", async ({ page, context }) => {
   await loginContext(context);

@@ -1,6 +1,6 @@
 import {
-  HttpError, configuration, digest, getSession, localHttp, login, now, readJson,
-  requireCsrf, sessionCookie,
+  HttpError, configuration, createPasswordVerifier, digest, getSession, localHttp, login, normalizeUsername,
+  now, readJson, requireCsrf, sessionCookie,
 } from "./auth.js";
 
 const json = (data, status = 200, headers = {}) => Response.json(data, { status, headers });
@@ -33,9 +33,139 @@ function validateFile(name, size, config) {
   if (size > config.uploadLimit) throw new HttpError(413, `File exceeds ${config.uploadLimit} bytes.`);
 }
 
-function harden(response, request) {
+function requireAdmin(session) {
+  if (session.role !== "admin") throw new HttpError(403, "Administrator access required.");
+}
+
+const userView = (user) => ({
+  id: user.id,
+  username: user.username,
+  role: user.role,
+  enabled: Boolean(user.enabled),
+  createdAt: user.created_at,
+  updatedAt: user.updated_at,
+});
+
+async function listUsers(env, session) {
+  requireAdmin(session);
+  const { results } = await env.DB.prepare(
+    `SELECT id, username, role, enabled, created_at, updated_at
+     FROM users ORDER BY username COLLATE NOCASE`,
+  ).all();
+  return json({ users: results.map(userView) });
+}
+
+async function createUser(request, env, session) {
+  requireAdmin(session);
+  const data = await readJson(request, 4096);
+  let username;
+  let verifier;
+  try {
+    username = normalizeUsername(data.username);
+    verifier = await createPasswordVerifier(data.password);
+  } catch (error) {
+    throw new HttpError(400, error.message);
+  }
+  const role = data.role === undefined ? "user" : data.role;
+  if (!["admin", "user"].includes(role)) throw new HttpError(400, "Invalid user role.");
+  if (await env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first()) {
+    throw new HttpError(409, "Username already exists.");
+  }
+  const id = crypto.randomUUID();
+  const timestamp = now();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO users(id, username, password_verifier, role, enabled, auth_version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 1, 1, ?, ?)`,
+    ).bind(id, username, verifier, role, timestamp, timestamp).run();
+  } catch (error) {
+    if (String(error).includes("UNIQUE")) throw new HttpError(409, "Username already exists.");
+    throw error;
+  }
+  return json({ success: true, user: userView({
+    id, username, role, enabled: 1, created_at: timestamp, updated_at: timestamp,
+  }) }, 201);
+}
+
+async function updateUser(request, env, session, id) {
+  requireAdmin(session);
+  if (!validId(id)) throw new HttpError(404, "User not found.");
+  const target = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
+  if (!target) throw new HttpError(404, "User not found.");
+  const data = await readJson(request, 4096);
+  let username = target.username;
+  let verifier = target.password_verifier;
+  try {
+    if (data.username !== undefined) username = normalizeUsername(data.username);
+    if (data.password !== undefined) verifier = await createPasswordVerifier(data.password);
+  } catch (error) {
+    throw new HttpError(400, error.message);
+  }
+  const role = data.role === undefined ? target.role : data.role;
+  if (data.enabled !== undefined && typeof data.enabled !== "boolean") {
+    throw new HttpError(400, "Invalid enabled state.");
+  }
+  const enabled = data.enabled === undefined ? target.enabled : Number(data.enabled);
+  if (!["admin", "user"].includes(role)) {
+    throw new HttpError(400, "Invalid user role or enabled state.");
+  }
+  if (id === session.user_id && (role !== "admin" || enabled !== 1)) {
+    throw new HttpError(409, "The current administrator cannot disable or demote itself.");
+  }
+  if (target.role === "admin" && target.enabled === 1 && (role !== "admin" || enabled !== 1)) {
+    const remaining = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND enabled = 1 AND id != ?",
+    ).bind(id).first();
+    if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
+  }
+  const duplicate = await env.DB.prepare("SELECT id FROM users WHERE username = ? AND id != ?").bind(username, id).first();
+  if (duplicate) throw new HttpError(409, "Username already exists.");
+  const timestamp = now();
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE users SET username = ?, password_verifier = ?, role = ?, enabled = ?,
+         auth_version = auth_version + 1, updated_at = ? WHERE id = ?`,
+      ).bind(username, verifier, role, enabled, timestamp, id),
+      env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
+    ]);
+  } catch (error) {
+    if (String(error).includes("UNIQUE")) throw new HttpError(409, "Username already exists.");
+    throw error;
+  }
+  const signedOut = id === session.user_id;
+  return json(
+    { success: true, signedOut },
+    200,
+    signedOut ? { "Set-Cookie": sessionCookie(request, env, "", 0) } : {},
+  );
+}
+
+async function deleteUser(env, session, id) {
+  requireAdmin(session);
+  if (!validId(id)) throw new HttpError(404, "User not found.");
+  const target = await env.DB.prepare("SELECT id, role, enabled FROM users WHERE id = ?").bind(id).first();
+  if (!target) throw new HttpError(404, "User not found.");
+  if (id === session.user_id) throw new HttpError(409, "The current administrator cannot delete itself.");
+  if (target.role === "admin" && target.enabled === 1) {
+    const remaining = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND enabled = 1 AND id != ?",
+    ).bind(id).first();
+    if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
+  }
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),
+  ]);
+  return json({ success: true });
+}
+
+function harden(response, request, env, session) {
   const result = new Response(response.body, response);
   const publicAsset = publicAssets.has(new URL(request.url).pathname);
+  if (session?.token && !result.headers.has("Set-Cookie")) {
+    result.headers.set("Set-Cookie", sessionCookie(request, env, session.token, session.ttl));
+  }
   result.headers.set("Cache-Control", publicAsset && (response.ok || response.status === 304) ? "public, max-age=0, must-revalidate" : "no-store");
   result.headers.set("X-Content-Type-Options", "nosniff");
   result.headers.set("X-Frame-Options", "DENY");
@@ -399,7 +529,7 @@ function backgroundCleanup(env, ctx) {
   ctx.waitUntil(cleanupDeleted(env).catch((error) => console.error("R2 cleanup deferred to cron:", error)));
 }
 
-async function route(request, env, ctx) {
+async function route(request, env, ctx, responseState) {
   const config = configuration(env);
   const url = new URL(request.url);
   const path = url.pathname;
@@ -408,12 +538,17 @@ async function route(request, env, ctx) {
 
   if (method === "POST" && path === "/api/login") {
     const result = await login(request, env, config);
-    return json({ success: true }, 200, { "Set-Cookie": sessionCookie(request, env, result.token, config.ttl) });
+    return json(
+      { success: true, user: result.user },
+      200,
+      { "Set-Cookie": sessionCookie(request, env, result.token, config.ttl) },
+    );
   }
   if ((method === "GET" || method === "HEAD") && publicAssets.has(path)) {
     return asset(request, env, publicAssets.get(path));
   }
-  const session = await getSession(request, env);
+  const session = await getSession(request, env, config.ttl);
+  if (session) responseState.session = { ...session, ttl: config.ttl };
   if ((method === "GET" || method === "HEAD") && path === "/login") {
     const target = safeDownloadPath(url.searchParams.get("next"));
     return session ? Response.redirect(`${url.origin}${target}`, 303) : asset(request, env, "/login.html");
@@ -436,6 +571,7 @@ async function route(request, env, ctx) {
   if (method === "GET" && path === "/api/session") {
     return json({
       csrfToken: session.csrf_token, expiresAt: session.expires_at,
+      user: { id: session.user_id, username: session.username, role: session.role },
       maxUploadBytes: config.uploadLimit,
       uploadChunkBytes: config.uploadChunkBytes,
       uploadConcurrency: config.uploadConcurrency,
@@ -450,6 +586,13 @@ async function route(request, env, ctx) {
   }
   if (method === "GET" && path === "/api/revision") {
     return json({ revision: session.revision });
+  }
+  if (method === "GET" && path === "/api/users") return listUsers(env, session);
+  if (method === "POST" && path === "/api/users") return createUser(request, env, session);
+  const userRoute = path.match(/^\/api\/users\/([a-f0-9-]+)$/);
+  if (userRoute) {
+    if (method === "PATCH") return updateUser(request, env, session, userRoute[1]);
+    if (method === "DELETE") return deleteUser(env, session, userRoute[1]);
   }
   if (method === "GET" && path === "/api/history") {
     const raw = url.searchParams.get("before");
@@ -558,8 +701,9 @@ export async function maintenance(env) {
 
 export default {
   async fetch(request, env, ctx) {
+    const responseState = {};
     try {
-      return harden(await route(request, env, ctx), request);
+      return harden(await route(request, env, ctx, responseState), request, env, responseState.session);
     } catch (error) {
       const requestId = crypto.randomUUID();
       const known = error instanceof HttpError;
@@ -567,7 +711,7 @@ export default {
       return harden(json({
         success: false, message: known ? error.message : "Internal server error.",
         method: request.method, path: new URL(request.url).pathname, requestId,
-      }, known ? error.status : 500, known ? error.headers : {}), request);
+      }, known ? error.status : 500, known ? error.headers : {}), request, env, responseState.session);
     }
   },
   async scheduled(_controller, env, ctx) {
