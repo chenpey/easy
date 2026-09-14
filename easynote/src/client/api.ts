@@ -1,0 +1,57 @@
+import type { Note, NoteInput, NoteSummary, Session, Version, ImageRecord } from '../shared/types';
+
+let csrf: string | null = null;
+export function setSession(session: Session) { csrf = session.csrf; }
+
+export class ApiError extends Error {
+  constructor(public status: number, public body: { error?: { message?: string; current?: Note } }, method: string, path: string) {
+    super(`${method} ${path} [${status}]\n${JSON.stringify(body, null, 2)}`);
+  }
+}
+
+export async function request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, {
+    method, credentials: 'same-origin', signal,
+    headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }).catch((error: unknown) => { throw new Error(`${method} ${path}\n${String(error)}`); });
+  const raw = await response.text();
+  let result;
+  try { result = JSON.parse(raw); } catch { throw new Error(`${method} ${path} [${response.status}]\n${raw}`); }
+  if (!response.ok) throw new ApiError(response.status, result, method, path);
+  return result as T;
+}
+
+export const api = {
+  session: () => request<Session>('/api/session'),
+  login: (username: string, password: string) => request<Session>('/api/login', 'POST', { username, password }),
+  logout: () => request('/api/logout', 'POST', {}),
+  list: (query: { q?: string; view?: string; tag?: string; offset?: number } = {}, signal?: AbortSignal) =>
+    request<{ notes: NoteSummary[]; nextOffset: number | null }>(`/api/notes?${new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]))}`, 'GET', undefined, signal),
+  tags: () => request<{ tags: string[] }>('/api/tags'),
+  note: (id: string) => request<{ note: Note }>(`/api/notes/${id}`),
+  save: (id: string, input: NoteInput, revision: number, operationId: string) =>
+    request<{ note: Note }>(`/api/notes/${id}`, revision === 0 ? 'POST' : 'PUT', { ...input, revision, operationId }),
+  purge: (note: Note) => request(`/api/notes/${note.id}`, 'DELETE', { revision: note.revision }),
+  versions: (id: string) => request<{ versions: Version[] }>(`/api/notes/${id}/versions`),
+};
+
+export async function uploadImage(file: File, maxBytes: number, maxPixels: number): Promise<ImageRecord> {
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('仅支持 JPEG、PNG、WebP 图片。');
+  if (file.size > maxBytes) throw new Error(`图片不能超过 ${Math.round(maxBytes / 1024 ** 2)} MiB。`);
+  const bitmap = await createImageBitmap(file);
+  const pixels = bitmap.width * bitmap.height;
+  bitmap.close();
+  if (pixels > maxPixels) throw new Error('图片尺寸超过限制。');
+  const path = `/api/images/${crypto.randomUUID()}`;
+  const response = await fetch(path, {
+    method: 'PUT', credentials: 'same-origin',
+    headers: { 'Content-Type': file.type, 'X-Filename': encodeURIComponent(file.name), 'X-CSRF-Token': csrf ?? '' },
+    body: file,
+  }).catch((error: unknown) => { throw new Error(`PUT ${path}\n${String(error)}`); });
+  const raw = await response.text();
+  let body;
+  try { body = JSON.parse(raw); } catch { throw new Error(`PUT ${path} [${response.status}]\n${raw}`); }
+  if (!response.ok) throw new ApiError(response.status, body, 'PUT', path);
+  return body.image;
+}
