@@ -64,7 +64,7 @@ before(async () => {
 });
 
 beforeEach(async () => {
-  await db.batch(["DELETE FROM multipart_parts", "DELETE FROM multipart_uploads", "DELETE FROM items",
+  await db.batch(["DELETE FROM file_shares", "DELETE FROM multipart_parts", "DELETE FROM multipart_uploads", "DELETE FROM items",
     "DELETE FROM sessions", "DELETE FROM login_attempts", "DELETE FROM operations",
     "DELETE FROM users WHERE username != 'admin'",
     "UPDATE app_state SET revision = 0, sweep_cursor = ''"].map((sql) => db.prepare(sql)));
@@ -189,6 +189,8 @@ test("all mutations require both matching origin and CSRF token", async () => {
     ["PUT", `/api/uploads/${crypto.randomUUID()}/parts/1`],
     ["POST", `/api/uploads/${crypto.randomUUID()}/complete`], ["DELETE", `/api/uploads/${crypto.randomUUID()}`],
     ["POST", "/api/logout"], ["DELETE", "/api/history/anything"],
+    ["POST", `/api/history/${crypto.randomUUID()}/share`],
+    ["DELETE", `/api/history/${crypto.randomUUID()}/share`],
   ]) {
     assert.equal((await request(path, { method, authenticated: true, headers: { "X-CSRF-Token": "wrong" } })).status, 403);
     assert.equal((await request(path, { method, authenticated: true, headers: { Origin: "https://evil.test" } })).status, 403);
@@ -377,6 +379,61 @@ test("multipart upload supports duplicate names, Unicode, empty files and authen
   assert.equal(empty.status, 201);
   const emptyId = (await empty.json()).id;
   assert.equal(await (await request(`/uploads/${emptyId}`, { authenticated: true })).text(), "");
+});
+
+test("temporary file links enforce duration, replace old tokens and download without authentication", async () => {
+  await signIn();
+  const uploaded = await uploadFile("temporary.txt", "temporary file contents");
+  const { id } = await uploaded.json();
+  for (const hours of [0, 169, 1.5, "24", null]) {
+    const invalid = await jsonRequest(`/api/history/${id}/share`, { hours }, true);
+    assert.equal(invalid.status, 400, `${hours}`);
+  }
+  assert.equal((await jsonRequest(`/api/history/${crypto.randomUUID()}/share`, { hours: 1 }, true)).status, 404);
+
+  const startedAt = Math.floor(Date.now() / 1000);
+  const created = await jsonRequest(`/api/history/${id}/share`, { hours: 1 }, true);
+  assert.equal(created.status, 201, await created.clone().text());
+  const first = await created.json();
+  const firstUrl = new URL(first.url);
+  const firstToken = firstUrl.pathname.slice("/shared/".length);
+  assert.equal(firstUrl.origin, origin);
+  assert.match(firstUrl.pathname, /^\/shared\/[a-f0-9]{64}$/);
+  assert.ok(first.expiresAt >= startedAt + 3600 && first.expiresAt <= Math.floor(Date.now() / 1000) + 3600);
+  const stored = await db.prepare("SELECT * FROM file_shares WHERE item_id = ?").bind(id).first();
+  assert.equal(stored.token_hash, await digest(firstToken));
+  assert.notEqual(stored.token_hash, firstToken);
+  const history = await (await request("/api/history", { authenticated: true })).json();
+  assert.equal(history.items.find((item) => item.id === id).share_expires_at, first.expiresAt);
+
+  const publicDownload = await request(firstUrl.pathname);
+  assert.equal(publicDownload.status, 200);
+  assert.equal(await publicDownload.text(), "temporary file contents");
+  assert.equal(publicDownload.headers.get("Set-Cookie"), null);
+  const publicHead = await request(firstUrl.pathname, { method: "HEAD" });
+  assert.equal(publicHead.status, 200);
+  assert.equal(publicHead.headers.get("Content-Length"), "23");
+  const publicRange = await request(firstUrl.pathname, { headers: { Range: "bytes=10-13" } });
+  assert.equal(publicRange.status, 206);
+  assert.equal(await publicRange.text(), "file");
+  assert.equal((await request(`/uploads/${id}`)).status, 401);
+
+  const replaced = await jsonRequest(`/api/history/${id}/share`, { hours: 168 }, true);
+  assert.equal(replaced.status, 201);
+  const second = await replaced.json();
+  assert.notEqual(second.url, first.url);
+  assert.equal((await request(firstUrl.pathname)).status, 404);
+  assert.equal((await request(new URL(second.url).pathname)).status, 200);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM file_shares WHERE item_id = ?").bind(id).first()).n, 1);
+
+  await db.prepare("UPDATE file_shares SET expires_at = ? WHERE item_id = ?").bind(startedAt - 1, id).run();
+  assert.equal((await request(new URL(second.url).pathname)).status, 404);
+  const expiredHistory = await (await request("/api/history", { authenticated: true })).json();
+  assert.equal(expiredHistory.items.find((item) => item.id === id).share_expires_at, null);
+  assert.equal((await request(`/api/history/${id}/share`, { method: "DELETE", authenticated: true })).status, 200);
+  assert.equal((await request(new URL(second.url).pathname)).status, 404);
+  assert.equal((await request(`/api/history/${id}/share`, { method: "DELETE", authenticated: true })).status, 404);
+  assert.equal((await request("/shared/not-a-token")).status, 404);
 });
 
 test("image previews are authenticated, inline and limited to safe raster types", async () => {

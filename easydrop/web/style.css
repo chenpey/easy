@@ -85,6 +85,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .file-picker:focus
 .destructive:not(:disabled):hover { background: #c40013; }
 .danger { color: var(--red); }
 .has-updates { color: var(--blue); background: #e8f3ff; }
+.active-share { color: var(--green); background: #eaf6ed; }
 
 .icon-button {
   width: 40px;
@@ -168,7 +169,7 @@ h2 > .lucide { color: var(--label-secondary); }
 
 .compose > section { min-width: 0; }
 
-textarea, input[type="text"], input[type="password"], select {
+textarea, input[type="text"], input[type="password"], input[type="number"], select {
   display: block;
   width: 100%;
   border: 1px solid var(--separator);
@@ -185,9 +186,9 @@ textarea, input[type="text"], input[type="password"], select {
 
 textarea::placeholder { color: var(--label-tertiary); }
 
-textarea:hover, input[type="text"]:hover, input[type="password"]:hover, select:hover { border-color: #b7b7bc; }
+textarea:hover, input[type="text"]:hover, input[type="password"]:hover, input[type="number"]:hover, select:hover { border-color: #b7b7bc; }
 
-textarea:focus, input[type="text"]:focus, input[type="password"]:focus, select:focus {
+textarea:focus, input[type="text"]:focus, input[type="password"]:focus, input[type="number"]:focus, select:focus {
   border-color: var(--blue);
   background: #fff;
   box-shadow: 0 0 0 3px var(--focus);
@@ -583,6 +584,59 @@ dialog::backdrop {
   margin: 0 auto;
 }
 
+#temporary-share-dialog { max-width: 460px; }
+
+#temporary-share-file {
+  margin: 18px 0 4px;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+#temporary-share-status { margin: 0 0 20px; }
+
+#temporary-share-form > label {
+  display: block;
+  margin-bottom: 8px;
+  color: #3a3a3c;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.temporary-share-duration {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) auto;
+  gap: 10px;
+}
+
+#temporary-share-hours { min-width: 0; }
+
+#temporary-share-result {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--hairline);
+  text-align: center;
+}
+
+#temporary-share-qr {
+  display: block;
+  width: 200px;
+  height: 200px;
+  margin: 0 auto 12px;
+  border-radius: 4px;
+}
+
+#temporary-share-url {
+  display: block;
+  color: var(--blue);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+#temporary-share-expiry { margin: 8px 0 0; }
+#temporary-share-actions { flex-wrap: wrap; }
+
 .dialog-actions {
   display: flex;
   gap: 12px;
@@ -684,6 +738,8 @@ dialog::backdrop {
   #user-form { grid-template-columns: minmax(0, 1fr); }
   #user-form .dialog-actions, .user-options { grid-column: 1; }
   .user-options { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .temporary-share-duration { grid-template-columns: minmax(0, 1fr); }
+  .temporary-share-duration button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

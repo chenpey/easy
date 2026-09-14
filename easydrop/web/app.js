@@ -1,7 +1,7 @@
-import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX } from "lucide";
+import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink } from "lucide";
 import QRCode from "qrcode";
 
-const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX };
+const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink };
 const renderIcons = () => createIcons({ icons });
 const $ = (id) => document.getElementById(id);
 const isLogin = document.body.dataset.page === "login";
@@ -19,6 +19,7 @@ let textSubmitting = false;
 let textOperation;
 let expandedHistory = false;
 let sessionEnded = false;
+let temporaryShareItem;
 const activeUploads = new Set();
 const activeRequests = new Set();
 const busyButtons = new WeakSet();
@@ -201,6 +202,44 @@ async function copy(value) {
   notice("已复制");
 }
 
+function temporaryShareActive(item) {
+  return Number(item?.share_expires_at) > Math.floor(Date.now() / 1000);
+}
+
+function renderTemporaryShare(item, result = null) {
+  const expiresAt = result?.expiresAt || item.share_expires_at;
+  const active = Number(expiresAt) > Math.floor(Date.now() / 1000);
+  $("temporary-share-file").textContent = item.name;
+  $("temporary-share-status").textContent = active
+    ? `当前链接有效至 ${new Date(expiresAt * 1000).toLocaleString()}`
+    : "当前未启用临时访问";
+  $("temporary-share-actions").hidden = !active && !result;
+  $("temporary-share-revoke").hidden = !active;
+  $("temporary-share-result").hidden = !result;
+  $("temporary-share-copy").hidden = !result;
+  if (!result) {
+    $("temporary-share-url").removeAttribute("href");
+    $("temporary-share-url").textContent = "";
+    $("temporary-share-expiry").textContent = "";
+    return;
+  }
+  $("temporary-share-url").href = result.url;
+  $("temporary-share-url").textContent = result.url;
+  $("temporary-share-expiry").textContent = `有效至 ${new Date(result.expiresAt * 1000).toLocaleString()}`;
+  $("temporary-share-qr").hidden = false;
+  QRCode.toCanvas($("temporary-share-qr"), result.url, { width: 200, margin: 2 }).catch((error) => {
+    console.error("Temporary file QR generation failed:", error);
+    $("temporary-share-qr").hidden = true;
+  });
+}
+
+function openTemporaryShare(item) {
+  temporaryShareItem = item;
+  $("temporary-share-form").reset();
+  renderTemporaryShare(item);
+  $("temporary-share-dialog").showModal();
+}
+
 function historyRow(item) {
   const row = document.createElement("article");
   row.className = "history-item";
@@ -263,7 +302,13 @@ function historyRow(item) {
       console.error("File QR generation failed:", error);
       qr.remove();
     });
-    actions.append(preview, actionButton("复制文件链接", "copy", () => copy(fileUrl)));
+    const temporaryShare = actionButton(
+      temporaryShareActive(item) ? "管理临时链接" : "创建临时链接",
+      "share-2",
+      () => openTemporaryShare(item),
+    );
+    temporaryShare.classList.toggle("active-share", temporaryShareActive(item));
+    actions.append(preview, actionButton("复制文件链接", "copy", () => copy(fileUrl)), temporaryShare);
   }
   actions.append(actionButton("删除记录", "trash-2", async () => {
     if (!await confirmDelete("删除这条记录？")) return;
@@ -727,6 +772,32 @@ async function initializeApp() {
   }));
   $("qr-close").addEventListener("click", () => $("qr-dialog").close());
   $("copy-url").addEventListener("click", () => busy($("copy-url"), () => copy(location.origin)));
+  $("temporary-share-close").addEventListener("click", () => $("temporary-share-dialog").close());
+  $("temporary-share-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    busy(event.submitter, async () => {
+      if (!temporaryShareItem) return;
+      const item = temporaryShareItem;
+      const result = await api(`/api/history/${item.id}/share`, {
+        method: "POST",
+        data: { hours: Number($("temporary-share-hours").value) },
+      });
+      item.share_expires_at = result.expiresAt;
+      renderTemporaryShare(item, result);
+      notice("临时链接已创建");
+      await loadHistory();
+    });
+  });
+  $("temporary-share-copy").addEventListener("click", () => busy($("temporary-share-copy"), () =>
+    copy($("temporary-share-url").href)));
+  $("temporary-share-revoke").addEventListener("click", () => busy($("temporary-share-revoke"), async () => {
+    if (!temporaryShareItem) return;
+    await api(`/api/history/${temporaryShareItem.id}/share`, { method: "DELETE" });
+    temporaryShareItem.share_expires_at = null;
+    renderTemporaryShare(temporaryShareItem);
+    notice("临时链接已撤销");
+    await loadHistory();
+  }));
   $("users-open").addEventListener("click", () => busy($("users-open"), async () => {
     resetUserForm();
     await loadUsers();

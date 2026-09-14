@@ -6,7 +6,7 @@
 
 ### [EasyDrop](easydrop/)
 
-基于 Cloudflare Workers 的跨设备文本与文件分享工具。使用 D1 保存数据、R2 存储文件，并提供登录鉴权、历史记录、断点上传和用户管理功能。
+基于 Cloudflare Workers 的跨设备文本与文件分享工具。使用 D1 保存数据、R2 存储文件，并提供登录鉴权、限时免登录文件链接、历史记录、断点上传和用户管理功能。
 
 技术栈：JavaScript、Cloudflare Workers、D1、R2。
 

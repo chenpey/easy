@@ -1,6 +1,6 @@
 import {
   HttpError, configuration, createPasswordVerifier, digest, getSession, localHttp, login, normalizeUsername,
-  now, readJson, requireCsrf, sessionCookie,
+  now, randomToken, readJson, requireCsrf, sessionCookie,
 } from "./auth.js";
 
 const json = (data, status = 200, headers = {}) => Response.json(data, { status, headers });
@@ -15,6 +15,7 @@ const publicAssets = new Map([
   ["/favicon.svg", "/favicon.svg"],
 ]);
 const imageTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp"]);
+const temporaryShareToken = /^[a-f0-9]{64}$/;
 const imageExtensions = new Map([
   ["jpg", "image/jpeg"],
   ["jpeg", "image/jpeg"],
@@ -503,9 +504,11 @@ function rangeFor(header, size) {
   return { offset: start, length: end - start + 1 };
 }
 
-async function download(request, env, id) {
+async function download(request, env, id, knownItem = null) {
   if (!validId(id)) throw new HttpError(404, "File not found.");
-  const item = await env.DB.prepare("SELECT name, size FROM items WHERE id = ? AND type = 'file' AND state = 'ready'").bind(id).first();
+  const item = knownItem || await env.DB.prepare(
+    "SELECT name, size FROM items WHERE id = ? AND type = 'file' AND state = 'ready'",
+  ).bind(id).first();
   if (!item) throw new HttpError(404, "File not found.");
   const range = request.method === "HEAD" ? null : rangeFor(request.headers.get("Range"), item.size);
   const object = request.method === "HEAD"
@@ -523,6 +526,58 @@ async function download(request, env, id) {
   if (object.uploaded) headers["Last-Modified"] = object.uploaded.toUTCString();
   if (range) headers["Content-Range"] = `bytes ${range.offset}-${range.offset + range.length - 1}/${item.size}`;
   return new Response(request.method === "HEAD" ? null : object.body, { status: range ? 206 : 200, headers });
+}
+
+async function temporaryDownload(request, env, token) {
+  if (!temporaryShareToken.test(token || "")) throw new HttpError(404, "Temporary file link not found or expired.");
+  const item = await env.DB.prepare(
+    `SELECT i.id, i.name, i.size
+     FROM file_shares s JOIN items i ON i.id = s.item_id
+     WHERE s.token_hash = ? AND s.expires_at > ? AND i.type = 'file' AND i.state = 'ready'`,
+  ).bind(await digest(token), now()).first();
+  if (!item) throw new HttpError(404, "Temporary file link not found or expired.");
+  return download(request, env, item.id, item);
+}
+
+async function createTemporaryShare(request, env, id) {
+  if (!validId(id)) throw new HttpError(404, "File not found.");
+  const data = await readJson(request, 1024);
+  if (!Number.isSafeInteger(data.hours) || data.hours < 1 || data.hours > 168) {
+    throw new HttpError(400, "Temporary access duration must be an integer from 1 to 168 hours.");
+  }
+  const item = await env.DB.prepare(
+    "SELECT id FROM items WHERE id = ? AND type = 'file' AND state = 'ready'",
+  ).bind(id).first();
+  if (!item) throw new HttpError(404, "File not found.");
+  const token = randomToken();
+  const timestamp = now();
+  const expiresAt = timestamp + data.hours * 3600;
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO file_shares(token_hash, item_id, expires_at, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(item_id) DO UPDATE SET
+       token_hash = excluded.token_hash, expires_at = excluded.expires_at, created_at = excluded.created_at`,
+    ).bind(await digest(token), id, expiresAt, timestamp),
+    revision(env),
+  ]);
+  return json({
+    success: true,
+    url: new URL(`/shared/${token}`, request.url).href,
+    expiresAt,
+  }, 201);
+}
+
+async function revokeTemporaryShare(env, id) {
+  if (!validId(id)) throw new HttpError(404, "File not found.");
+  const [deleted] = await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM file_shares WHERE item_id = ?
+       AND EXISTS (SELECT 1 FROM items WHERE id = ? AND type = 'file' AND state = 'ready')`,
+    ).bind(id, id),
+    revision(env),
+  ]);
+  if (!deleted.meta.changes) throw new HttpError(404, "Active temporary file link not found.");
+  return json({ success: true });
 }
 
 async function previewImage(request, env, id) {
@@ -562,6 +617,7 @@ async function cleanupDeleted(env) {
   const slots = results.map(() => "?").join(",");
   const ids = results.map((item) => item.id);
   await env.DB.batch([
+    env.DB.prepare(`DELETE FROM file_shares WHERE item_id IN (${slots})`).bind(...ids),
     env.DB.prepare(`DELETE FROM multipart_parts WHERE item_id IN (${slots})`).bind(...ids),
     env.DB.prepare(`DELETE FROM multipart_uploads WHERE item_id IN (${slots})`).bind(...ids),
     env.DB.prepare(`DELETE FROM items WHERE state = 'deleting' AND id IN (${slots})`).bind(...ids),
@@ -590,6 +646,9 @@ async function route(request, env, ctx, responseState) {
   }
   if ((method === "GET" || method === "HEAD") && publicAssets.has(path)) {
     return asset(request, env, publicAssets.get(path));
+  }
+  if ((method === "GET" || method === "HEAD") && path.startsWith("/shared/")) {
+    return temporaryDownload(request, env, path.slice("/shared/".length));
   }
   const session = await getSession(request, env, config.ttl);
   if (session) responseState.session = { ...session, ttl: config.ttl };
@@ -645,7 +704,12 @@ async function route(request, env, ctx, responseState) {
     // Bound the worst-case text allocation before fetching full bodies from D1.
     const pageSize = Math.min(config.pageSize, Math.max(1, Math.floor(1048576 / config.textLimit)));
     const [items, state] = await env.DB.batch([
-      env.DB.prepare("SELECT seq, id, type, content, name, size, media_type, created_at FROM items WHERE state = 'ready' AND seq < ? ORDER BY seq DESC LIMIT ?").bind(cursor, pageSize + 1),
+      env.DB.prepare(
+        `SELECT i.seq, i.id, i.type, i.content, i.name, i.size, i.media_type, i.created_at,
+         CASE WHEN s.expires_at > ? THEN s.expires_at ELSE NULL END AS share_expires_at
+         FROM items i LEFT JOIN file_shares s ON s.item_id = i.id
+         WHERE i.state = 'ready' AND i.seq < ? ORDER BY i.seq DESC LIMIT ?`,
+      ).bind(now(), cursor, pageSize + 1),
       env.DB.prepare("SELECT revision FROM app_state WHERE id = 1"),
     ]);
     return json({
@@ -691,6 +755,11 @@ async function route(request, env, ctx, responseState) {
     return previewImage(request, env, path.slice(10));
   }
   if ((method === "GET" || method === "HEAD") && path.startsWith("/uploads/")) return download(request, env, path.slice(9));
+  const temporaryShareRoute = path.match(/^\/api\/history\/([a-f0-9-]+)\/share$/);
+  if (temporaryShareRoute) {
+    if (method === "POST") return createTemporaryShare(request, env, temporaryShareRoute[1]);
+    if (method === "DELETE") return revokeTemporaryShare(env, temporaryShareRoute[1]);
+  }
   if (method === "DELETE" && path.startsWith("/api/history/")) {
     const id = path.slice("/api/history/".length);
     if (!validId(id)) throw new HttpError(404, "Item not found.");
@@ -718,6 +787,7 @@ export async function maintenance(env) {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(timestamp),
     env.DB.prepare("DELETE FROM login_attempts WHERE started_at < ?").bind(timestamp - 86400),
+    env.DB.prepare("DELETE FROM file_shares WHERE expires_at <= ?").bind(timestamp),
     env.DB.prepare(
       `UPDATE items SET state = 'deleting' WHERE state = 'pending' AND (
        EXISTS (SELECT 1 FROM multipart_uploads m WHERE m.item_id = items.id AND m.updated_at < ?)
