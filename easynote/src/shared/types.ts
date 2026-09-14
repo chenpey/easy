@@ -48,6 +48,15 @@ export const noteInput = (note: Note): NoteInput => ({
   pinned: note.pinned, deletedAt: note.deletedAt,
 });
 
+export function sameNoteInput(left: NoteInput, right: NoteInput): boolean {
+  return left.title === right.title &&
+    left.content === right.content &&
+    left.pinned === right.pinned &&
+    left.deletedAt === right.deletedAt &&
+    left.tags.length === right.tags.length &&
+    left.tags.every((tag) => right.tags.includes(tag));
+}
+
 export const imagePath = (id: string) => `/api/images/${id}`;
 export const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

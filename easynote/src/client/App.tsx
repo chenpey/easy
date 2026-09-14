@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, BookOpen, Check, ChevronDown, Download, FileText, History, ImagePlus, LogOut, Moon, MoreHorizontal, PanelLeftClose, Pin, Plus, RefreshCw, Save, Search, Settings, Sun, Tag, Trash2, Upload, X, RotateCcw, PenLine } from 'lucide-react';
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { ArrowLeft, BookOpen, Check, ChevronDown, Download, FileText, History, ImagePlus, LoaderCircle, LogOut, Moon, MoreHorizontal, PanelLeftClose, Pin, Plus, RefreshCw, Save, Search, Settings, Sun, Tag, Trash2, Upload, X, RotateCcw, PenLine } from 'lucide-react';
 import type { NoteInput, Session, Version } from '../shared/types';
 import { api, setSession, uploadImage } from './api';
 import { Editor, Preview } from './Editor';
@@ -8,6 +8,10 @@ import { exportArchive, importArchive } from './transfer';
 
 function IconButton({ label, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
   return <button className="icon-button" title={label} aria-label={label} {...props}>{children}</button>;
+}
+
+function BrandIcon({ size }: { size: number }) {
+  return <img className="brand-icon" src="/easynote-icon.svg" width={size} height={size} alt="" aria-hidden="true" />;
 }
 
 function Modal({ title, children, close }: { title: string; children: ReactNode; close(): void }) {
@@ -40,7 +44,7 @@ export default function App() {
       void api.login(username, password).then((value) => { applySession(value); setPassword(''); })
         .catch((error: unknown) => setBootError(String(error))).finally(() => setBusy(false));
     }}>
-      <div className="brand login-brand"><span className="brand-mark"><PenLine size={22} /></span><h1>EasyNote</h1></div>
+      <div className="brand login-brand"><BrandIcon size={32} /><h1>EasyNote</h1></div>
       <div className="login-heading">{session ? session.configured ? '登录笔记' : '等待初始化' : '正在连接'}</div>
       <label>用户名<input autoComplete="username" required maxLength={32} value={username} onChange={(e) => setUsername(e.target.value)} /></label>
       <label>密码<input autoComplete="current-password" type="password" required maxLength={128} value={password} onChange={(e) => setPassword(e.target.value)} /></label>
@@ -66,7 +70,7 @@ function AccountWorkspace({ session, logout }: { session: Session; logout(): voi
   }, [session.user!.id, attempt]);
   if (ownsLock) return <Notebook session={session} logout={logout} />;
   return <main className="login"><div className="login-form">
-    <div className="brand login-brand"><PenLine size={24} /><h1>EasyNote</h1></div>
+    <div className="brand login-brand"><BrandIcon size={32} /><h1>EasyNote</h1></div>
     <div className="login-heading">{ownsLock === null ? '正在打开笔记' : navigator.locks ? '另一个标签页正在编辑' : '浏览器不支持安全编辑锁'}</div>
     {ownsLock === false && navigator.locks && <button onClick={() => setAttempt((n) => n + 1)}>重新打开</button>}
   </div></main>;
@@ -77,6 +81,13 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
   const [layout, setLayout] = useState<'edit' | 'preview'>('edit');
   const [mobileNote, setMobileNote] = useState(false);
   const [sidebar, setSidebar] = useState(true);
+  const [resizingList, setResizingList] = useState(false);
+  const [noteListWidth, setNoteListWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('easynote-note-list-width'));
+    return Number.isFinite(saved) ? Math.min(480, Math.max(240, saved)) : 292;
+  });
+  const noteListWidthRef = useRef(noteListWidth);
+  const resizeStart = useRef<{ pointerId: number; x: number; width: number } | null>(null);
   const [settings, setSettings] = useState(false);
   const [versionList, setVersionList] = useState<Version[] | null>(null);
   const [versionNoteId, setVersionNoteId] = useState('');
@@ -84,20 +95,57 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
   const [confirmAction, setConfirmAction] = useState<'trash' | 'purge' | null>(null);
   const [lightbox, setLightbox] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [transfer, setTransfer] = useState('');
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
   const [dark, setDark] = useState(() => localStorage.getItem('easynote-theme') === 'dark');
   const [tagText, setTagText] = useState('');
   const imageInput = useRef<HTMLInputElement>(null);
   const importInput = useRef<HTMLInputElement>(null);
   const note = book.note;
+  const updateNoteListWidth = (value: number) => {
+    const next = Math.min(480, Math.max(240, Math.round(value)));
+    noteListWidthRef.current = next;
+    setNoteListWidth(next);
+  };
+  const beginNoteListResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    resizeStart.current = { pointerId: event.pointerId, x: event.clientX, width: noteListWidthRef.current };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setResizingList(true);
+  };
+  const moveNoteListResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = resizeStart.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    updateNoteListWidth(start.width + event.clientX - start.x);
+  };
+  const finishNoteListResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (resizeStart.current?.pointerId !== event.pointerId) return;
+    resizeStart.current = null;
+    setResizingList(false);
+    localStorage.setItem('easynote-note-list-width', String(noteListWidthRef.current));
+  };
+  const resizeNoteListWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const widths: Record<string, number> = {
+      ArrowLeft: noteListWidthRef.current - 12,
+      ArrowRight: noteListWidthRef.current + 12,
+      Home: 240,
+      End: 480,
+    };
+    if (!(event.key in widths)) return;
+    event.preventDefault();
+    updateNoteListWidth(widths[event.key]);
+    localStorage.setItem('easynote-note-list-width', String(Math.min(480, Math.max(240, widths[event.key]))));
+  };
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('easynote-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { setTagText(note?.tags.join(', ') ?? ''); }, [note?.id, JSON.stringify(note?.tags)]);
   useEffect(() => {
     if (!notice) return;
-    const timer = setTimeout(() => setNotice(''), 4500);
+    const timer = setTimeout(() => setNotice(null), 4500);
     return () => clearTimeout(timer);
   }, [notice]);
+  const showNotice = (text: string) => setNotice({ id: Date.now(), text });
   const run = async (action: () => Promise<unknown>) => {
     try { await action(); } catch (e) { book.setError(String(e)); }
   };
@@ -111,24 +159,39 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
         const alt = file.name.replace(/[\[\]\\\r\n]/g, '');
         book.append(target, `![${alt}](${image.url})`);
       }
-      setNotice('图片已插入');
+      showNotice('图片已插入');
     } catch (e) { book.setError(String(e)); }
     finally { setUploading(false); if (imageInput.current) imageInput.current.value = ''; }
   };
   const chooseView = (view: string, tag = '') => { book.setView(view); book.setTag(tag); setMobileNote(false); };
   const setNoteFields = (patch: Partial<NoteInput>) => book.edit(patch);
+  const syncNow = async () => {
+    if (syncing) return;
+    const hadPending = book.pending.length > 0;
+    setSyncing(true);
+    try {
+      if (await book.retry()) {
+        showNotice(hadPending ? '草稿已保存并同步' : '已同步，内容为最新');
+      }
+    } finally {
+      setSyncing(false);
+    }
+  };
   const transferAction = async (action: () => Promise<unknown>, success: string) => {
     if (book.pending.length || book.busy || uploading) { book.setError('还有未保存的内容，请先完成保存。'); return; }
     setTransfer('正在准备…');
-    try { await action(); setNotice(success); await book.refresh(); }
+    try { await action(); showNotice(success); await book.refresh(); }
     catch (e) { book.setError(String(e)); }
     finally { setTransfer(''); }
   };
   const activeView = book.view === 'trash' ? '回收站' : book.view === 'pinned' ? '置顶笔记' : book.tag || '全部笔记';
-  const disabled = !!transfer || uploading || book.busy;
-  return <div className={`app-shell ${sidebar ? '' : 'sidebar-hidden'} ${mobileNote ? 'mobile-note' : ''}`}>
+  const disabled = !!transfer || uploading || book.busy || syncing;
+  return <div
+    className={`app-shell ${sidebar ? '' : 'sidebar-hidden'} ${mobileNote ? 'mobile-note' : ''} ${resizingList ? 'resizing-list' : ''}`}
+    style={{ '--note-list-width': `${noteListWidth}px` } as CSSProperties}
+  >
     <aside className="sidebar">
-      <div className="brand"><span className="brand-mark"><PenLine size={19} /></span><span>EasyNote</span>
+      <div className="brand"><BrandIcon size={25} /><span>EasyNote</span>
         <IconButton label="收起侧栏" onClick={() => setSidebar(false)}><PanelLeftClose size={16} /></IconButton>
       </div>
       <button className="new-note" disabled={!!transfer || book.loading} onClick={() => void book.create().then(() => { setMobileNote(true); setLayout('edit'); })}><Plus size={17} />新建笔记</button>
@@ -150,7 +213,7 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
         <div className="list-heading">
           {!sidebar && <IconButton label="展开侧栏" onClick={() => setSidebar(true)}><MoreHorizontal size={18} /></IconButton>}
           <h1>{activeView}</h1>
-          <IconButton label="同步" onClick={() => void book.retry()} disabled={book.busy}><RefreshCw size={16} /></IconButton>
+          <IconButton label={syncing ? '正在刷新' : '同步'} onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
           <IconButton label="新建笔记" onClick={() => void book.create().then(() => { setMobileNote(true); setLayout('edit'); })} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
         </div>
         <label className="search-field"><Search size={15} /><input aria-label="搜索笔记" placeholder="搜索笔记" value={book.query} onChange={(e) => book.setQuery(e.target.value)} /></label>
@@ -167,13 +230,33 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
       </div>
       <footer className="list-footer">{book.notes.length} 篇{book.nextOffset !== null ? '+' : ''}<span>EasyNote 0.1</span></footer>
     </section>
+    <div
+      className="note-list-resizer"
+      role="separator"
+      aria-label="调整笔记列表宽度"
+      aria-orientation="vertical"
+      aria-valuemin={240}
+      aria-valuemax={480}
+      aria-valuenow={noteListWidth}
+      tabIndex={0}
+      title="拖动调整宽度，双击恢复默认"
+      onPointerDown={beginNoteListResize}
+      onPointerMove={moveNoteListResize}
+      onPointerUp={finishNoteListResize}
+      onPointerCancel={finishNoteListResize}
+      onDoubleClick={() => {
+        updateNoteListWidth(292);
+        localStorage.setItem('easynote-note-list-width', '292');
+      }}
+      onKeyDown={resizeNoteListWithKeyboard}
+    />
     <main className="workspace">
       <header className="workspace-toolbar">
         <IconButton label="返回笔记列表" className="icon-button mobile-back" onClick={() => setMobileNote(false)}><ArrowLeft size={18} /></IconButton>
-        <span className={`save-status ${book.pending.length ? 'pending' : ''}`}><span className="status-dot" />{uploading ? '上传图片中' : note ? book.status : '笔记空间'}</span>
+        <span className={`save-status ${book.pending.length ? 'pending' : ''}`}><span className="status-dot" />{uploading ? '上传图片中' : syncing ? '正在同步' : note ? book.status : '笔记空间'}</span>
         <div className="toolbar-right">
           {note && <><div className="segmented" aria-label="显示模式"><button title="编辑" aria-label="编辑模式" aria-pressed={layout === 'edit'} onClick={() => setLayout('edit')}><PenLine size={16} /></button><button title="预览" aria-label="预览模式" aria-pressed={layout === 'preview'} onClick={() => setLayout('preview')}><BookOpen size={16} /></button></div>
-            <IconButton label="保存" disabled={disabled} onClick={() => void book.retry()}><Save size={17} /></IconButton>
+            <IconButton label={syncing ? '正在同步' : '立即同步'} disabled={disabled} onClick={() => void syncNow()}>{syncing ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}</IconButton>
             <IconButton label={note.pinned ? '取消置顶' : '置顶'} disabled={!!note.deletedAt || !!transfer} onClick={() => setNoteFields({ pinned: !note.pinned })}><Pin size={17} fill={note.pinned ? 'currentColor' : 'none'} /></IconButton>
             <IconButton label="历史版本" disabled={disabled || note.revision === 0} onClick={() => void run(async () => { const result = await api.versions(note.id); setVersionNoteId(note.id); setVersionList(result.versions); setChosenVersion(null); })}><History size={17} /></IconButton>
             {!note.deletedAt ? <IconButton label="移入回收站" disabled={disabled} onClick={() => setConfirmAction('trash')}><Trash2 size={17} /></IconButton> :
@@ -181,7 +264,7 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
           </>}
         </div>
       </header>
-      {book.error && <div className="error-strip" role="alert"><details><summary>操作未完成</summary><pre>{book.error}</pre></details><button onClick={() => void book.retry()} disabled={book.busy}>重试</button><IconButton label="关闭错误" onClick={() => book.setError('')}><X size={15} /></IconButton></div>}
+      {book.error && <div className="error-strip" role="alert"><details><summary>操作未完成</summary><pre>{book.error}</pre></details><button onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? '正在重试…' : '重试'}</button><IconButton label="关闭错误" onClick={() => book.setError('')}><X size={15} /></IconButton></div>}
       {note ? <>
         {note.deletedAt && <div className="trash-banner"><span>已移入回收站</span><button onClick={() => setConfirmAction('purge')} disabled={disabled || book.pending.some((n) => n.id === note.id)}>永久删除</button></div>}
         <div className="document-scroll">
@@ -204,7 +287,7 @@ function Notebook({ session, logout }: { session: Session; logout(): void }) {
         </footer>
       </> : <div className="workspace-empty"><PenLine size={36} /><h2>你的笔记</h2><button className="primary" disabled={book.loading || !!transfer} onClick={() => void book.create().then(() => setMobileNote(true))}><Plus size={16} />新建笔记</button></div>}
     </main>
-    {notice && <div className="toast" role="status"><Check size={16} />{notice}</div>}
+    {notice && <div className="toast" role="status"><Check size={16} />{notice.text}</div>}
     {settings && <Modal title="设置" close={() => { if (!transfer) setSettings(false); }}>
       <div className="setting-row"><span>深色外观</span><button role="switch" aria-checked={dark} aria-label="深色外观" className={`switch ${dark ? 'on' : ''}`} onClick={() => setDark(!dark)}>{dark ? <Moon size={14} /> : <Sun size={14} />}</button></div>
       <div className="setting-row"><span>数据</span><div className="button-group"><button disabled={!!transfer} onClick={() => void transferAction(() => exportArchive(setTransfer), '备份已下载')}><Download size={16} />导出 ZIP</button><button disabled={!!transfer} onClick={() => importInput.current?.click()}><Upload size={16} />导入</button></div></div>

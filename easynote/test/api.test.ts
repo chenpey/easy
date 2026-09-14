@@ -60,6 +60,29 @@ test('idempotent create and update; operation IDs cannot be reused with changed 
   assert.equal((await retry.json() as any).note.revision, 2);
 });
 
+test('unchanged saves do not create revisions, including reordered tags', async () => {
+  const note = await create({ tags: ['工作', '个人'] });
+  const unchanged = await save(note.id, 1, { tags: ['个人', '工作'] });
+  assert.equal(unchanged.status, 200, await unchanged.clone().text());
+  const body = await unchanged.json() as any;
+  assert.equal(body.unchanged, true);
+  assert.equal(body.note.revision, 1);
+  const versions = await (await request(`/api/notes/${note.id}/versions`)).json() as any;
+  assert.deepEqual(versions.versions.map((version: any) => version.revision), [1]);
+  const changed = await save(note.id, 1, { tags: ['个人', '工作'], pinned: true });
+  assert.equal(changed.status, 200, await changed.clone().text());
+  assert.equal((await changed.json() as any).note.revision, 2);
+});
+
+test('history collapses consecutive duplicate revisions left by older versions', async () => {
+  const note = await create({ content: 'legacy duplicate' });
+  await instance.db.prepare(`INSERT INTO note_versions
+    SELECT note_id, 2, title, content, tags, pinned, deleted_at, saved_at + 1
+    FROM note_versions WHERE note_id=? AND revision=1`).bind(note.id).run();
+  const data = await (await request(`/api/notes/${note.id}/versions`)).json() as any;
+  assert.deepEqual(data.versions.map((version: any) => version.revision), [2]);
+});
+
 test('two devices cannot silently overwrite the same revision', async () => {
   const note = await create();
   const results = await Promise.all([save(note.id, 1, { content: 'device A' }), save(note.id, 1, { content: 'device B' })]);
@@ -124,7 +147,8 @@ test('private images validate media type, have no public cache, and survive hist
   const env = { DB: instance.db, IMAGES: instance.bucket, IMAGE_GRACE_HOURS: '24' } as any;
   await cleanup(env);
   assert.equal((await request(`/api/images/${id}`)).status, 200);
-  await save(note.id, 2); await save(note.id, 3);
+  await save(note.id, 2, { content: 'cleanup step one' });
+  await save(note.id, 3, { content: 'cleanup step two' });
   await cleanup(env);
   assert.equal((await request(`/api/images/${id}`)).status, 404);
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { noteInput, type Note, type NoteInput, type NoteSummary, type Session } from '../shared/types';
+import { noteInput, sameNoteInput, type Note, type NoteInput, type NoteSummary, type Session } from '../shared/types';
 import { api, ApiError } from './api';
 import { loadDrafts, persistDraft, type Draft } from './drafts';
 
@@ -100,8 +100,10 @@ export function useNotebook(session: Session) {
 
   const edit = (patch: Partial<NoteInput>, target = current.current) => {
     if (!target) return;
-    const latest = drafts.current.get(target.id)?.note ?? (current.current?.id === target.id ? current.current : target);
+    const existingDraft = drafts.current.get(target.id);
+    const latest = existingDraft?.note ?? (current.current?.id === target.id ? current.current : target);
     const updated = { ...latest, ...patch };
+    if ((latest.revision > 0 || existingDraft) && sameNoteInput(noteInput(latest), noteInput(updated))) return;
     const draft = { note: updated, operationId: crypto.randomUUID() };
     drafts.current.set(target.id, draft);
     if (current.current?.id === target.id) show(updated);
@@ -137,13 +139,20 @@ export function useNotebook(session: Session) {
     return newNote;
   };
 
-  const retry = async () => {
+  const retry = async (): Promise<boolean> => {
     setError(''); setConflict(null); setSyncPaused(false);
+    let savedAll = true;
     for (const id of drafts.current.keys()) {
       blocked.current.delete(id);
-      if (!await saveRef.current(id)) break;
+      if (!await saveRef.current(id)) { savedAll = false; break; }
     }
-    try { await refreshRef.current(); } catch (e) { setError(String(e)); setSyncPaused(true); }
+    try {
+      await refreshRef.current();
+      return savedAll;
+    } catch (e) {
+      setError(String(e)); setSyncPaused(true);
+      return false;
+    }
   };
 
   const conflictCopy = async () => {

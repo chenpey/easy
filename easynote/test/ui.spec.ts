@@ -18,7 +18,16 @@ async function newNote(page: Page, title: string, content = '') {
 test('create, autosave, reload, edit Markdown and preview safely', async ({ page }) => {
   const title = `读书记录-${randomUUID().slice(0, 8)}`;
   await page.goto('/');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/easynote-icon.svg');
+  const icon = await page.request.get('/easynote-icon.svg');
+  expect(icon.status()).toBe(200);
+  expect(icon.headers()['content-type']).toContain('image/svg+xml');
   await newNote(page, title, '# 本周阅读\n\n记录一些值得留下的想法。\n\n- 保持简单\n- 定期整理\n\n<script>alert(1)</script>');
+  await page.getByRole('button', { name: '立即同步', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已同步，内容为最新');
+  const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
+  const history = await (await page.request.get(`/api/notes/${listed.notes[0].id}/versions`)).json();
+  expect(history.versions).toHaveLength(1);
   await page.reload();
   await page.getByRole('button').filter({ hasText: title }).click();
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('本周阅读');
@@ -43,7 +52,8 @@ test('unsaved local draft survives refresh and syncs only after explicit retry',
   await page.reload();
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('网络失败之后的本地草稿');
   await expect(page.getByText('待处理草稿', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await page.getByRole('button', { name: '立即同步', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('草稿已保存并同步');
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
 });
 
@@ -108,6 +118,40 @@ test('mobile navigation, pin, trash and restore remain usable without overflow',
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('button', { name: '返回笔记列表' }).click();
   await expect(page.getByRole('textbox', { name: '搜索笔记' })).toBeVisible();
+});
+
+test('note list width is adjustable, persistent, and both footers align', async ({ page }) => {
+  await page.goto('/');
+  await newNote(page, `布局测试-${randomUUID().slice(0, 6)}`, '检查可调整的笔记列表。');
+  const list = page.locator('.note-list');
+  const separator = page.getByRole('separator', { name: '调整笔记列表宽度' });
+  const initial = await list.boundingBox();
+  const handle = await separator.boundingBox();
+  expect(initial).not.toBeNull();
+  expect(handle).not.toBeNull();
+  await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + 140);
+  await page.mouse.down();
+  await page.mouse.move(handle!.x + handle!.width / 2 + 84, handle!.y + 140, { steps: 5 });
+  await page.mouse.up();
+  const resized = await list.boundingBox();
+  expect(resized!.width).toBeGreaterThan(initial!.width + 70);
+  expect(await separator.getAttribute('aria-valuenow')).toBe(String(Math.round(resized!.width)));
+  const footers = await page.evaluate(() => {
+    const listFooter = document.querySelector('.list-footer')!.getBoundingClientRect();
+    const documentFooter = document.querySelector('.document-footer')!.getBoundingClientRect();
+    return {
+      listTop: listFooter.top, documentTop: documentFooter.top,
+      listHeight: listFooter.height, documentHeight: documentFooter.height,
+    };
+  });
+  expect(Math.abs(footers.listTop - footers.documentTop)).toBeLessThanOrEqual(1);
+  expect(Math.abs(footers.listHeight - footers.documentHeight)).toBeLessThanOrEqual(1);
+  await page.getByRole('button', { name: '收起侧栏' }).click();
+  expect((await list.boundingBox())!.width).toBeCloseTo(resized!.width, 0);
+  await page.reload();
+  expect((await list.boundingBox())!.width).toBeCloseTo(resized!.width, 0);
+  await separator.dblclick();
+  await expect(separator).toHaveAttribute('aria-valuenow', '292');
 });
 
 test('typing while a save response is delayed preserves the newer draft', async ({ page }) => {

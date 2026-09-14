@@ -1,4 +1,4 @@
-import { idPattern, imageIds, type Note, type NoteInput } from '../shared/types';
+import { idPattern, imageIds, noteInput, sameNoteInput, type Note, type NoteInput, type Version } from '../shared/types';
 import { ApiError, clientConfig, digest, json, numberSetting, readJson, type Env } from './core';
 import type { Identity } from './auth';
 
@@ -53,6 +53,9 @@ async function save(request: Request, env: Env, user: Identity, id: string, crea
   }
   if (current && (create || current.revision !== data.revision)) {
     throw new ApiError(409, 'The note changed on another device.', { current: toNote(current) });
+  }
+  if (current && sameNoteInput(noteInput(toNote(current)), input)) {
+    return json({ note: toNote(current), unchanged: true });
   }
   const ids = imageIds(input.content);
   if (ids.length > 80) throw new ApiError(400, 'A note can reference at most 80 images.');
@@ -142,10 +145,14 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     if (!await load(env, user.id, id)) throw new ApiError(404, 'Note not found.');
     const rows = await env.DB.prepare('SELECT * FROM note_versions WHERE note_id=? ORDER BY revision DESC')
       .bind(id).all<Row & { saved_at: number }>();
-    return json({ versions: rows.results.map((row) => ({
+    const versions: Version[] = rows.results.map((row) => ({
       title: row.title, content: row.content, tags: JSON.parse(row.tags), pinned: !!row.pinned,
       deletedAt: row.deleted_at, revision: row.revision, savedAt: row.saved_at,
-    })) });
+    }));
+    return json({
+      versions: versions.filter((version, index) =>
+        index === 0 || !sameNoteInput(version, versions[index - 1])),
+    });
   }
   if (match[2]) return null;
   if (request.method === 'GET') {
