@@ -7,7 +7,7 @@ test.beforeAll(async () => { preview = await createPreview({ POLL_INTERVAL_SECON
 test.afterAll(async () => { await preview?.mf.dispose(); });
 
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
-  test(`share workflow at ${viewport.width}px`, async ({ page, context }) => {
+  test(`share workflow at ${viewport.width}px`, async ({ page, context, browser }) => {
     await page.setViewportSize(viewport);
     await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: preview.url });
     const errors = [];
@@ -69,6 +69,20 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(file.locator(".file-link-qr")).toBeHidden();
     await page.screenshot({ path: `test-results/share-${viewport.width}.png`, fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+    const scanContext = await browser.newContext({ viewport });
+    const scanPage = await scanContext.newPage();
+    await scanPage.goto(fileUrl);
+    await expect(scanPage).toHaveURL(/\/login\?next=/);
+    expect(new URL(scanPage.url()).searchParams.get("next")).toBe(new URL(fileUrl).pathname);
+    await scanPage.getByLabel("共享密码").fill(preview.password);
+    const scannedDownloadPromise = scanPage.waitForEvent("download");
+    await scanPage.getByRole("button", { name: "登录", exact: true }).click();
+    const scannedDownload = await scannedDownloadPromise;
+    expect(scannedDownload.suggestedFilename()).toBe(filename);
+    expect(await scannedDownload.failure()).toBeNull();
+    await expect(scanPage).toHaveURL(`${preview.url}/`);
+    await scanContext.close();
 
     await page.getByRole("button", { name: "访问二维码" }).click();
     await expect(page.locator("#qr-dialog")).toBeVisible();

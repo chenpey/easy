@@ -26,6 +26,13 @@ const uploadStorageKey = "easydrop/resumable-uploads/v1";
 
 class UploadPaused extends Error {}
 
+function requestedDownloadPath() {
+  const path = new URL(location.href).searchParams.get("next") || "";
+  return /^\/uploads\/[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(path)
+    ? path
+    : null;
+}
+
 function notice(message, error = false) {
   $("notice").textContent = message;
   $("notice").classList.toggle("error", error);
@@ -653,7 +660,19 @@ if (isLogin) {
     busy(event.submitter, async () => {
       await api("/api/login", { method: "POST", data: { password: $("password").value } });
       $("password").value = "";
-      location.replace("/");
+      const downloadPath = requestedDownloadPath();
+      if (!downloadPath) {
+        location.replace("/");
+        return;
+      }
+      notice("登录成功，正在下载文件");
+      const link = document.createElement("a");
+      link.href = downloadPath;
+      link.download = "";
+      link.hidden = true;
+      document.body.append(link);
+      link.click();
+      setTimeout(() => location.replace("/"), 500);
     });
   });
 } else initializeApp().catch(report);

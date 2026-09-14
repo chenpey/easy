@@ -19,6 +19,11 @@ const sha256 = async (value) => Array.from(
   (byte) => byte.toString(16).padStart(2, "0"),
 ).join("");
 
+function safeDownloadPath(value) {
+  const match = /^\/uploads\/([^/?#]+)$/.exec(value || "");
+  return match && validId(match[1]) ? match[0] : "/";
+}
+
 function validateFile(name, size, config) {
   if (typeof name !== "string" || !name.trim() || encoder.encode(name).length > 255 ||
       /[\/\\\u0000-\u001f\u007f]/.test(name)) {
@@ -410,11 +415,18 @@ async function route(request, env, ctx) {
   }
   const session = await getSession(request, env);
   if ((method === "GET" || method === "HEAD") && path === "/login") {
-    return session ? Response.redirect(`${url.origin}/`, 303) : asset(request, env, "/login.html");
+    const target = safeDownloadPath(url.searchParams.get("next"));
+    return session ? Response.redirect(`${url.origin}${target}`, 303) : asset(request, env, "/login.html");
   }
   if (!session) {
     if ((method === "GET" || method === "HEAD") && ["/", "/index.html"].includes(path)) {
       return Response.redirect(`${url.origin}/login`, 303);
+    }
+    const browserNavigation = request.headers.get("Sec-Fetch-Mode") === "navigate" ||
+      request.headers.get("Accept")?.split(",").some((type) => type.trim().startsWith("text/html"));
+    const downloadPath = safeDownloadPath(path);
+    if (method === "GET" && downloadPath !== "/" && browserNavigation) {
+      return Response.redirect(`${url.origin}/login?next=${encodeURIComponent(downloadPath)}`, 303);
     }
     throw new HttpError(401, "Authentication required.");
   }

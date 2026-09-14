@@ -128,6 +128,12 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
   assert.match(favicon.headers.get("Content-Type"), /image\/svg\+xml/);
   assert.match(await favicon.text(), /<title id="title">EasyDrop<\/title>/);
   assert.equal((await request("/favicon.ico", { method: "HEAD" })).status, 200);
+  const downloadPath = `/uploads/${crypto.randomUUID()}`;
+  const navigation = await request(downloadPath, {
+    headers: { "Sec-Fetch-Mode": "navigate", Accept: "text/html" },
+  });
+  assert.equal(navigation.status, 303);
+  assert.equal(navigation.headers.get("Location"), `${origin}/login?next=${encodeURIComponent(downloadPath)}`);
 });
 
 test("login validates inputs and origin, issues secure cookies and stores only token hashes", async () => {
@@ -144,6 +150,12 @@ test("login validates inputs and origin, issues secure cookies and stores only t
   assert.equal(stored.token_hash, await digest(cookie.split("=")[1]));
   assert.notEqual(stored.token_hash, cookie.split("=")[1]);
   assert.equal((await request("/", { authenticated: true })).status, 200);
+  const downloadPath = `/uploads/${crypto.randomUUID()}`;
+  const resumed = await request(`/login?next=${encodeURIComponent(downloadPath)}`, { authenticated: true });
+  assert.equal(resumed.status, 303);
+  assert.equal(resumed.headers.get("Location"), `${origin}${downloadPath}`);
+  const unsafe = await request("/login?next=https%3A%2F%2Fevil.example", { authenticated: true });
+  assert.equal(unsafe.headers.get("Location"), `${origin}/`);
 });
 
 test("session tampering, expiry and password-version changes invalidate access", async () => {
