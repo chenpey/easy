@@ -68,11 +68,11 @@ async function askInitialAdmin() {
   }
 }
 
-function run(args, env = {}) {
+function run(args, env = {}, interactive = true) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["node_modules/wrangler/bin/wrangler.js", ...args], {
       cwd: root, env: { ...process.env, ...env, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: `${root}/.wrangler/logs/` },
-      stdio: "inherit",
+      stdio: [interactive ? "inherit" : "ignore", "inherit", "inherit"],
     });
     child.on("error", reject);
     child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`wrangler ${args.join(" ")} failed (${code}).`)));
@@ -161,12 +161,14 @@ async function main() {
     administrator: initialAdmin ? "initialize" : "preserve existing users and sessions",
   };
   console.log(JSON.stringify(summary, null, 2));
-  if (await ask(`Type ${name} to create/update these Cloudflare resources: `) !== name) throw new Error("Cancelled.");
+  if (await ask(`Type ${name} to create/update resources and apply pending D1 migrations: `) !== name) {
+    throw new Error("Cancelled.");
+  }
   await withProgress("Building static assets", () => import("./build.mjs"));
   await withProgress("Preparing D1 and R2 resources",
     () => provisionDeployment(api, config, inspection, saveConfig));
   await withProgress("Applying remote D1 migrations",
-    () => run(["d1", "migrations", "apply", "DB", "--remote", "--config", "wrangler.deploy.json"], authEnv));
+    () => run(["d1", "migrations", "apply", "DB", "--remote", "--config", "wrangler.deploy.json"], authEnv, false));
   // First deployment fails closed until the initial administrator secret is installed.
   await withProgress("Uploading Worker and configuring its public entrypoint",
     () => run(["deploy", "--config", "wrangler.deploy.json"], authEnv));
