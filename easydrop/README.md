@@ -401,6 +401,26 @@ bash deploy.sh
 
 每次部署都会重新确认公开入口，但不会重新选择账户、D1 或 R2。不要通过删除 `wrangler.deploy.json` 尝试切换目标，否则无法正常识别原有 Worker 与存储绑定。
 
+### 迁移已有存储名称
+
+已部署实例需要修改 D1 和 R2 名称时，不能直接编辑 `wrangler.deploy.json`。D1 支持在保留 UUID 和数据的情况下改名；R2 不支持桶改名，因此需要新建桶、复制并校验对象，再切换 Worker 绑定。
+
+仓库提供一次性交互迁移命令：
+
+```sh
+bash migrate-storage.sh
+```
+
+默认存储基础名称为 `easy-drop`，迁移结果为 D1 `easy-drop` 和 R2 `easy-drop-files`。脚本要求输入现有部署使用的 Cloudflare API Token，不读取环境变量，也不保存凭据。执行步骤如下：
+
+1. 核对远端 Worker、D1 UUID、源 R2 绑定和两个桶的私有状态。
+2. 创建目标 R2 桶并把 Worker 切换到只读迁移模式；浏览和下载继续可用，登录、上传、删除等写操作暂时返回 `503`。
+3. 拒绝存在未完成上传的迁移；没有未完成上传时，按 D1 中的有效文件清单逐个下载、复制，并对目标对象重新下载执行大小和 SHA-256 校验。
+4. 原地修改 D1 名称，应用待执行迁移，将 Worker 切换到目标 R2，并原子更新本地部署配置。
+5. 任一步骤失败时尝试恢复旧 R2 的正常访问。迁移状态保存在忽略提交的 `wrangler.storage-migration.json`，修复原因后可重跑同一命令。
+
+脚本不会自动删除旧 R2 桶。上线后逐个抽查历史文件和临时链接，确认目标桶数据完整，再从 Cloudflare Dashboard 手工删除旧桶。迁移完成后的普通更新仍使用 `bash deploy.sh`。
+
 ## 配置
 
 在 `wrangler.json` 的 `vars` 中显式调整，再重新部署。数值配置以十进制整数字符串保存，缺失或越界会拒绝请求，不回退成开放访问。
@@ -419,6 +439,7 @@ bash deploy.sh
 | `LOGIN_GLOBAL_LIMIT` | `100` | 1～10000 次 | 通过 IP 限流后的全站尝试数 |
 | `HISTORY_PAGE_SIZE` | `50` | 1～50 条 | 单页条数上限，还会按文本上限缩小 |
 | `CLEANUP_BATCHES` | `4` | 1～8 批 | 每次定时任务的待删除清理批次，每批最多 50 条 |
+| `STORAGE_MIGRATION_MODE` | `false` | `true` / `false` | 存储迁移内部开关；正常部署必须为 false |
 | `ALLOW_LOCAL_HTTP` | `false` | `true` / `false` | 仅本地开发覆盖为 true，部署时必须 false |
 
 密码不放在 `vars` 中。线上初始管理员由 `INITIAL_ADMIN` Secret 引导创建，所有用户的随机盐和密码验证器存入 D1；本地初始管理员配置写入 `.dev.vars`。
@@ -513,6 +534,7 @@ bash deploy.sh
 | `test/` | API、部署协议和浏览器测试 |
 | `wrangler.json` | Worker 入口、绑定模板、行为配置和 Cron |
 | `deploy.sh` | 检查 Node.js、安装锁定依赖并进入交互部署 |
+| `migrate-storage.sh` | 交互迁移已有 D1/R2 名称并保留数据 |
 
 以下命令均在 `easydrop/` 下执行：
 
@@ -524,6 +546,7 @@ bash deploy.sh
 | `npm run preview` | 启动随机密码、随机端口的临时预览 |
 | `npm run build` | 仅构建前端，不发布到云端 |
 | `bash deploy.sh` / `npm run deploy` | 使用 API Token 交互式部署 |
+| `bash migrate-storage.sh` / `npm run migrate:storage` | 交互迁移已有存储名称 |
 | `npm run check` | 检查 JavaScript 语法 |
 | `npm test` | 运行 API 与部署协议集成测试 |
 | `npm run test:ui` | 运行 Playwright 浏览器测试 |

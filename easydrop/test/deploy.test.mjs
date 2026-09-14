@@ -10,6 +10,7 @@ import {
   resolvePublicHostname,
   selectAccount,
   selectDeploymentDomain,
+  storageResourceNames,
 } from "../scripts/cloudflare.mjs";
 
 const account = "a".repeat(32);
@@ -41,7 +42,10 @@ before(async () => {
       database = { uuid: crypto.randomUUID(), name: JSON.parse(body).name };
       return reply(database);
     }
-    if (url.pathname.includes("/d1/database/")) return reply(database);
+    if (url.pathname.includes("/d1/database/")) {
+      if (request.method === "PATCH") database = { ...database, name: JSON.parse(body).name };
+      return reply(database);
+    }
     if (url.pathname.endsWith("/domains/managed")) return reply({ enabled: publicBucket });
     if (url.pathname.endsWith("/domains/custom")) return reply({ domains: [] });
     if (url.pathname.endsWith("/r2/buckets") && request.method === "POST") {
@@ -80,6 +84,37 @@ test("deployment domain is confirmed on every run and can be changed", async () 
   assert.equal(await selectDeploymentDomain(custom, async () => "NEW.EXAMPLE.TEST"), "new.example.test");
   assert.equal(await selectDeploymentDomain(custom, async () => "workers.dev"), "");
   assert.equal(await selectDeploymentDomain({}, async () => "share.example.test"), "share.example.test");
+});
+
+test("storage migration names use an explicit validated base", () => {
+  assert.deepEqual(storageResourceNames("easy-drop"), {
+    database: "easy-drop",
+    bucket: "easy-drop-files",
+  });
+  assert.deepEqual(storageResourceNames("  PERSONAL-STORE  "), {
+    database: "personal-store",
+    bucket: "personal-store-files",
+  });
+  for (const invalid of ["ab", "-easy-drop", "easy_drop", "easy-drop-", "a".repeat(59)]) {
+    assert.throws(() => storageResourceNames(invalid), /Storage name/);
+  }
+  const unsafe = structuredClone(template);
+  unsafe.vars.STORAGE_MIGRATION_MODE = "true";
+  assert.throws(() => deploymentConfig(unsafe, null, account, "my-share", ""), /STORAGE_MIGRATION_MODE/);
+});
+
+test("D1 database rename preserves its configured UUID", async () => {
+  database = { uuid: crypto.randomUUID(), name: "local-share" };
+  const renamed = await api.request(
+    "PATCH", `/accounts/${account}/d1/database/${database.uuid}`, { name: "easy-drop" },
+  );
+  assert.equal(renamed.uuid, database.uuid);
+  assert.equal(renamed.name, "easy-drop");
+  assert.deepEqual(records.at(-1), {
+    method: "PATCH",
+    path: `/accounts/${account}/d1/database/${database.uuid}`,
+    body: { name: "easy-drop" },
+  });
 });
 
 test("first deployment provisions private storage and subsequent deployment reuses it and users", async () => {

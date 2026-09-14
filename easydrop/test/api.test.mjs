@@ -107,6 +107,21 @@ test("missing credentials and invalid settings fail closed; production refuses H
       bindings: { ...config.vars, MAX_UPLOAD_BYTES: "invalid", INITIAL_ADMIN: await createInitialAdmin(username, password) },
     }));
     assert.equal((await runtime.dispatchFetch(`${origin}/`)).status, 503);
+    await runtime.setOptions(convertV4MiniflareOptions({
+      modules: true, script, compatibilityDate: config.compatibility_date,
+      bindings: {
+        ...config.vars,
+        STORAGE_MIGRATION_MODE: "true",
+        INITIAL_ADMIN: await createInitialAdmin(username, password),
+      },
+    }));
+    const maintenance = await runtime.dispatchFetch(`${origin}/api/login`, {
+      method: "POST",
+      headers: { Origin: origin, "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    assert.equal(maintenance.status, 503);
+    assert.match((await maintenance.json()).message, /Storage migration/);
   } finally {
     await runtime.dispose();
   }

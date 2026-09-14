@@ -36,6 +36,7 @@
     "LOGIN_GLOBAL_LIMIT": "100",
     "HISTORY_PAGE_SIZE": "50",
     "CLEANUP_BATCHES": "4",
+    "STORAGE_MIGRATION_MODE": "false",
     "ALLOW_LOCAL_HTTP": "false"
   },
   "triggers": { "crons": ["*/15 * * * *"] }
