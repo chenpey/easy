@@ -1,9 +1,10 @@
 const encoder = new TextEncoder();
 const ITERATIONS = 100000;
-const CURRENT_VERIFIER_VERSION = 2;
+const CURRENT_VERIFIER_VERSION = 3;
 const PROOF_CONTEXTS = new Map([
   [1, encoder.encode("local-share/password-verifier/v1")],
   [2, encoder.encode("relaydrop/password-verifier/v2")],
+  [3, encoder.encode("easydrop/password-verifier/v3")],
 ]);
 
 export class HttpError extends Error {
@@ -98,7 +99,7 @@ export function requireOrigin(request) {
 }
 
 function cookieName(request, env) {
-  return localHttp(request, env) ? "relaydrop_dev" : "__Host-relaydrop";
+  return localHttp(request, env) ? "easydrop_dev" : "__Host-easydrop";
 }
 
 export function sessionCookie(request, env, token, ttl) {

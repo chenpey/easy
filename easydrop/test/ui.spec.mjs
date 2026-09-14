@@ -14,8 +14,8 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(preview.url);
     await expect(page).toHaveURL(`${preview.url}/login`);
-    await expect(page).toHaveTitle("登录 | RelayDrop");
-    await expect(page.getByRole("heading", { name: "RelayDrop" })).toBeVisible();
+    await expect(page).toHaveTitle("登录 | EasyDrop");
+    await expect(page.getByRole("heading", { name: "EasyDrop" })).toBeVisible();
     await expect(page.getByLabel("共享密码")).toBeVisible();
     await page.screenshot({ path: `test-results/login-${viewport.width}.png`, fullPage: true });
 
@@ -25,7 +25,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     });
     expect(login.status()).toBe(200);
     await page.goto(preview.url);
-    await expect(page).toHaveTitle("RelayDrop");
+    await expect(page).toHaveTitle("EasyDrop");
     await expect(page.locator("#file-input")).toBeEnabled();
     const text = `<script>window.injected = true</script>\n${"long-text-".repeat(30)}`;
     await page.getByLabel("分享文本", { exact: true }).fill(text);

@@ -73,19 +73,21 @@ test("multiple accounts require explicit selection", async () => {
   await assert.rejects(selectAccount(api, null, async () => "invalid", () => {}), /Invalid account/);
 });
 
-test("legacy deployment identity migrates only to the RelayDrop default", () => {
-  const legacy = {
-    name: "local-share",
-    account_id: account,
-    d1_databases: [{ database_name: "local-share", database_id: "d".repeat(32) }],
-    r2_buckets: [{ bucket_name: "local-share-files" }],
-  };
-  const migrated = migrateDeploymentIdentity(template, legacy);
-  assert.equal(migrated.legacyWorker, "local-share");
-  assert.equal(migrated.deploymentState.name, "relaydrop");
-  assert.equal(migrated.deploymentState.d1_databases[0].database_id, "d".repeat(32));
-  assert.equal(migrated.deploymentState.r2_buckets[0].bucket_name, "local-share-files");
-  assert.equal(migrateDeploymentIdentity(template, { ...legacy, name: "another-worker" }).legacyWorker, null);
+test("known legacy deployment identities migrate only to the EasyDrop default", () => {
+  for (const legacyName of ["local-share", "relaydrop"]) {
+    const legacy = {
+      name: legacyName,
+      account_id: account,
+      d1_databases: [{ database_name: legacyName, database_id: "d".repeat(32) }],
+      r2_buckets: [{ bucket_name: `${legacyName}-files` }],
+    };
+    const migrated = migrateDeploymentIdentity(template, legacy);
+    assert.equal(migrated.legacyWorker, legacyName);
+    assert.equal(migrated.deploymentState.name, "easydrop");
+    assert.equal(migrated.deploymentState.d1_databases[0].database_id, "d".repeat(32));
+    assert.equal(migrated.deploymentState.r2_buckets[0].bucket_name, `${legacyName}-files`);
+  }
+  assert.equal(migrateDeploymentIdentity(template, { name: "another-worker" }).legacyWorker, null);
 });
 
 test("first deployment provisions private storage and subsequent deployment reuses it and password", async () => {

@@ -93,7 +93,8 @@ export async function selectAccount(api, saved, ask, log = console.log) {
 }
 
 export function migrateDeploymentIdentity(template, existing) {
-  const legacyWorker = existing?.name === "local-share" && template.name === "relaydrop" ? existing.name : null;
+  const legacyNames = new Set(["local-share", "relaydrop"]);
+  const legacyWorker = template.name === "easydrop" && legacyNames.has(existing?.name) ? existing.name : null;
   return {
     legacyWorker,
     deploymentState: legacyWorker ? { ...existing, name: template.name } : existing,
