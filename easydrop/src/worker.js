@@ -77,6 +77,28 @@ function requireAdmin(session) {
   if (session.role !== "admin") throw new HttpError(403, "Administrator access required.");
 }
 
+async function requireAnotherEnabledAdmin(env, userId) {
+  const remaining = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM users
+     WHERE role = 'admin' AND enabled = 1 AND id != ? AND deletion_requested_at IS NULL`,
+  ).bind(userId).first();
+  if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
+}
+
+async function requireCurrentPassword(env, userId, password) {
+  if (typeof password !== "string" || Array.from(password).length > 32) {
+    throw new HttpError(400, "Invalid current password.");
+  }
+  const user = await env.DB.prepare(
+    `SELECT id, role, enabled, password_verifier FROM users
+     WHERE id = ? AND deletion_requested_at IS NULL`,
+  ).bind(userId).first();
+  if (!user || !await verifyStoredPassword(password, user.password_verifier)) {
+    throw new HttpError(401, "Current password is incorrect.");
+  }
+  return user;
+}
+
 const userView = (user) => ({
   id: user.id,
   username: user.username,
@@ -157,11 +179,7 @@ async function updateUser(request, env, session, id) {
     throw new HttpError(409, "The current administrator cannot disable or demote itself.");
   }
   if (target.role === "admin" && target.enabled === 1 && (role !== "admin" || enabled !== 1)) {
-    const remaining = await env.DB.prepare(
-      `SELECT COUNT(*) AS count FROM users
-       WHERE role = 'admin' AND enabled = 1 AND id != ? AND deletion_requested_at IS NULL`,
-    ).bind(id).first();
-    if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
+    await requireAnotherEnabledAdmin(env, id);
   }
   const duplicate = await env.DB.prepare("SELECT id FROM users WHERE username = ? AND id != ?").bind(username, id).first();
   if (duplicate) throw new HttpError(409, "Username already exists.");
@@ -203,11 +221,7 @@ async function deleteUser(env, ctx, session, id) {
   if (!target) throw new HttpError(404, "User not found.");
   if (id === session.user_id) throw new HttpError(409, "The current administrator cannot delete itself.");
   if (target.role === "admin" && target.enabled === 1) {
-    const remaining = await env.DB.prepare(
-      `SELECT COUNT(*) AS count FROM users
-       WHERE role = 'admin' AND enabled = 1 AND id != ? AND deletion_requested_at IS NULL`,
-    ).bind(id).first();
-    if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
+    await requireAnotherEnabledAdmin(env, id);
   }
   const timestamp = now();
   await env.DB.batch([
@@ -359,15 +373,7 @@ async function changeOwnPassword(request, env, session) {
   } catch (error) {
     throw new HttpError(400, error.message);
   }
-  if (typeof data.currentPassword !== "string" || Array.from(data.currentPassword).length > 32) {
-    throw new HttpError(400, "Invalid current password.");
-  }
-  const user = await env.DB.prepare(
-    "SELECT password_verifier FROM users WHERE id = ? AND deletion_requested_at IS NULL",
-  ).bind(session.user_id).first();
-  if (!user || !await verifyStoredPassword(data.currentPassword, user.password_verifier)) {
-    throw new HttpError(401, "Current password is incorrect.");
-  }
+  await requireCurrentPassword(env, session.user_id, data.currentPassword);
   const verifier = await createPasswordVerifier(data.newPassword);
   await env.DB.batch([
     env.DB.prepare(
@@ -385,15 +391,7 @@ async function changeOwnPassword(request, env, session) {
 
 async function createRecoveryCode(request, env, session) {
   const data = await readJson(request, 2048);
-  if (typeof data.currentPassword !== "string" || Array.from(data.currentPassword).length > 32) {
-    throw new HttpError(400, "Invalid current password.");
-  }
-  const user = await env.DB.prepare(
-    "SELECT password_verifier FROM users WHERE id = ? AND deletion_requested_at IS NULL",
-  ).bind(session.user_id).first();
-  if (!user || !await verifyStoredPassword(data.currentPassword, user.password_verifier)) {
-    throw new HttpError(401, "Current password is incorrect.");
-  }
+  await requireCurrentPassword(env, session.user_id, data.currentPassword);
   const token = randomToken();
   const timestamp = now();
   await env.DB.prepare(
@@ -405,21 +403,9 @@ async function createRecoveryCode(request, env, session) {
 async function deleteOwnAccount(request, env, ctx, session) {
   const data = await readJson(request, 2048);
   if (data.username !== session.username) throw new HttpError(400, "Username confirmation does not match.");
-  if (typeof data.currentPassword !== "string" || Array.from(data.currentPassword).length > 32) {
-    throw new HttpError(400, "Invalid current password.");
-  }
-  const target = await env.DB.prepare(
-    "SELECT id, role, enabled, password_verifier FROM users WHERE id = ? AND deletion_requested_at IS NULL",
-  ).bind(session.user_id).first();
-  if (!target || !await verifyStoredPassword(data.currentPassword, target.password_verifier)) {
-    throw new HttpError(401, "Current password is incorrect.");
-  }
+  const target = await requireCurrentPassword(env, session.user_id, data.currentPassword);
   if (target.role === "admin" && target.enabled === 1) {
-    const remaining = await env.DB.prepare(
-      `SELECT COUNT(*) AS count FROM users
-       WHERE role = 'admin' AND enabled = 1 AND id != ? AND deletion_requested_at IS NULL`,
-    ).bind(target.id).first();
-    if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
+    await requireAnotherEnabledAdmin(env, target.id);
   }
   const timestamp = now();
   await env.DB.batch([
@@ -441,7 +427,7 @@ async function deleteOwnAccount(request, env, ctx, session) {
 function harden(response, request, env, session) {
   const result = new Response(response.body, response);
   const publicAsset = publicAssets.has(new URL(request.url).pathname);
-  if (session?.token && !result.headers.has("Set-Cookie")) {
+  if (session?.renewed && session.token && !result.headers.has("Set-Cookie")) {
     result.headers.set("Set-Cookie", sessionCookie(request, env, session.token, session.ttl));
   }
   result.headers.set("Cache-Control", publicAsset && (response.ok || response.status === 304) ? "public, max-age=0, must-revalidate" : "no-store");
@@ -975,7 +961,7 @@ async function route(request, env, ctx, responseState) {
     const match = /^\/shared\/([a-f0-9]{64})\/([^/?#]+)$/.exec(path);
     return temporaryDownload(request, env, match?.[1], decodeFilename(match?.[2]));
   }
-  const session = await getSession(request, env, config.ttl);
+  const session = await getSession(request, env, config.ttl, config.sessionRenewInterval);
   if (session) responseState.session = { ...session, ttl: config.ttl };
   if ((method === "GET" || method === "HEAD") && ["/login", "/register", "/reset-password"].includes(path)) {
     const target = path === "/login" ? safeDownloadPath(url.searchParams.get("next")) : "/";

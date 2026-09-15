@@ -134,7 +134,7 @@ header {
 }
 
 .header-inner, .workspace {
-  width: min(100% - 48px, 1080px);
+  width: min(100% - 48px, 960px);
   margin: auto;
 }
 
@@ -181,8 +181,6 @@ h2 > .lucide { color: var(--label-secondary); }
 .workspace { padding: 22px 0 56px; }
 
 .compose {
-  width: min(100%, 960px);
-  margin: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 32px;
@@ -217,8 +215,8 @@ textarea:focus, input[type="text"]:focus, input[type="password"]:focus, input[ty
 }
 
 textarea {
-  height: 150px;
-  min-height: 150px;
+  height: 80px;
+  min-height: 80px;
   resize: vertical;
   line-height: 1.55;
 }
@@ -239,7 +237,8 @@ textarea {
 
 .file-picker {
   position: relative;
-  min-height: 150px;
+  height: 80px;
+  min-height: 80px;
   border: 1px dashed #a8a8ad;
   border-radius: 8px;
   background: rgba(255, 255, 255, .62);
@@ -247,8 +246,8 @@ textarea {
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  gap: 10px;
-  padding: 18px;
+  gap: 2px;
+  padding: 8px 12px;
   color: #3a3a3c;
   transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
 }
@@ -264,8 +263,8 @@ textarea {
 }
 
 .file-picker > .lucide {
-  width: 30px;
-  height: 30px;
+  width: 22px;
+  height: 22px;
   color: var(--blue);
   stroke-width: 1.7;
 }
@@ -857,6 +856,7 @@ dialog::backdrop {
 @media (max-width: 680px) {
   .header-inner, .workspace { width: calc(100% - 32px); }
   .header-inner { min-height: 62px; }
+  .header-inner > .tools { gap: 4px; }
   .workspace { padding-top: 16px; }
   .compose { grid-template-columns: minmax(0, 1fr); gap: 30px; padding-top: 14px; }
   .history-item { grid-template-columns: 22px minmax(0, 1fr); gap: 10px; }
@@ -884,6 +884,19 @@ dialog::backdrop {
   .user-options { grid-template-columns: auto minmax(0, 1fr) auto; }
   .temporary-share-duration { grid-template-columns: minmax(0, 1fr); }
   .temporary-share-duration button { width: 100%; }
+}
+
+@media (max-width: 340px) {
+  .header-inner h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

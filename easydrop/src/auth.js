@@ -106,9 +106,15 @@ export function configuration(env) {
   if (!["true", "false"].includes(env.ALLOW_LOCAL_HTTP)) {
     throw new HttpError(503, "Invalid configuration: ALLOW_LOCAL_HTTP");
   }
+  const ttl = number("SESSION_TTL_SECONDS", 3600, 31536000);
+  const sessionRenewInterval = number("SESSION_RENEW_INTERVAL_SECONDS", 60, 86400);
+  if (sessionRenewInterval * 2 > ttl) {
+    throw new HttpError(503, "Invalid configuration: SESSION_RENEW_INTERVAL_SECONDS must not exceed half of SESSION_TTL_SECONDS");
+  }
   return {
     initialAdmin,
-    ttl: number("SESSION_TTL_SECONDS", 3600, 31536000),
+    ttl,
+    sessionRenewInterval,
     uploadLimit: number("MAX_UPLOAD_BYTES", 1, 200 * 1024 * 1024),
     uploadChunkBytes: number("UPLOAD_CHUNK_BYTES", 5 * 1024 * 1024, 95 * 1024 * 1024),
     uploadConcurrency: number("UPLOAD_CONCURRENCY", 1, 6),
@@ -150,7 +156,7 @@ export function sessionCookie(request, env, token, ttl) {
   return `${cookieName(request, env)}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttl}${secure}`;
 }
 
-export async function getSession(request, env, ttl) {
+export async function getSession(request, env, ttl, renewInterval) {
   const cookies = (request.headers.get("Cookie") || "").split(";").map((part) => part.trim());
   const prefix = `${cookieName(request, env)}=`;
   const token = cookies.find((part) => part.startsWith(prefix))?.slice(prefix.length);
@@ -165,14 +171,23 @@ export async function getSession(request, env, ttl) {
       AND u.enabled = 1 AND u.deletion_requested_at IS NULL`,
   ).bind(tokenHash, timestamp).first();
   if (!session) return null;
+  const renewBefore = timestamp + ttl - renewInterval;
+  if (session.expires_at > renewBefore) {
+    return { ...session, token, renewed: false };
+  }
   const expiresAt = timestamp + ttl;
   const renewed = await env.DB.prepare(
     `UPDATE sessions SET expires_at = ? WHERE token_hash = ? AND user_id = ? AND auth_version = ?
+     AND expires_at <= ?
      AND EXISTS (SELECT 1 FROM users
       WHERE id = ? AND enabled = 1 AND auth_version = ? AND deletion_requested_at IS NULL)`,
-  ).bind(expiresAt, tokenHash, session.user_id, session.auth_version, session.user_id, session.auth_version).run();
-  if (!renewed.meta.changes) return null;
-  return { ...session, expires_at: expiresAt, token };
+  ).bind(
+    expiresAt, tokenHash, session.user_id, session.auth_version, renewBefore,
+    session.user_id, session.auth_version,
+  ).run();
+  return renewed.meta.changes
+    ? { ...session, expires_at: expiresAt, token, renewed: true }
+    : { ...session, token, renewed: false };
 }
 
 export function requireCsrf(request, session) {

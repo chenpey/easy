@@ -12,7 +12,7 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await preview?.mf.dispose(); });
 
-for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 700 }]) {
   test(`share workflow at ${viewport.width}px`, async ({ page, context, browser }) => {
     await page.setViewportSize(viewport);
     await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: preview.url });
@@ -35,10 +35,25 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page).toHaveTitle("EasyDrop");
     await expect(page.locator("#file-input")).toBeEnabled();
     await expect(page.locator("#upload-limit")).toHaveText("单文件上限 200.0 MB");
+    const expectedContentWidth = viewport.width > 680 ? Math.min(viewport.width - 48, 960) : viewport.width - 32;
+    const layoutBoxes = await page.locator(".header-inner, .workspace, .compose, .history").evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const { left, width } = node.getBoundingClientRect();
+        return { left, width };
+      }));
+    expect(layoutBoxes).toEqual(Array(4).fill({
+      left: (viewport.width - expectedContentWidth) / 2,
+      width: expectedContentWidth,
+    }));
+    const controlBoxes = await page.locator("#text-input, .file-picker").evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const { top, height } = node.getBoundingClientRect();
+        return { top, height };
+      }));
+    expect(controlBoxes.map(({ height }) => height)).toEqual([80, 80]);
+    if (viewport.width > 680) expect(controlBoxes[0].top).toBe(controlBoxes[1].top);
     if (viewport.width === 1280) {
       await expect(page.locator(".compose")).toHaveCSS("width", "960px");
-      await expect(page.locator("#text-input")).toHaveCSS("height", "150px");
-      await expect(page.locator(".file-picker")).toHaveCSS("min-height", "150px");
     }
     const sharedUrl = `${preview.url}/favicon.svg?source=shared#drop`;
     const text = `<script>window.injected = true</script>\n${sharedUrl}。\n${"long-text-".repeat(30)}`;
@@ -453,7 +468,7 @@ test("multipart upload runs concurrently and resumes after pause and reload", as
   }
 });
 
-test("polling keeps expanded pages and manual refresh applies updates", async ({ page, context }) => {
+test("polling refreshes expanded pages, preserves position and recovers after failure", async ({ page, context }) => {
   const headers = await loginContext(context);
   for (let i = 0; i < 18; i++) {
     expect((await context.request.post(`${preview.url}/api/text`, { headers, data: { text: `history-${i}` } })).ok()).toBe(true);
@@ -464,10 +479,36 @@ test("polling keeps expanded pages and manual refresh applies updates", async ({
   await expect(page.locator(".history-item")).toHaveCount(16);
   await page.getByRole("button", { name: "加载更早记录" }).click();
   await expect(page.locator(".history-item")).toHaveCount(18);
-  await context.request.post(`${preview.url}/api/text`, { headers, data: { text: "new from another device" } });
-  await expect(page.locator("#refresh")).toHaveClass(/has-updates/, { timeout: 10000 });
+  const anchor = page.getByText("history-9", { exact: true });
+  await anchor.scrollIntoViewIfNeeded();
+  const anchorTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
+  let revisionRequests = 0;
+  await page.route("**/api/revision", async (route) => {
+    revisionRequests++;
+    if (revisionRequests === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "Temporary polling failure." }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  const created = await context.request.post(`${preview.url}/api/text`, {
+    headers, data: { text: "new from another device" },
+  });
+  expect(created.ok()).toBe(true);
+  const { id } = await created.json();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.locator("#notice")).toHaveText("Temporary polling failure.");
+  await expect(page.locator(".item-text").first()).toHaveText("new from another device", { timeout: 12000 });
+  await expect(page.locator(".history-item")).toHaveCount(19);
+  await expect(page.locator("#notice")).toHaveText("分享历史已自动更新");
+  expect(revisionRequests).toBeGreaterThanOrEqual(2);
+  expect(Math.abs(await anchor.evaluate((node) => node.getBoundingClientRect().top) - anchorTop)).toBeLessThan(1);
+  const deleted = await context.request.delete(`${preview.url}/api/history/${id}`, { headers });
+  expect(deleted.ok()).toBe(true);
+  await expect(page.getByText("new from another device", { exact: true })).toHaveCount(0, { timeout: 10000 });
   await expect(page.locator(".history-item")).toHaveCount(18);
-  await page.getByRole("button", { name: "刷新历史" }).click();
-  await expect(page.locator(".history-item")).toHaveCount(8);
-  await expect(page.locator(".item-text").first()).toHaveText("new from another device");
 });

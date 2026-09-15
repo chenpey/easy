@@ -133,6 +133,16 @@ test("missing credentials and invalid settings fail closed; production refuses H
       },
     }));
     assert.equal((await runtime.dispatchFetch(`${origin}/`)).status, 503);
+    await runtime.setOptions(convertV4MiniflareOptions({
+      modules: true, script, compatibilityDate: config.compatibility_date,
+      bindings: {
+        ...config.vars,
+        SESSION_TTL_SECONDS: "3600",
+        SESSION_RENEW_INTERVAL_SECONDS: "1801",
+        INITIAL_ADMIN: await createInitialAdmin(username, password),
+      },
+    }));
+    assert.equal((await runtime.dispatchFetch(`${origin}/`)).status, 503);
   } finally {
     await runtime.dispose();
   }
@@ -192,6 +202,9 @@ test("login validates inputs and origin, issues secure cookies and stores only t
   const stored = await db.prepare("SELECT * FROM sessions").first();
   assert.equal(stored.token_hash, await digest(cookie.split("=")[1]));
   assert.notEqual(stored.token_hash, cookie.split("=")[1]);
+  const active = await request("/api/revision", { authenticated: true });
+  assert.equal(active.headers.get("Set-Cookie"), null);
+  assert.equal((await db.prepare("SELECT expires_at FROM sessions").first()).expires_at, stored.expires_at);
   await db.prepare("UPDATE sessions SET expires_at = ?").bind(Math.floor(Date.now() / 1000) + 60).run();
   const renewed = await request("/", { authenticated: true });
   assert.equal(renewed.status, 200);

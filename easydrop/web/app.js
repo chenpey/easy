@@ -15,11 +15,14 @@ let pauseRequested = false;
 let uploadQueue = [];
 let pollTimer;
 let pollingStopped = false;
+let revisionCheckRunning = false;
+let pollFailureCount = 0;
 let textSubmitting = false;
 let textOperation;
 let expandedHistory = false;
 let sessionEnded = false;
 let temporaryShareItem;
+const maxPollRetrySeconds = 60;
 const activeUploads = new Set();
 const activeRequests = new Set();
 const busyButtons = new WeakSet();
@@ -506,24 +509,71 @@ function markHistoryUpdate() {
   $("refresh").title = "分享历史有更新";
 }
 
-function schedulePoll() {
+function visibleHistoryAnchors() {
+  const viewportTop = document.querySelector("header")?.getBoundingClientRect().bottom || 0;
+  return Array.from($("history-list").querySelectorAll(".history-item")).flatMap((row) => {
+    const bounds = row.getBoundingClientRect();
+    return bounds.bottom > viewportTop && bounds.top < innerHeight
+      ? [{ id: row.dataset.id, top: bounds.top }]
+      : [];
+  });
+}
+
+async function refreshHistoryPreservingPosition() {
+  const loadedCount = $("history-list").querySelectorAll(".history-item").length;
+  const restoreExpanded = expandedHistory;
+  const anchors = visibleHistoryAnchors();
+  await loadHistory();
+  while (restoreExpanded && nextCursor &&
+      $("history-list").querySelectorAll(".history-item").length < loadedCount) {
+    await loadHistory(true);
+  }
+  for (const anchor of anchors) {
+    const row = Array.from($("history-list").querySelectorAll(".history-item"))
+      .find((item) => item.dataset.id === anchor.id);
+    if (!row) continue;
+    scrollBy(0, row.getBoundingClientRect().top - anchor.top);
+    break;
+  }
+}
+
+function schedulePoll(delaySeconds = session?.pollSeconds) {
   clearTimeout(pollTimer);
-  if (pollingStopped || !session) return;
-  pollTimer = setTimeout(async () => {
-    try {
-      if (!document.hidden && !uploading && !loading) {
-        const state = await api("/api/revision");
-        if (state.revision !== currentRevision) {
-          if (expandedHistory) markHistoryUpdate();
-          else await loadHistory();
-        }
-      }
-      schedulePoll();
-    } catch (error) {
-      pollingStopped = true;
+  if (pollingStopped || !session || document.hidden) return;
+  pollTimer = setTimeout(() => { void checkForHistoryUpdates(); }, delaySeconds * 1000);
+}
+
+async function checkForHistoryUpdates() {
+  clearTimeout(pollTimer);
+  if (pollingStopped || !session || document.hidden || revisionCheckRunning) return;
+  if (uploading || loading) {
+    schedulePoll();
+    return;
+  }
+  revisionCheckRunning = true;
+  let updated = false;
+  try {
+    const state = await api("/api/revision");
+    if (state.revision !== currentRevision) {
+      await refreshHistoryPreservingPosition();
+      updated = true;
+    }
+    if (updated) notice("分享历史已自动更新");
+    else if (pollFailureCount) notice("同步已恢复");
+    pollFailureCount = 0;
+  } catch (error) {
+    if (!sessionEnded) {
+      pollFailureCount++;
       report(error);
     }
-  }, session.pollSeconds * 1000);
+  } finally {
+    revisionCheckRunning = false;
+    const exponent = Math.max(0, Math.min(pollFailureCount - 1, 10));
+    const delay = pollFailureCount
+      ? Math.min(session?.pollSeconds * (2 ** exponent), maxPollRetrySeconds)
+      : session?.pollSeconds;
+    schedulePoll(delay);
+  }
 }
 
 function savedUploads() {
@@ -882,6 +932,7 @@ async function initializeApp() {
     await loadHistory();
     notice("已刷新");
     pollingStopped = false;
+    pollFailureCount = 0;
     schedulePoll();
   }));
   $("load-more").addEventListener("click", () => loadHistory(true).catch(report));
@@ -1046,6 +1097,12 @@ async function initializeApp() {
     });
   });
   window.addEventListener("pageshow", (event) => { if (event.persisted) location.reload(); });
+  const pollWhenActive = () => {
+    if (!document.hidden) void checkForHistoryUpdates();
+  };
+  document.addEventListener("visibilitychange", pollWhenActive);
+  window.addEventListener("focus", pollWhenActive);
+  window.addEventListener("online", pollWhenActive);
   window.addEventListener("beforeunload", (event) => {
     if (uploading || textSubmitting) {
       event.preventDefault();
