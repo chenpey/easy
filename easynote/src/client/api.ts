@@ -1,4 +1,4 @@
-import type { Note, NoteInput, NoteSummary, Session, Version, ImageRecord } from '../shared/types';
+import type { IntegrationToken, Note, NoteInput, NoteSummary, Session, Version, ImageRecord } from '../shared/types';
 
 const API_TIMEOUT_MS = 30_000;
 const UPLOAD_TIMEOUT_MS = 120_000;
@@ -63,12 +63,21 @@ export const api = {
   logout: () => request('/api/logout', 'POST', {}),
   list: (query: { q?: string; view?: string; tag?: string; offset?: number } = {}, signal?: AbortSignal) =>
     request<{ notes: NoteSummary[]; nextOffset: number | null }>(`/api/notes?${new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]))}`, 'GET', undefined, signal),
-  tags: (signal?: AbortSignal) => request<{ tags: string[] }>('/api/tags', 'GET', undefined, signal),
+  tags: (view: string, signal?: AbortSignal) =>
+    request<{ tags: string[] }>(`/api/tags?${new URLSearchParams({ view })}`, 'GET', undefined, signal),
+  blank: () => request<{ note: Note | null }>('/api/notes/blank'),
+  duplicate: (title: string, content: string) =>
+    request<{ duplicate: boolean }>('/api/notes/duplicate', 'POST', { title, content }),
   note: (id: string, signal?: AbortSignal) => request<{ note: Note }>(`/api/notes/${id}`, 'GET', undefined, signal),
   save: (id: string, input: NoteInput, revision: number, operationId: string) =>
     request<{ note: Note }>(`/api/notes/${id}`, revision === 0 ? 'POST' : 'PUT', { ...input, revision, operationId }),
   purge: (note: Note) => request(`/api/notes/${note.id}`, 'DELETE', { revision: note.revision }),
+  purgeTrash: () => request<{ deleted: number }>('/api/notes/trash', 'DELETE', {}),
   versions: (id: string) => request<{ versions: Version[] }>(`/api/notes/${id}/versions`),
+  integrationTokens: () => request<{ tokens: IntegrationToken[] }>('/api/integrations/tokens'),
+  createIntegrationToken: (name: string, access: IntegrationToken['access'], expiresInDays: number | null) =>
+    request<{ token: IntegrationToken; secret: string }>('/api/integrations/tokens', 'POST', { name, access, expiresInDays }),
+  revokeIntegrationToken: (id: string) => request(`/api/integrations/tokens/${encodeURIComponent(id)}`, 'DELETE', {}),
 };
 
 export async function uploadImage(file: File, maxBytes: number, maxPixels: number): Promise<ImageRecord> {

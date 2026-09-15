@@ -29,6 +29,7 @@ export function useNotebook(session: Session) {
   const [online, setOnline] = useState(navigator.onLine);
   const listGeneration = useRef(0);
   const selectionGeneration = useRef(0);
+  const createInFlight = useRef<Promise<Note> | null>(null);
   const persist = (id: string, draft: Draft | null) => persistDraft(userId, id, draft).catch((e: unknown) => {
     if (alive.current) setError(`本地草稿写入失败，请勿关闭页面。\n${String(e)}`);
     throw e;
@@ -42,7 +43,7 @@ export function useNotebook(session: Session) {
     if (!alive.current || generation !== listGeneration.current) return;
     setNotes((prev) => append ? [...prev, ...result.notes.filter((n) => !prev.some((old) => old.id === n.id))] : result.notes);
     setNextOffset(result.nextOffset);
-    const data = await api.tags(signal);
+    const data = await api.tags(view, signal);
     if (alive.current && generation === listGeneration.current) setTags(data.tags);
   }, [query, view, tag, nextOffset]);
   const refreshRef = useRef(refresh);
@@ -130,15 +131,37 @@ export function useNotebook(session: Session) {
     edit({ content: `${latest.content}${latest.content ? '\n\n' : ''}${text}\n` }, latest);
   };
 
-  const create = async (input: Partial<NoteInput> = {}) => {
-    const newNote: Note = {
-      id: crypto.randomUUID(), title: '', content: '', tags: [], pinned: false, deletedAt: null,
-      createdAt: Date.now(), updatedAt: Date.now(), revision: 0, ...input,
-    };
-    selectionGeneration.current++;
-    setView('all'); setQuery(''); setTag(''); show(newNote);
-    edit({}, newNote);
-    return newNote;
+  const create = (input: Partial<NoteInput> = {}): Promise<Note> => {
+    if (createInFlight.current) return createInFlight.current;
+    const operation = (async () => {
+      const open = (value: Note) => {
+        selectionGeneration.current++;
+        setView('all'); setQuery(''); setTag(''); show(value);
+        return value;
+      };
+      if (!Object.keys(input).length) {
+        const local = [current.current, ...[...drafts.current.values()].map((draft) => draft.note)]
+          .find((item): item is Note => !!item && !item.title && !item.content && !item.tags.length &&
+            !item.archived && item.deletedAt === null);
+        if (local) return open(local);
+        if (navigator.onLine) {
+          const existing = await api.blank();
+          if (existing.note) return open(existing.note);
+        }
+      }
+      const newNote: Note = {
+        id: crypto.randomUUID(), title: '', content: '', tags: [], pinned: false, archived: false, deletedAt: null,
+        createdAt: Date.now(), updatedAt: Date.now(), revision: 0, ...input,
+      };
+      open(newNote);
+      edit({}, newNote);
+      return newNote;
+    })();
+    createInFlight.current = operation;
+    void operation.finally(() => {
+      if (createInFlight.current === operation) createInFlight.current = null;
+    }).catch(() => undefined);
+    return operation;
   };
 
   const retry = async (): Promise<boolean> => {
@@ -183,6 +206,13 @@ export function useNotebook(session: Session) {
     await api.purge(target);
     if (current.current?.id === target.id) show(null);
     await refreshRef.current();
+  };
+
+  const purgeTrash = async (): Promise<number> => {
+    const result = await api.purgeTrash();
+    if (current.current?.deletedAt) show(null);
+    await refreshRef.current();
+    return result.deleted;
   };
 
   useEffect(() => {
@@ -282,8 +312,12 @@ export function useNotebook(session: Session) {
     if (!visible.some((item) => item.id === local.id)) visible.unshift({ ...local, excerpt: local.content.slice(0, 180) });
   }
   const filtered = visible.filter((item) => {
-    if ((view === 'trash') !== (item.deletedAt !== null)) return false;
-    if (view === 'pinned' && !item.pinned || tag && !item.tags.includes(tag)) return false;
+    if (view === 'trash') {
+      if (item.deletedAt === null) return false;
+    } else {
+      if (item.deletedAt !== null || item.archived !== (view === 'archive')) return false;
+    }
+    if (tag && !item.tags.includes(tag)) return false;
     return !query || `${item.title} ${item.excerpt}`.toLowerCase().includes(query.toLowerCase()) || notes.some((n) => n.id === item.id);
   });
   const status = !online ? '仅保存在本机' : note && running.current.has(note.id) ? '正在保存' :
@@ -293,6 +327,6 @@ export function useNotebook(session: Session) {
     note, notes: filtered, tags, view, query, tag, setView, setQuery, setTag,
     nextOffset, loading, error, setError, conflict, setConflict, status, pending,
     busy: running.current.size > 0, select, create, edit, append, save: () => note ? save(note.id) : Promise.resolve(true),
-    retry, conflictCopy, purge, refresh: () => refreshRef.current(), loadMore: () => refresh(true),
+    retry, conflictCopy, purge, purgeTrash, refresh: () => refreshRef.current(), loadMore: () => refresh(true),
   };
 }

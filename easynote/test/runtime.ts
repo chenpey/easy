@@ -40,7 +40,7 @@ export async function createRuntime(port?: number) {
   await db.batch(schema.split(';').map((sql) => sql.trim()).filter(Boolean).map((sql) => db.prepare(sql)));
   await db.batch([
     'DELETE FROM image_refs', 'DELETE FROM note_versions', 'DELETE FROM notes',
-    'DELETE FROM sessions', 'DELETE FROM login_attempts', 'DELETE FROM images',
+    'DELETE FROM sessions', 'DELETE FROM integration_tokens', 'DELETE FROM login_attempts', 'DELETE FROM images',
     'DELETE FROM purged_notes', 'DELETE FROM users',
   ].map((sql) => db.prepare(sql)));
   const bucket = await runtime.getR2Bucket('IMAGES');

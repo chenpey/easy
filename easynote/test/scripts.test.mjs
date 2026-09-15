@@ -137,11 +137,11 @@ test('all three help commands work without Node or npm, even outside the project
   }
 });
 
-test('missing and old Node fail before installing or launching anything', async () => {
+test('missing and pre-22.12 Node fail before installing or launching anything', async () => {
   const f = await fixture();
   const old = run(f, 'deploy.sh', ['--check'], { FAKE_OLD_NODE: '1' });
   assert.notEqual(old.status, 0);
-  assert.match(old.stderr, /Node.js 22/);
+  assert.match(old.stderr, /Node.js 22\.12/);
   await rm(`${f.root}/bin/node`);
   const missing = run(f, 'deploy.sh', ['--check'], { PATH: `${f.root}/bin` });
   assert.notEqual(missing.status, 0);

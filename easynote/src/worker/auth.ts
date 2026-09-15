@@ -1,7 +1,14 @@
 import { ApiError, clientConfig, digest, hex, json, localHttp, numberSetting, readJson, requireOrigin, token, type Env } from './core';
 
 interface Verifier { salt: string; proof: string }
-export interface Identity { id: string; username: string; csrf: string; tokenHash: string }
+export interface Identity {
+  id: string;
+  username: string;
+  csrf: string;
+  tokenHash: string;
+  actorType: 'user' | 'ai';
+  actorName: string;
+}
 const proofText = new TextEncoder().encode('easynote/password/v1');
 const unhex = (s: string) => Uint8Array.from(s.match(/../g) ?? [], (v) => parseInt(v, 16));
 
@@ -57,7 +64,7 @@ export async function identity(request: Request, env: Env): Promise<Identity | n
   const tokenHash = await digest(value);
   const row = await env.DB.prepare(`SELECT u.id, u.username, s.csrf FROM sessions s JOIN users u ON s.user_id=u.id
     WHERE s.token_hash=? AND s.expires_at>?`).bind(tokenHash, Date.now()).first<{ id: string; username: string; csrf: string }>();
-  return row ? { ...row, tokenHash } : null;
+  return row ? { ...row, tokenHash, actorType: 'user', actorName: row.username } : null;
 }
 
 export async function requireIdentity(request: Request, env: Env): Promise<Identity> {

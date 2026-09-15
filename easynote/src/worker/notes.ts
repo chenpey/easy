@@ -2,19 +2,37 @@ import { idPattern, imageIds, noteInput, sameNoteInput, type Note, type NoteInpu
 import { ApiError, clientConfig, digest, json, numberSetting, readJson, type Env } from './core';
 import type { Identity } from './auth';
 
-interface Row {
-  id: string; user_id: string; title: string; content: string; tags: string; pinned: number;
+export interface NoteRow {
+  id: string; user_id: string; title: string; content: string; tags: string; pinned: number; archived: number;
   deleted_at: number | null; created_at: number; updated_at: number; revision: number;
   mutation_id: string; mutation_hash: string;
 }
-const toNote = (row: Row): Note => ({
+export const toNote = (row: NoteRow): Note => ({
   id: row.id, title: row.title, content: row.content, tags: JSON.parse(row.tags),
-  pinned: !!row.pinned, deletedAt: row.deleted_at, createdAt: row.created_at,
+  pinned: !!row.pinned, archived: !!row.archived, deletedAt: row.deleted_at, createdAt: row.created_at,
   updatedAt: row.updated_at, revision: row.revision,
 });
 
-async function load(env: Env, userId: string, id: string): Promise<Row | null> {
-  return env.DB.prepare('SELECT * FROM notes WHERE id=? AND user_id=?').bind(id, userId).first<Row>();
+export async function loadNote(env: Env, userId: string, id: string): Promise<NoteRow | null> {
+  return env.DB.prepare('SELECT * FROM notes WHERE id=? AND user_id=?').bind(id, userId).first<NoteRow>();
+}
+
+const blankCondition = "title='' AND content='' AND tags='[]' AND archived=0 AND deleted_at IS NULL";
+
+async function loadBlank(env: Env, userId: string): Promise<NoteRow | null> {
+  return env.DB.prepare(`SELECT * FROM notes WHERE user_id=? AND ${blankCondition} LIMIT 1`)
+    .bind(userId).first<NoteRow>();
+}
+
+async function hasDuplicate(env: Env, userId: string, title: string, content: string): Promise<boolean> {
+  const query = content
+    ? env.DB.prepare('SELECT id FROM notes WHERE user_id=? AND content=? LIMIT 1').bind(userId, content)
+    : env.DB.prepare("SELECT id FROM notes WHERE user_id=? AND title=? AND content='' LIMIT 1").bind(userId, title);
+  return !!await query.first();
+}
+
+function isBlank(input: NoteInput): boolean {
+  return !input.title && !input.content && !input.tags.length && !input.archived && input.deletedAt === null;
 }
 
 function validate(data: Record<string, unknown>, env: Env): NoteInput {
@@ -24,17 +42,18 @@ function validate(data: Record<string, unknown>, env: Env): NoteInput {
       !Array.isArray(data.tags) || data.tags.length > 20 ||
       data.tags.some((tag) => typeof tag !== 'string' || !tag.trim() || tag.length > 40) ||
       typeof data.pinned !== 'boolean' ||
+      typeof data.archived !== 'boolean' ||
       !(data.deletedAt === null || typeof data.deletedAt === 'number' && Number.isSafeInteger(data.deletedAt) && data.deletedAt > 0)) {
     throw new ApiError(400, 'Invalid note fields or note size limit exceeded.');
   }
   return {
     title: data.title.trim(), content: data.content,
     tags: [...new Set((data.tags as string[]).map((tag) => tag.trim()))],
-    pinned: data.pinned, deletedAt: data.deletedAt as number | null,
+    pinned: data.pinned, archived: data.archived, deletedAt: data.deletedAt as number | null,
   };
 }
 
-async function save(request: Request, env: Env, user: Identity, id: string, create: boolean): Promise<Response> {
+export async function saveNote(request: Request, env: Env, user: Identity, id: string, create: boolean): Promise<Response> {
   const data = await readJson(request, clientConfig(env).maxNoteBytes * 6 + 8192);
   const input = validate(data, env);
   if (!idPattern.test(id) || typeof data.operationId !== 'string' || !idPattern.test(data.operationId) ||
@@ -43,7 +62,7 @@ async function save(request: Request, env: Env, user: Identity, id: string, crea
     throw new ApiError(400, 'Invalid revision or operation ID.');
   }
   const hash = await digest(JSON.stringify({ ...input, revision: data.revision }));
-  const current = await load(env, user.id, id);
+  const current = await loadNote(env, user.id, id);
   if (current?.mutation_id === data.operationId) {
     if (current.mutation_hash !== hash) throw new ApiError(409, 'Operation ID reused with different content.');
     return json({ note: toNote(current) });
@@ -67,18 +86,21 @@ async function save(request: Request, env: Env, user: Identity, id: string, crea
   const time = Date.now();
   const revision = Number(data.revision) + 1;
   const mutation = data.operationId;
-  const fields = [input.title, input.content, JSON.stringify(input.tags), input.pinned ? 1 : 0, input.deletedAt];
+  const fields = [
+    input.title, input.content, JSON.stringify(input.tags),
+    input.pinned ? 1 : 0, input.archived ? 1 : 0, input.deletedAt,
+  ];
   const statements: D1PreparedStatement[] = [];
   if (create) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO notes
-      (id,user_id,title,content,tags,pinned,deleted_at,created_at,updated_at,revision,mutation_id,mutation_hash)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?
+      (id,user_id,title,content,tags,pinned,archived,deleted_at,created_at,updated_at,revision,mutation_id,mutation_hash)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?
       WHERE ${readyCondition}
         AND NOT EXISTS(SELECT 1 FROM purged_notes WHERE id=?)
         AND (SELECT COUNT(*) FROM notes WHERE user_id=?)<?`)
       .bind(id, user.id, ...fields, time, time, revision, mutation, hash, ...readyBinds, id, user.id, numberSetting(env, 'MAX_NOTES', 1, 10000)));
   } else {
-    statements.push(env.DB.prepare(`UPDATE notes SET title=?,content=?,tags=?,pinned=?,deleted_at=?,
+    statements.push(env.DB.prepare(`UPDATE notes SET title=?,content=?,tags=?,pinned=?,archived=?,deleted_at=?,
       updated_at=?,revision=?,mutation_id=?,mutation_hash=?
       WHERE id=? AND user_id=? AND revision=? AND ${readyCondition}`)
       .bind(...fields, time, revision, mutation, hash, id, user.id, data.revision, ...readyBinds));
@@ -86,8 +108,10 @@ async function save(request: Request, env: Env, user: Identity, id: string, crea
   const guard = 'EXISTS(SELECT 1 FROM notes WHERE id=? AND user_id=? AND revision=? AND mutation_id=?)';
   const guardBinds = [id, user.id, revision, mutation];
   statements.push(env.DB.prepare(`INSERT OR IGNORE INTO note_versions
-    SELECT id,revision,title,content,tags,pinned,deleted_at,updated_at FROM notes
-    WHERE id=? AND user_id=? AND revision=? AND mutation_id=?`).bind(...guardBinds));
+    (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived,actor_type,actor_name)
+    SELECT id,revision,title,content,tags,pinned,deleted_at,updated_at,archived,?,? FROM notes
+    WHERE id=? AND user_id=? AND revision=? AND mutation_id=?`)
+    .bind(user.actorType, user.actorName, ...guardBinds));
   for (const imageId of ids) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO image_refs SELECT ?,?,? WHERE ${guard}`)
       .bind(id, imageId, revision, ...guardBinds));
@@ -100,8 +124,12 @@ async function save(request: Request, env: Env, user: Identity, id: string, crea
   statements.push(env.DB.prepare(`DELETE FROM image_refs WHERE note_id=? AND revision<=? AND ${guard}`)
     .bind(id, revision - keep, ...guardBinds));
   const result = await env.DB.batch(statements);
-  const saved = await load(env, user.id, id);
+  const saved = await loadNote(env, user.id, id);
   if (!result[0].meta.changes) {
+    if (create && isBlank(input)) {
+      const blank = await loadBlank(env, user.id);
+      if (blank) return json({ note: toNote(blank), reused: true });
+    }
     if (saved) throw new ApiError(409, 'The note changed on another device.', { current: toNote(saved) });
     throw new ApiError(409, 'An image is unavailable, the note was purged, or the note limit was reached.');
   }
@@ -113,41 +141,74 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
   if (path === '/api/notes' && request.method === 'GET') {
     const q = (url.searchParams.get('q') ?? '').slice(0, 200);
     const view = url.searchParams.get('view') ?? 'all';
+    if (!['all', 'archive', 'trash', 'export'].includes(view)) throw new ApiError(400, 'Invalid note view.');
     const offset = Number(url.searchParams.get('offset') ?? 0);
     if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError(400, 'Invalid offset.');
+    const limit = Number(url.searchParams.get('limit') ?? 50);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new ApiError(400, 'Invalid limit.');
     const tag = (url.searchParams.get('tag') ?? '').slice(0, 40);
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
     const filters = ['user_id=?'];
     const binds: unknown[] = [user.id];
-    if (view !== 'export') filters.push(view === 'trash' ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL');
-    if (view === 'pinned') filters.push('pinned=1');
+    if (view === 'trash') filters.push('deleted_at IS NOT NULL');
+    else if (view === 'archive') filters.push('deleted_at IS NULL', 'archived=1');
+    else if (view === 'all') filters.push('deleted_at IS NULL', 'archived=0');
     if (q) { filters.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')"); binds.push(`%${escape(q)}%`, `%${escape(q)}%`); }
     if (tag) { filters.push('EXISTS(SELECT 1 FROM json_each(notes.tags) WHERE value=?)'); binds.push(tag); }
-    const result = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,deleted_at,created_at,updated_at,revision
-      FROM notes WHERE ${filters.join(' AND ')} ORDER BY pinned DESC,updated_at DESC,id ASC LIMIT 51 OFFSET ?`)
-      .bind(...binds, offset).all<Row>();
-    const notes = result.results.slice(0, 50).map((row) => {
+    const result = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,archived,deleted_at,created_at,updated_at,revision
+      FROM notes WHERE ${filters.join(' AND ')} ORDER BY pinned DESC,updated_at DESC,id ASC LIMIT ? OFFSET ?`)
+      .bind(...binds, limit + 1, offset).all<NoteRow>();
+    const notes = result.results.slice(0, limit).map((row) => {
       const { content, ...note } = toNote(row);
       return { ...note, excerpt: content };
     });
-    return json({ notes, nextOffset: result.results.length > 50 ? offset + 50 : null });
+    return json({ notes, nextOffset: result.results.length > limit ? offset + limit : null });
   }
   if (path === '/api/tags' && request.method === 'GET') {
+    const view = url.searchParams.get('view') ?? 'all';
+    if (!['all', 'archive', 'trash'].includes(view)) throw new ApiError(400, 'Invalid note view.');
+    const scope = view === 'trash'
+      ? 'deleted_at IS NOT NULL'
+      : `deleted_at IS NULL AND archived=${view === 'archive' ? 1 : 0}`;
     const result = await env.DB.prepare(`SELECT DISTINCT value AS name FROM notes,json_each(notes.tags)
-      WHERE user_id=? AND deleted_at IS NULL ORDER BY value LIMIT 200`).bind(user.id).all<{ name: string }>();
+      WHERE user_id=? AND ${scope} ORDER BY value LIMIT 200`).bind(user.id).all<{ name: string }>();
     return json({ tags: result.results.map((row) => row.name) });
+  }
+  if (path === '/api/notes/duplicate' && request.method === 'POST') {
+    const data = await readJson(request, clientConfig(env).maxNoteBytes * 6 + 1024);
+    if (typeof data.title !== 'string' || data.title.length > 256 || typeof data.content !== 'string' ||
+        new TextEncoder().encode(data.content).length > clientConfig(env).maxNoteBytes) {
+      throw new ApiError(400, 'Invalid note title or content.');
+    }
+    return json({ duplicate: await hasDuplicate(env, user.id, data.title.trim(), data.content) });
+  }
+  if (path === '/api/notes/trash' && request.method === 'DELETE') {
+    const time = Date.now();
+    const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM notes WHERE user_id=? AND deleted_at IS NOT NULL')
+      .bind(user.id).first<{ count: number }>();
+    await env.DB.batch([
+      env.DB.prepare(`INSERT OR IGNORE INTO purged_notes
+        SELECT id,user_id,? FROM notes WHERE user_id=? AND deleted_at IS NOT NULL`).bind(time, user.id),
+      env.DB.prepare('DELETE FROM notes WHERE user_id=? AND deleted_at IS NOT NULL').bind(user.id),
+    ]);
+    return json({ deleted: count?.count ?? 0 });
+  }
+  if (path === '/api/notes/blank' && request.method === 'GET') {
+    const row = await loadBlank(env, user.id);
+    return json({ note: row ? toNote(row) : null });
   }
   const match = /^\/api\/notes\/([^/]+)(?:\/(versions))?$/.exec(path);
   if (!match) return null;
   const id = match[1];
   if (!idPattern.test(id)) throw new ApiError(404, 'Note not found.');
   if (match[2] && request.method === 'GET') {
-    if (!await load(env, user.id, id)) throw new ApiError(404, 'Note not found.');
+    if (!await loadNote(env, user.id, id)) throw new ApiError(404, 'Note not found.');
     const rows = await env.DB.prepare('SELECT * FROM note_versions WHERE note_id=? ORDER BY revision DESC')
-      .bind(id).all<Row & { saved_at: number }>();
+      .bind(id).all<NoteRow & { saved_at: number; actor_type: 'user' | 'ai'; actor_name: string }>();
     const versions: Version[] = rows.results.map((row) => ({
       title: row.title, content: row.content, tags: JSON.parse(row.tags), pinned: !!row.pinned,
-      deletedAt: row.deleted_at, revision: row.revision, savedAt: row.saved_at,
+      archived: !!row.archived, deletedAt: row.deleted_at, revision: row.revision, savedAt: row.saved_at,
+      actorType: row.actor_type, actorName: row.actor_name,
     }));
     return json({
       versions: versions.filter((version, index) =>
@@ -156,11 +217,11 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
   }
   if (match[2]) return null;
   if (request.method === 'GET') {
-    const row = await load(env, user.id, id);
+    const row = await loadNote(env, user.id, id);
     if (!row) throw new ApiError(404, 'Note not found.');
     return json({ note: toNote(row) });
   }
-  if (request.method === 'POST' || request.method === 'PUT') return save(request, env, user, id, request.method === 'POST');
+  if (request.method === 'POST' || request.method === 'PUT') return saveNote(request, env, user, id, request.method === 'POST');
   if (request.method === 'DELETE') {
     const data = await readJson(request);
     if (!Number.isSafeInteger(data.revision)) throw new ApiError(400, 'Revision required.');

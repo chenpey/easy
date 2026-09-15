@@ -4,17 +4,29 @@ export interface Note {
   content: string;
   tags: string[];
   pinned: boolean;
+  archived: boolean;
   deletedAt: number | null;
   createdAt: number;
   updatedAt: number;
   revision: number;
 }
 
-export type NoteInput = Pick<Note, 'title' | 'content' | 'tags' | 'pinned' | 'deletedAt'>;
+export type NoteInput = Pick<Note, 'title' | 'content' | 'tags' | 'pinned' | 'archived' | 'deletedAt'>;
 export type NoteSummary = Omit<Note, 'content'> & { excerpt: string };
 export interface Version extends NoteInput {
   revision: number;
   savedAt: number;
+  actorType: 'user' | 'ai';
+  actorName: string;
+}
+
+export interface IntegrationToken {
+  id: string;
+  name: string;
+  access: 'read' | 'read-write';
+  createdAt: number;
+  expiresAt: number | null;
+  lastUsedAt: number | null;
 }
 
 export interface ClientConfig {
@@ -45,13 +57,14 @@ export interface ImageRecord {
 
 export const noteInput = (note: Note): NoteInput => ({
   title: note.title, content: note.content, tags: note.tags,
-  pinned: note.pinned, deletedAt: note.deletedAt,
+  pinned: note.pinned, archived: note.archived, deletedAt: note.deletedAt,
 });
 
 export function sameNoteInput(left: NoteInput, right: NoteInput): boolean {
   return left.title === right.title &&
     left.content === right.content &&
     left.pinned === right.pinned &&
+    left.archived === right.archived &&
     left.deletedAt === right.deletedAt &&
     left.tags.length === right.tags.length &&
     left.tags.every((tag) => right.tags.includes(tag));

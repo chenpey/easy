@@ -13,6 +13,18 @@ CREATE TABLE sessions (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX sessions_expiry ON sessions(expires_at);
+CREATE TABLE integration_tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  access TEXT NOT NULL CHECK(access IN ('read', 'read-write')),
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  last_used_at INTEGER,
+  revoked_at INTEGER
+);
+CREATE INDEX integration_tokens_user ON integration_tokens(user_id, revoked_at, expires_at);
 CREATE TABLE login_attempts (
   key TEXT PRIMARY KEY,
   started_at INTEGER NOT NULL,
@@ -25,6 +37,7 @@ CREATE TABLE notes (
   content TEXT NOT NULL,
   tags TEXT NOT NULL DEFAULT '[]',
   pinned INTEGER NOT NULL DEFAULT 0,
+  archived INTEGER NOT NULL DEFAULT 0,
   deleted_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -32,7 +45,9 @@ CREATE TABLE notes (
   mutation_id TEXT NOT NULL,
   mutation_hash TEXT NOT NULL
 );
-CREATE INDEX notes_list ON notes(user_id, deleted_at, pinned DESC, updated_at DESC, id);
+CREATE INDEX notes_list ON notes(user_id, deleted_at, archived, pinned DESC, updated_at DESC, id);
+CREATE UNIQUE INDEX notes_one_blank ON notes(user_id)
+  WHERE title='' AND content='' AND tags='[]' AND archived=0 AND deleted_at IS NULL;
 CREATE TABLE note_versions (
   note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
   revision INTEGER NOT NULL,
@@ -40,8 +55,11 @@ CREATE TABLE note_versions (
   content TEXT NOT NULL,
   tags TEXT NOT NULL,
   pinned INTEGER NOT NULL,
+  archived INTEGER NOT NULL,
   deleted_at INTEGER,
   saved_at INTEGER NOT NULL,
+  actor_type TEXT NOT NULL DEFAULT 'user' CHECK(actor_type IN ('user', 'ai')),
+  actor_name TEXT NOT NULL DEFAULT 'User',
   PRIMARY KEY(note_id, revision)
 );
 CREATE TABLE images (

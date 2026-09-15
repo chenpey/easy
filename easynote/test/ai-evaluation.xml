@@ -1,0 +1,42 @@
+<evaluation>
+  <qa_pair>
+    <question>在测试数据中，先在日本试点、随后扩展到欧洲的项目后来发生了一次区域故障。该故障持续多少分钟？只回答数字。</question>
+    <answer>47</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>找到从 Quartz 迁移到 Aurora 的项目，并结合其预算与实际支出计算节省金额。只回答整数金额，不带单位。</question>
+    <answer>12000</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>哪个项目根据用户访谈把离线能力列为最高优先级并最终交付？回答该项目的上线日期，格式 YYYY-MM-DD。</question>
+    <answer>2025-06-12</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>欧洲扩展区域发生故障的项目，在路线图完成记录中新增了哪条监控规则？只回答规则编号。</question>
+    <answer>SLO-17</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>针对访谈中多数用户要求离线访问的项目，安全评审要求设备启用什么保护？只回答保护措施名称。</question>
+    <answer>磁盘加密</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>备份演练中数据库恢复与对象校验合计耗时多少分钟？只回答数字。</question>
+    <answer>30</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>日本试点与欧洲扩展后的成功率相差多少个基点？只回答数字。</question>
+    <answer>14</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>从 Quartz 到 Aurora 的迁移从开始日至完成日相隔多少个自然日？只回答数字。</question>
+    <answer>46</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>用户研究中列为较低优先级、并且在最终上线总结中确认没有交付的功能是什么？只回答功能名称。</question>
+    <answer>共享链接</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>路线图中排在第三优先级的事项最终节省了成本。成本复盘说明节省的主要来源是什么？只回答原因。</question>
+    <answer>取消第三方转码服务</answer>
+  </qa_pair>
+</evaluation>

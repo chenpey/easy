@@ -16,9 +16,9 @@ require_terminal() {
 }
 
 require_runtime() {
-  command -v node >/dev/null 2>&1 || fail "Install Node.js 22 or newer from https://nodejs.org, then run this command again."
-  node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)' ||
-    fail "Node.js 22 or newer is required."
+  command -v node >/dev/null 2>&1 || fail "Install Node.js 22.12 or newer from https://nodejs.org, then run this command again."
+  node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || major === 22 && minor < 12) process.exit(1)' ||
+    fail "Node.js 22.12 or newer is required."
   command -v npm >/dev/null 2>&1 || fail "npm is missing. Install the complete Node.js distribution."
 }
 
