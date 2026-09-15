@@ -8,6 +8,8 @@ const revision = (env, userId) => env.DB.prepare(
   "UPDATE users SET content_revision = content_revision + 1 WHERE id = ? AND changes() > 0",
 ).bind(userId);
 const objectKey = (id) => `files/${id}`;
+const previewObjectKey = (id) => `${objectKey(id)}/preview`;
+const previewLimit = 256 * 1024;
 const validId = (id) => /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id);
 const encoder = new TextEncoder();
 const publicAssets = new Map([
@@ -881,21 +883,59 @@ async function revokeTemporaryShare(env, id, session) {
   return json({ success: true });
 }
 
+async function uploadImagePreview(request, env, id, session) {
+  if (!validId(id)) throw new HttpError(404, "Image upload not found.");
+  if (request.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "image/webp") {
+    throw new HttpError(415, "Image preview must be WebP.");
+  }
+  const length = request.headers.get("Content-Length");
+  if (length === null) throw new HttpError(411, "Content-Length is required for image previews.");
+  if (!/^\d+$/.test(length) || Number(length) < 1 || Number(length) > previewLimit) {
+    throw new HttpError(413, `Image preview must contain 1-${previewLimit} bytes.`);
+  }
+  const item = await env.DB.prepare(
+    `SELECT name, media_type, state FROM items
+     WHERE id = ? AND owner_user_id = ? AND type = 'file' AND state IN ('pending', 'ready')`,
+  ).bind(id, session.user_id).first();
+  if (!item || !imageMediaType(item.media_type, item.name)) {
+    throw new HttpError(404, "Image upload not found.");
+  }
+  const body = await request.arrayBuffer();
+  const bytes = new Uint8Array(body);
+  if (bytes.byteLength !== Number(length) || bytes.byteLength > previewLimit) {
+    throw new HttpError(400, "Image preview size does not match Content-Length.");
+  }
+  if (bytes.byteLength < 12 ||
+      String.fromCharCode(...bytes.subarray(0, 4)) !== "RIFF" ||
+      String.fromCharCode(...bytes.subarray(8, 12)) !== "WEBP") {
+    throw new HttpError(400, "Invalid WebP image preview.");
+  }
+  const key = previewObjectKey(id);
+  const existing = await env.FILES.head(key);
+  if (existing?.size === bytes.byteLength) {
+    return json({ success: true, replayed: true });
+  }
+  const stored = await env.FILES.put(key, body, { httpMetadata: { contentType: "image/webp" } });
+  if (!stored || stored.size !== bytes.byteLength) throw new HttpError(500, "Image preview could not be stored.");
+  if (item.state === "ready") await revision(env, session.user_id).run();
+  return json({ success: true }, 201);
+}
+
 async function previewImage(request, env, id, session) {
   if (!validId(id)) throw new HttpError(404, "Image preview not found.");
   const item = await env.DB.prepare(
-    `SELECT name, size, media_type FROM items
+    `SELECT name, media_type FROM items
      WHERE id = ? AND owner_user_id = ? AND type = 'file' AND state = 'ready'`,
   ).bind(id, session.user_id).first();
   const contentType = item && imageMediaType(item.media_type, item.name);
   if (!contentType) throw new HttpError(404, "Image preview not found.");
   const object = request.method === "HEAD"
-    ? await env.FILES.head(objectKey(id))
-    : await env.FILES.get(objectKey(id));
+    ? await env.FILES.head(previewObjectKey(id))
+    : await env.FILES.get(previewObjectKey(id));
   if (!object) throw new HttpError(404, "Image preview not found.");
   const headers = {
-    "Content-Type": contentType,
-    "Content-Length": String(item.size),
+    "Content-Type": "image/webp",
+    "Content-Length": String(object.size),
     "Content-Disposition": "inline",
   };
   if (object.httpEtag) headers.ETag = object.httpEtag;
@@ -914,7 +954,7 @@ async function cleanupDeleted(env) {
       ).bind(...fileIds).all();
       await Promise.allSettled(uploads.map((upload) =>
         env.FILES.resumeMultipartUpload(objectKey(upload.item_id), upload.upload_id).abort()));
-      await env.FILES.delete(fileIds.map(objectKey));
+      await env.FILES.delete(fileIds.flatMap((id) => [objectKey(id), previewObjectKey(id)]));
     }
     const slots = results.map(() => "?").join(",");
     const ids = results.map((item) => item.id);
@@ -1082,6 +1122,10 @@ async function route(request, env, ctx, responseState) {
     return json({ success: true, id }, 201);
   }
   if (method === "POST" && path === "/api/uploads") return initiateMultipart(request, env, config, session);
+  const previewUploadRoute = path.match(/^\/api\/uploads\/([a-f0-9-]+)\/preview$/);
+  if (method === "PUT" && previewUploadRoute) {
+    return uploadImagePreview(request, env, previewUploadRoute[1], session);
+  }
   const multipartRoute = path.match(/^\/api\/uploads\/([a-f0-9-]+)(?:\/(complete|parts\/([1-9]\d*)))?$/);
   if (multipartRoute) {
     const [, id, action, partNumber] = multipartRoute;
@@ -1161,11 +1205,11 @@ export async function maintenance(env) {
   const state = await env.DB.prepare("SELECT sweep_cursor FROM app_state WHERE id = 1").first();
   const page = await env.FILES.list({ prefix: "files/", limit: 50, cursor: state.sweep_cursor || undefined });
   if (page.objects.length) {
-    const ids = page.objects.map((object) => object.key.slice(6));
+    const ids = [...new Set(page.objects.map((object) => object.key.slice(6).split("/")[0]))];
     const { results } = await env.DB.prepare(`SELECT id FROM items WHERE id IN (${ids.map(() => "?").join(",")})`).bind(...ids).all();
     const existing = new Set(results.map((item) => item.id));
     const abandoned = page.objects.filter((object) =>
-      !existing.has(object.key.slice(6)) && object.uploaded.getTime() < Date.now() - 3600000);
+      !existing.has(object.key.slice(6).split("/")[0]) && object.uploaded.getTime() < Date.now() - 3600000);
     if (abandoned.length) await env.FILES.delete(abandoned.map((object) => object.key));
   }
   await env.DB.prepare("UPDATE app_state SET sweep_cursor = ? WHERE id = 1")

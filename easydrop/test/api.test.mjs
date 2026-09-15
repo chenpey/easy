@@ -35,6 +35,10 @@ async function jsonRequest(path, data, authenticated = false, headers = {}) {
 }
 
 const fileDownloadPath = (id, name) => `/uploads/${id}/${encodeURIComponent(name)}`;
+const webpPreview = Buffer.from(
+  "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA",
+  "base64",
+);
 
 async function signIn() {
   const response = await jsonRequest("/api/login", { username, password });
@@ -486,7 +490,7 @@ test("user tenants isolate history, files, mutations and idempotency keys", asyn
   assert.equal((await jsonRequest("/api/text", {
     text: "admin private text",
   }, true, { "Idempotency-Key": sharedKey })).status, 201);
-  const adminFile = await uploadFile("admin-private.png", "admin bytes", "image/png");
+  const adminFile = await uploadFile("admin-private.png", "admin bytes", "image/png", webpPreview);
   const adminFileId = (await adminFile.json()).id;
 
   useCredentials(await credentialsFor("isolated-user", "IsolatedUserPass123!"));
@@ -494,6 +498,10 @@ test("user tenants isolate history, files, mutations and idempotency keys", asyn
   assert.equal(history.items.length, 0);
   assert.equal((await request(fileDownloadPath(adminFileId, "admin-private.png"), { authenticated: true })).status, 404);
   assert.equal((await request(`/previews/${adminFileId}`, { authenticated: true })).status, 404);
+  assert.equal((await request(`/api/uploads/${adminFileId}/preview`, {
+    method: "PUT", body: webpPreview, authenticated: true,
+    headers: { "Content-Type": "image/webp", "Content-Length": String(webpPreview.length) },
+  })).status, 404);
   assert.equal((await jsonRequest(`/api/history/${adminFileId}/share`, { hours: 1 }, true)).status, 404);
   assert.equal((await request(`/api/history/${adminFileId}`, { method: "DELETE", authenticated: true })).status, 404);
   assert.equal((await jsonRequest("/api/text", {
@@ -571,13 +579,20 @@ async function multipartMetadata(name, body, chunkSize = 5 * 1024 * 1024, mediaT
   return { name, size: body.length, mediaType, chunkSize, fileFingerprint, partChecksums };
 }
 
-async function uploadFile(name, value = "file contents", mediaType = "") {
+async function uploadFile(name, value = "file contents", mediaType = "", preview = null) {
   const body = Buffer.isBuffer(value) ? value : Buffer.from(value);
   const metadata = await multipartMetadata(name, body, 5 * 1024 * 1024, mediaType);
   const initiated = await jsonRequest("/api/uploads", metadata, true, { "Idempotency-Key": crypto.randomUUID() });
   if (!initiated.ok) return initiated;
   const upload = await initiated.clone().json();
   if (upload.complete) return initiated;
+  if (preview) {
+    const previewResponse = await request(`/api/uploads/${upload.id}/preview`, {
+      method: "PUT", body: preview, authenticated: true,
+      headers: { "Content-Type": "image/webp", "Content-Length": String(preview.length) },
+    });
+    if (!previewResponse.ok) return previewResponse;
+  }
   for (let partNumber = 1; partNumber <= upload.totalParts; partNumber++) {
     const start = (partNumber - 1) * upload.chunkSize;
     const part = body.subarray(start, Math.min(start + upload.chunkSize, body.length));
@@ -718,7 +733,7 @@ test("image previews are authenticated, inline and limited to safe raster types"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
   );
-  const uploaded = await uploadFile("pixel.png", png, "image/png");
+  const uploaded = await uploadFile("pixel.png", png, "image/png", webpPreview);
   assert.equal(uploaded.status, 201, await uploaded.clone().text());
   const { id } = await uploaded.json();
   const history = await (await request("/api/history", { authenticated: true })).json();
@@ -726,12 +741,24 @@ test("image previews are authenticated, inline and limited to safe raster types"
   assert.equal((await request(`/previews/${id}`)).status, 401);
   const preview = await request(`/previews/${id}`, { authenticated: true });
   assert.equal(preview.status, 200);
-  assert.equal(preview.headers.get("Content-Type"), "image/png");
+  assert.equal(preview.headers.get("Content-Type"), "image/webp");
   assert.equal(preview.headers.get("Content-Disposition"), "inline");
-  assert.deepEqual(Buffer.from(await preview.arrayBuffer()), png);
+  assert.deepEqual(Buffer.from(await preview.arrayBuffer()), webpPreview);
   const head = await request(`/previews/${id}`, { authenticated: true, method: "HEAD" });
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
+  assert.equal((await request(`/api/uploads/${id}/preview`, {
+    method: "PUT", body: webpPreview,
+    headers: { "Content-Type": "image/webp", "Content-Length": String(webpPreview.length) },
+  })).status, 401);
+  assert.equal((await request(`/api/uploads/${id}/preview`, {
+    method: "PUT", body: webpPreview, authenticated: true,
+    headers: { "Content-Type": "image/png", "Content-Length": String(webpPreview.length) },
+  })).status, 415);
+  assert.equal((await request(`/api/uploads/${id}/preview`, {
+    method: "PUT", body: Buffer.alloc(12), authenticated: true,
+    headers: { "Content-Type": "image/webp", "Content-Length": "12" },
+  })).status, 400);
 
   const svg = await uploadFile("active.svg", "<svg><script>alert(1)</script></svg>", "image/svg+xml");
   const svgId = (await svg.json()).id;
@@ -741,6 +768,8 @@ test("image previews are authenticated, inline and limited to safe raster types"
   assert.equal((await request(fileDownloadPath(svgId, "active.svg"), { authenticated: true })).headers.get("Content-Type"), "application/octet-stream");
   assert.equal((await request(`/api/history/${id}`, { method: "DELETE", authenticated: true })).status, 202);
   assert.equal((await request(`/previews/${id}`, { authenticated: true })).status, 404);
+  await maintenance({ DB: db, FILES: bucket });
+  assert.equal(await bucket.head(`files/${id}/preview`), null);
 
   const legacyId = crypto.randomUUID();
   const admin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
@@ -751,6 +780,7 @@ test("image previews are authenticated, inline and limited to safe raster types"
   await bucket.put(`files/${legacyId}`, Buffer.from([0]));
   const legacyHistory = await (await request("/api/history", { authenticated: true })).json();
   assert.equal(legacyHistory.items.find((item) => item.id === legacyId).media_type, "image/webp");
+  assert.equal((await request(`/previews/${legacyId}`, { authenticated: true })).status, 404);
 });
 
 test("multipart upload persists verified parts, resumes safely and completes once", async () => {

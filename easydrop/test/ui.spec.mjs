@@ -107,6 +107,17 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(thumbnail).toBeVisible();
     await expect.poll(() => thumbnail.evaluate((node) => node.naturalWidth)).toBe(48);
     expect(await thumbnail.getAttribute("src")).toMatch(/^\/previews\/[a-f0-9-]+$/);
+    await thumbnail.evaluate((node) => { node.dataset.testIdentity = "preserved"; });
+    let repeatedPreviewRequests = 0;
+    const countPreviewRequest = (request) => {
+      if (new URL(request.url()).pathname.startsWith("/previews/")) repeatedPreviewRequests++;
+    };
+    page.on("request", countPreviewRequest);
+    await page.getByRole("button", { name: "刷新历史" }).click();
+    await expect(page.locator("#notice")).toHaveText("已刷新");
+    await expect(thumbnail).toHaveAttribute("data-test-identity", "preserved");
+    expect(repeatedPreviewRequests).toBe(0);
+    page.off("request", countPreviewRequest);
     const fileLink = file.getByRole("link", { name: "打开文件链接" });
     const fileUrl = await fileLink.getAttribute("href");
     const fileLinkUrl = new URL(fileUrl);

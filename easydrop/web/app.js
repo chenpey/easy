@@ -27,6 +27,12 @@ const activeUploads = new Set();
 const activeRequests = new Set();
 const busyButtons = new WeakSet();
 const copyFeedbackTimers = new WeakMap();
+const historyRowCache = new Map();
+const previewSourceTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp"]);
+const previewSourceExtension = /\.(?:jpe?g|png|gif|webp|avif|bmp)$/i;
+const previewMaxSide = 256;
+const previewMaxBytes = 256 * 1024;
+let retainHistoryRows = false;
 const uploadStorageKey = () => `easydrop/resumable-uploads/v2/${session?.user.id || "anonymous"}`;
 
 class UploadPaused extends Error {}
@@ -65,6 +71,7 @@ function expireSession() {
   clearTimeout(pollTimer);
   for (const xhr of activeUploads) xhr.abort();
   $("history-list")?.replaceChildren();
+  historyRowCache.clear();
   session = null;
   sessionEnded = true;
   uploading = false;
@@ -73,9 +80,11 @@ function expireSession() {
   location.replace("/login");
 }
 
-async function api(path, { method = "GET", data, operationKey } = {}) {
+async function api(path, { method = "GET", data, payload, contentType, operationKey } = {}) {
+  if (data !== undefined && payload !== undefined) throw new Error("API request body is ambiguous.");
   const headers = {};
   if (data !== undefined) headers["Content-Type"] = "application/json";
+  if (contentType) headers["Content-Type"] = contentType;
   if (operationKey) headers["Idempotency-Key"] = operationKey;
   if (method !== "GET" && session) headers["X-CSRF-Token"] = session.csrfToken;
   const controller = new AbortController();
@@ -83,7 +92,7 @@ async function api(path, { method = "GET", data, operationKey } = {}) {
   const timeout = setTimeout(() => controller.abort(), 30000);
   try {
     const response = await fetch(path, {
-      method, headers, body: data === undefined ? undefined : JSON.stringify(data),
+      method, headers, body: data === undefined ? payload : JSON.stringify(data),
       credentials: "same-origin", cache: "no-store", signal: controller.signal,
     });
     const body = await response.text();
@@ -459,6 +468,41 @@ function historyRow(item) {
   return row;
 }
 
+function historyItemSnapshot(item) {
+  return {
+    type: item.type,
+    content: item.content,
+    name: item.name,
+    size: item.size,
+    mediaType: item.media_type,
+    createdAt: item.created_at,
+    shareExpiresAt: item.share_expires_at,
+  };
+}
+
+function sameHistoryItem(snapshot, item) {
+  return snapshot.type === item.type &&
+    snapshot.content === item.content &&
+    snapshot.name === item.name &&
+    snapshot.size === item.size &&
+    snapshot.mediaType === item.media_type &&
+    snapshot.createdAt === item.created_at &&
+    snapshot.shareExpiresAt === item.share_expires_at;
+}
+
+function cachedHistoryRow(item) {
+  const cached = historyRowCache.get(item.id);
+  if (cached && sameHistoryItem(cached.item, item)) return cached.row;
+  const row = historyRow(item);
+  historyRowCache.set(item.id, { item: historyItemSnapshot(item), row });
+  return row;
+}
+
+function pruneHistoryRowCache() {
+  const visible = new Set(Array.from($("history-list").querySelectorAll(".history-item"), (row) => row.dataset.id));
+  for (const id of historyRowCache.keys()) if (!visible.has(id)) historyRowCache.delete(id);
+}
+
 async function loadHistory(more = false) {
   if (sessionEnded) return;
   if (loading) {
@@ -471,28 +515,32 @@ async function loadHistory(more = false) {
     const data = await api(`/api/history${more && nextCursor ? `?before=${nextCursor}` : ""}`);
     if (sessionEnded) return;
     if (more && data.revision !== currentRevision) markHistoryUpdate();
+    const list = $("history-list");
+    const existing = new Set(Array.from(list.querySelectorAll("[data-id]"), (row) => row.dataset.id));
     if (!more) {
-      $("history-list").replaceChildren();
       expandedHistory = false;
       $("refresh").classList.remove("has-updates");
       $("refresh").title = "刷新历史";
       currentRevision = data.revision;
     }
     if (more) expandedHistory = true;
-    const existing = new Set(Array.from($("history-list").querySelectorAll("[data-id]"), (row) => row.dataset.id));
     const fragment = document.createDocumentFragment();
-    for (const item of data.items) if (!existing.has(item.id)) fragment.append(historyRow(item));
-    $("history-list").append(fragment);
+    for (const item of data.items) {
+      if (!more || !existing.has(item.id)) fragment.append(cachedHistoryRow(item));
+    }
+    if (more) list.append(fragment);
+    else list.replaceChildren(fragment);
     nextCursor = data.nextCursor;
-    const count = $("history-list").querySelectorAll(".history-item").length;
+    const count = list.querySelectorAll(".history-item").length;
     $("history-count").textContent = count ? `${count}${nextCursor ? "+" : ""}` : "";
     if (!count) {
       const empty = document.createElement("p");
       empty.className = "empty";
       empty.textContent = "暂无分享记录";
-      $("history-list").append(empty);
+      list.append(empty);
     }
     $("load-more").hidden = !nextCursor;
+    if (!retainHistoryRows) pruneHistoryRowCache();
     renderIcons();
   } finally {
     loading = false;
@@ -523,17 +571,23 @@ async function refreshHistoryPreservingPosition() {
   const loadedCount = $("history-list").querySelectorAll(".history-item").length;
   const restoreExpanded = expandedHistory;
   const anchors = visibleHistoryAnchors();
-  await loadHistory();
-  while (restoreExpanded && nextCursor &&
-      $("history-list").querySelectorAll(".history-item").length < loadedCount) {
-    await loadHistory(true);
-  }
-  for (const anchor of anchors) {
-    const row = Array.from($("history-list").querySelectorAll(".history-item"))
-      .find((item) => item.dataset.id === anchor.id);
-    if (!row) continue;
-    scrollBy(0, row.getBoundingClientRect().top - anchor.top);
-    break;
+  retainHistoryRows = true;
+  try {
+    await loadHistory();
+    while (restoreExpanded && nextCursor &&
+        $("history-list").querySelectorAll(".history-item").length < loadedCount) {
+      await loadHistory(true);
+    }
+    for (const anchor of anchors) {
+      const row = Array.from($("history-list").querySelectorAll(".history-item"))
+        .find((item) => item.dataset.id === anchor.id);
+      if (!row) continue;
+      scrollBy(0, row.getBoundingClientRect().top - anchor.top);
+      break;
+    }
+  } finally {
+    retainHistoryRows = false;
+    pruneHistoryRowCache();
   }
 }
 
@@ -675,6 +729,35 @@ async function partChecksum(blob) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function createImagePreview(file) {
+  if (!previewSourceTypes.has(file.type.toLowerCase()) && !previewSourceExtension.test(file.name)) return null;
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+    if (!bitmap.width || !bitmap.height) return null;
+    const scale = Math.min(1, previewMaxSide / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const preview = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", 0.82));
+    return preview?.type === "image/webp" && preview.size <= previewMaxBytes ? preview : null;
+  } catch (error) {
+    console.warn(`Thumbnail generation skipped for ${file.name}:`, error);
+    return null;
+  } finally {
+    bitmap?.close();
+  }
+}
+
+async function uploadImagePreview(entry, preview) {
+  return api(`/api/uploads/${entry.id}/preview`, {
+    method: "PUT",
+    payload: preview,
+    contentType: "image/webp",
+  });
+}
+
 async function prepareFile(entry) {
   const chunkSize = session.uploadChunkBytes;
   const totalParts = Math.ceil(entry.file.size / chunkSize);
@@ -748,6 +831,8 @@ function uploadPart(entry, partNumber, blob, checksum) {
 async function uploadFile(entry) {
   entry.started = true;
   saveUpload(entry);
+  entry.state.textContent = "生成缩略图";
+  const preview = await createImagePreview(entry.file);
   const prepared = await prepareFile(entry);
   entry.state.textContent = entry.id ? "检查恢复点" : "初始化";
   const upload = await api("/api/uploads", {
@@ -763,10 +848,20 @@ async function uploadFile(entry) {
   });
   entry.id = upload.id;
   saveUpload(entry);
+  if (preview) {
+    entry.state.textContent = "上传缩略图";
+    try {
+      await uploadImagePreview(entry, preview);
+    } catch (error) {
+      if (sessionEnded) throw error;
+      entry.previewFailed = true;
+      console.error("Image preview upload failed:", error.details || error);
+    }
+  }
   if (upload.complete) {
     entry.done = true;
     entry.progress.value = 100;
-    entry.state.textContent = "已上传";
+    entry.state.textContent = entry.previewFailed ? "已上传（无缩略图）" : "已上传";
     forgetUpload(entry.key);
     return;
   }
@@ -825,7 +920,7 @@ async function uploadFile(entry) {
   await api(`/api/uploads/${entry.id}/complete`, { method: "POST" });
   entry.done = true;
   entry.progress.value = 100;
-  entry.state.textContent = "已上传";
+  entry.state.textContent = entry.previewFailed ? "已上传（无缩略图）" : "已上传";
   forgetUpload(entry.key);
 }
 
