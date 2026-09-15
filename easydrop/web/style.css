@@ -181,9 +181,11 @@ h2 > .lucide { color: var(--label-secondary); }
 .workspace { padding: 22px 0 56px; }
 
 .compose {
+  width: min(100%, 960px);
+  margin: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 44px;
+  gap: 32px;
   padding: 18px 0 38px;
 }
 
@@ -215,7 +217,8 @@ textarea:focus, input[type="text"]:focus, input[type="password"]:focus, input[ty
 }
 
 textarea {
-  min-height: 176px;
+  height: 150px;
+  min-height: 150px;
   resize: vertical;
   line-height: 1.55;
 }
@@ -236,7 +239,7 @@ textarea {
 
 .file-picker {
   position: relative;
-  min-height: 176px;
+  min-height: 150px;
   border: 1px dashed #a8a8ad;
   border-radius: 8px;
   background: rgba(255, 255, 255, .62);
@@ -370,6 +373,15 @@ progress {
   max-height: 260px;
   overflow-y: auto;
 }
+
+.item-text-link {
+  color: var(--blue);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.item-text-link:hover { color: var(--blue-hover); }
 
 .item-name {
   margin: 7px 0 0;

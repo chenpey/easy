@@ -118,6 +118,35 @@ function icon(name) {
   return node;
 }
 
+function appendLinkifiedText(container, value) {
+  const pattern = /https?:\/\/[^\s<>"']+/giu;
+  let offset = 0;
+  for (const match of value.matchAll(pattern)) {
+    let candidate = match[0];
+    let suffix = "";
+    while (/[.,;:!?，。；：！？、]$/u.test(candidate)) {
+      suffix = candidate.at(-1) + suffix;
+      candidate = candidate.slice(0, -1);
+    }
+    let url;
+    try {
+      url = new URL(candidate);
+    } catch {
+      continue;
+    }
+    container.append(document.createTextNode(value.slice(offset, match.index)));
+    const link = document.createElement("a");
+    link.className = "item-text-link";
+    link.href = url.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = candidate;
+    container.append(link, document.createTextNode(suffix));
+    offset = match.index + match[0].length;
+  }
+  container.append(document.createTextNode(value.slice(offset)));
+}
+
 function actionButton(label, name, handler, danger = false) {
   const button = document.createElement("button");
   button.className = `icon-button${danger ? " danger" : ""}`;
@@ -358,7 +387,8 @@ function historyRow(item) {
   time.textContent = new Date(item.created_at * 1000).toLocaleString();
   const body = document.createElement("p");
   body.className = item.type === "text" ? "item-text" : "item-name";
-  body.textContent = item.type === "text" ? item.content : `${item.name} (${size(item.size)})`;
+  if (item.type === "text") appendLinkifiedText(body, item.content);
+  else body.textContent = `${item.name} (${size(item.size)})`;
   content.append(time, body);
   const actions = document.createElement("div");
   actions.className = "item-actions";

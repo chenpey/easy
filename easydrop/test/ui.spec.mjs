@@ -35,12 +35,28 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page).toHaveTitle("EasyDrop");
     await expect(page.locator("#file-input")).toBeEnabled();
     await expect(page.locator("#upload-limit")).toHaveText("单文件上限 200.0 MB");
-    const text = `<script>window.injected = true</script>\n${"long-text-".repeat(30)}`;
+    if (viewport.width === 1280) {
+      await expect(page.locator(".compose")).toHaveCSS("width", "960px");
+      await expect(page.locator("#text-input")).toHaveCSS("height", "150px");
+      await expect(page.locator(".file-picker")).toHaveCSS("min-height", "150px");
+    }
+    const sharedUrl = `${preview.url}/favicon.svg?source=shared#drop`;
+    const text = `<script>window.injected = true</script>\n${sharedUrl}。\n${"long-text-".repeat(30)}`;
     await page.getByLabel("分享文本", { exact: true }).fill(text);
     await page.getByRole("button", { name: "分享文本", exact: true }).click();
     const textItem = page.locator(".history-item").filter({ hasText: text });
     await expect(textItem).toBeVisible();
     expect(await page.evaluate(() => window.injected)).toBeUndefined();
+    const sharedLink = textItem.getByRole("link", { name: sharedUrl });
+    await expect(sharedLink).toHaveAttribute("href", sharedUrl);
+    await expect(sharedLink).toHaveAttribute("target", "_blank");
+    await expect(sharedLink).toHaveAttribute("rel", "noopener noreferrer");
+    await expect(textItem.locator(".item-text")).toHaveText(text);
+    const openedLinkPromise = page.waitForEvent("popup");
+    await sharedLink.click();
+    const openedLink = await openedLinkPromise;
+    await expect(openedLink).toHaveURL(sharedUrl);
+    await openedLink.close();
     await expect(page.locator("#text-input")).toHaveValue("");
     const copyText = textItem.getByRole("button", { name: "复制文本" });
     await copyText.click();
