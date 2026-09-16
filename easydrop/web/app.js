@@ -35,6 +35,12 @@ const previewMaxBytes = 256 * 1024;
 let retainHistoryRows = false;
 const uploadStorageKey = () => `easydrop/resumable-uploads/v2/${session?.user.id || "anonymous"}`;
 
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((error) => console.warn("Service worker registration failed.", error));
+  });
+}
+
 class UploadPaused extends Error {}
 
 function requestedDownloadPath() {

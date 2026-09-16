@@ -153,7 +153,7 @@ function cookieName(request, env) {
 
 export function sessionCookie(request, env, token, ttl) {
   const secure = localHttp(request, env) ? "" : "; Secure";
-  return `${cookieName(request, env)}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttl}${secure}`;
+  return `${cookieName(request, env)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${ttl}${secure}`;
 }
 
 export async function getSession(request, env, ttl, renewInterval) {

@@ -15,8 +15,14 @@ const encoder = new TextEncoder();
 const publicAssets = new Map([
   ["/assets/app.js", "/assets/app.js"],
   ["/assets/style.css", "/assets/style.css"],
+  ["/apple-touch-icon.png", "/apple-touch-icon.png"],
   ["/favicon.ico", "/favicon.svg"],
   ["/favicon.svg", "/favicon.svg"],
+  ["/manifest.webmanifest", "/manifest.webmanifest"],
+  ["/pwa-192x192.png", "/pwa-192x192.png"],
+  ["/pwa-512x512.png", "/pwa-512x512.png"],
+  ["/pwa-maskable-512x512.png", "/pwa-maskable-512x512.png"],
+  ["/sw.js", "/sw.js"],
 ]);
 const imageTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp"]);
 const temporaryShareToken = /^[a-f0-9]{64}$/;
@@ -439,7 +445,7 @@ function harden(response, request, env, session) {
   result.headers.set("Cross-Origin-Resource-Policy", "same-origin");
   result.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   result.headers.set("Content-Security-Policy",
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; " +
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; " +
     "font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'");
   if (new URL(request.url).protocol === "https:") {
     result.headers.set("Strict-Transport-Security", "max-age=31536000");

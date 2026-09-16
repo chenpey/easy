@@ -178,7 +178,17 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
     assert.equal(page.status, 200);
     assert.match(await page.text(), /<link rel="icon" href="\/favicon\.ico" type="image\/svg\+xml">/);
   }
-  assert.equal((await request("/assets/app.js")).status, 200);
+  for (const path of [
+    "/assets/app.js",
+    "/apple-touch-icon.png",
+    "/manifest.webmanifest",
+    "/pwa-192x192.png",
+    "/pwa-512x512.png",
+    "/pwa-maskable-512x512.png",
+    "/sw.js",
+  ]) {
+    assert.equal((await request(path)).status, 200, path);
+  }
   const favicon = await request("/favicon.ico");
   assert.equal(favicon.status, 200);
   assert.match(favicon.headers.get("Content-Type"), /image\/svg\+xml/);
@@ -202,7 +212,7 @@ test("login validates inputs and origin, issues secure cookies and stores only t
   const response = await signIn();
   const header = response.headers.get("Set-Cookie");
   assert.match(header, /^__Host-easydrop=[a-f0-9]{64};/);
-  for (const attribute of ["Secure", "HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=2592000"]) assert.ok(header.includes(attribute));
+  for (const attribute of ["Secure", "HttpOnly", "SameSite=Lax", "Path=/", "Max-Age=2592000"]) assert.ok(header.includes(attribute));
   const stored = await db.prepare("SELECT * FROM sessions").first();
   assert.equal(stored.token_hash, await digest(cookie.split("=")[1]));
   assert.notEqual(stored.token_hash, cookie.split("=")[1]);
@@ -918,6 +928,7 @@ test("security headers apply to success, error and static responses", async () =
     assert.equal(response.headers.get("Cache-Control"), publicAsset ? "public, max-age=0, must-revalidate" : "no-store");
     assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
     assert.match(response.headers.get("Content-Security-Policy"), /frame-ancestors 'none'/);
+    assert.match(response.headers.get("Content-Security-Policy"), /manifest-src 'self'/);
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), null);
   }
   const error = await (await request("/api/history")).json();

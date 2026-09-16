@@ -12,6 +12,77 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await preview?.mf.dispose(); });
 
+test("PWA metadata, icons and public-only service worker cache work", async ({ page, context }) => {
+  await page.goto(preview.url);
+  await expect(page).toHaveURL(`${preview.url}/login`);
+  await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/manifest.webmanifest");
+  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "/apple-touch-icon.png");
+
+  const manifestResponse = await page.request.get(`${preview.url}/manifest.webmanifest`);
+  expect(manifestResponse.status()).toBe(200);
+  expect(manifestResponse.headers()["content-type"]).toContain("manifest+json");
+  expect(await manifestResponse.json()).toMatchObject({
+    id: "/",
+    name: "EasyDrop",
+    start_url: "/",
+    scope: "/",
+    display: "standalone",
+    theme_color: "#0071e3",
+    background_color: "#f5f5f7",
+  });
+  for (const path of [
+    "/pwa-192x192.png",
+    "/pwa-512x512.png",
+    "/pwa-maskable-512x512.png",
+    "/apple-touch-icon.png",
+  ]) {
+    const icon = await page.request.get(`${preview.url}${path}`);
+    expect(icon.status()).toBe(200);
+    expect(icon.headers()["content-type"]).toContain("image/png");
+  }
+
+  const worker = await page.request.get(`${preview.url}/sw.js`);
+  expect(worker.status()).toBe(200);
+  expect(worker.headers()["content-type"]).toContain("javascript");
+  await expect.poll(() => page.evaluate(async () =>
+    Boolean(await navigator.serviceWorker.getRegistration("/")))).toBe(true);
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  const cdp = await context.newCDPSession(page);
+  const loadedManifest = await cdp.send("Page.getAppManifest");
+  expect(loadedManifest.url).toBe(`${preview.url}/manifest.webmanifest`);
+  expect(loadedManifest.errors).toEqual([]);
+  expect((await cdp.send("Page.getInstallabilityErrors")).installabilityErrors).toEqual([]);
+  const cachedPaths = await page.evaluate(async () => {
+    const paths = [];
+    for (const name of await caches.keys()) {
+      for (const request of await (await caches.open(name)).keys()) paths.push(new URL(request.url).pathname);
+    }
+    return paths;
+  });
+  expect(cachedPaths).toContain("/assets/app.js");
+  expect(cachedPaths.some((path) => path.startsWith("/api/"))).toBe(false);
+  expect(cachedPaths.some((path) => ["/", "/index.html", "/login"].includes(path))).toBe(false);
+});
+
+test("an external top-level launch preserves the persistent session", async ({ page, context }) => {
+  const login = await context.request.post(`${preview.url}/api/login`, {
+    headers: { Origin: preview.url },
+    data: { username: preview.username, password: preview.password },
+  });
+  expect(login.status()).toBe(200);
+  const sessionCookie = (await context.cookies(preview.url)).find((cookie) => cookie.name === "easydrop_dev");
+  expect(sessionCookie).toMatchObject({ sameSite: "Lax" });
+
+  await page.route("https://launcher.example.test/", (route) => route.fulfill({
+    contentType: "text/html",
+    body: `<a href="${preview.url}/">Open EasyDrop</a>`,
+  }));
+  await page.goto("https://launcher.example.test/");
+  await page.getByRole("link", { name: "Open EasyDrop" }).click();
+  await expect(page).toHaveURL(`${preview.url}/`);
+  await expect(page.locator("#file-input")).toBeEnabled();
+});
+
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 700 }]) {
   test(`share workflow at ${viewport.width}px`, async ({ page, context, browser }) => {
     await page.setViewportSize(viewport);

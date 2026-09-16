@@ -14,4 +14,14 @@ await copyFile(`${root}/web/style.css`, `${root}/dist/assets/style.css`);
 await copyFile(`${root}/web/index.html`, `${root}/dist/index.html`);
 await copyFile(`${root}/web/login.html`, `${root}/dist/login.html`);
 await copyFile(`${root}/web/favicon.svg`, `${root}/dist/favicon.svg`);
+for (const file of [
+  "manifest.webmanifest",
+  "sw.js",
+  "pwa-192x192.png",
+  "pwa-512x512.png",
+  "pwa-maskable-512x512.png",
+  "apple-touch-icon.png",
+]) {
+  await copyFile(`${root}/web/${file}`, `${root}/dist/${file}`);
+}
 console.log("Built Worker static assets.");

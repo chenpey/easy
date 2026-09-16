@@ -134,6 +134,8 @@ EasyDrop 是一个基于 Cloudflare Workers 的文本与文件分享工具，使
 
 手机扫码后仍需要正常登录。页面适配桌面和手机宽度，支持长文件名换行。使用本机预览地址时，二维码中的 `127.0.0.1` 只代表打开地址的设备自身，不能用于手机访问电脑；跨设备使用应部署到可访问的 HTTPS 域名。
 
+站点提供 Web App Manifest、Android maskable 图标、Apple Touch Icon 和 Service Worker，可从支持的浏览器安装为独立窗口应用。Service Worker 只缓存公开的脚本、样式、图标和 Manifest，不拦截页面导航、API、下载或用户数据。会话 Cookie 使用 `SameSite=Lax`，从系统桌面启动应用时会随顶层 `GET` 导航发送；清除站点数据、卸载应用、主动退出或会话过期后仍需重新登录。
+
 ## 架构与数据存储
 
 | 组件 | 职责 |
@@ -454,7 +456,7 @@ bash deploy.sh
 | CSRF Token | 校验登录后的写请求 | 会话接口返回，前端在请求头中携带 |
 | 临时文件令牌 | 在限定时间内免登录下载一个文件 | 只在创建响应和链接中出现，D1 仅保存其 SHA-256 摘要 |
 
-密码必须为 12～32 个字符并同时包含数字、大写字母和小写字母，推荐使用密码管理器生成。实现采用随机盐、100,000 次 PBKDF2-SHA-256 派生和 HMAC 校验。登录后使用独立的 256-bit 随机会话令牌，生产 Cookie 带有 `__Host-` 前缀、`HttpOnly`、`Secure` 和 `SameSite=Strict`。
+密码必须为 12～32 个字符并同时包含数字、大写字母和小写字母，推荐使用密码管理器生成。实现采用随机盐、100,000 次 PBKDF2-SHA-256 派生和 HMAC 校验。登录后使用独立的 256-bit 随机会话令牌，生产 Cookie 带有 `__Host-` 前缀、`HttpOnly`、`Secure` 和 `SameSite=Lax`；所有写请求仍要求同源 `Origin` 和 CSRF Token。
 
 ### 认证限流
 
