@@ -7,6 +7,16 @@ const MAX_ARCHIVE_BYTES = 64 * 1024 ** 2;
 const MAX_ENTRIES = 1200;
 const NOTE_PATH = /^notes\/[^<>:"/\\|?*\u0000-\u001f]+\.md$/;
 const FILE_PATH = /^files\/[0-9a-f-]{36}-[^<>:"/\\|?*\u0000-\u001f]+$/i;
+const EXTERNAL_NOTE = /\.(?:md|markdown|txt)$/i;
+const IMAGE_MIMES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+const ATTACHMENT_MIMES: Record<string, string> = {
+  pdf: 'application/pdf',
+  md: 'text/markdown',
+  markdown: 'text/markdown',
+  txt: 'text/plain',
+  csv: 'text/csv',
+  json: 'application/json',
+};
 interface Manifest {
   format: 'easynote';
   version: 2;
@@ -195,8 +205,242 @@ async function unpack(file: File): Promise<Record<string, Uint8Array>> {
   });
 }
 
+function normalizeExternalPath(value: string): string {
+  const parts: string[] = [];
+  for (const part of value.replaceAll('\\', '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..' || /[\u0000-\u001f]/.test(part)) throw new Error('导入目录包含不安全路径。');
+    parts.push(part.normalize('NFC'));
+  }
+  if (!parts.length) throw new Error('导入文件路径无效。');
+  return parts.join('/');
+}
+
+function relativePath(source: string, target: string): string | null {
+  let decoded: string;
+  try { decoded = decodeURIComponent(target.replace(/^<|>$/g, '')); } catch { return null; }
+  decoded = decoded.split(/[?#]/, 1)[0];
+  if (!decoded || decoded.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(decoded)) return null;
+  const parts = source.split('/').slice(0, -1);
+  for (const part of decoded.replaceAll('\\', '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (!parts.length) return null;
+      parts.pop();
+    } else {
+      if (/[\u0000-\u001f]/.test(part)) return null;
+      parts.push(part.normalize('NFC'));
+    }
+  }
+  return parts.length ? parts.join('/') : null;
+}
+
+function externalMetadata(path: string, content: string): { title: string; tags: string[] } {
+  const filename = path.split('/').at(-1)!.replace(EXTERNAL_NOTE, '');
+  const match = /^\uFEFF?---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/.exec(content);
+  const frontmatter = match?.[1] ?? '';
+  const titleValue = /^title:\s*(.+?)\s*$/mi.exec(frontmatter)?.[1]
+    ?.replace(/^(['"])(.*)\1$/, '$2').trim();
+  const inlineTags = /^tags:\s*\[(.*?)\]\s*$/mi.exec(frontmatter)?.[1]
+    ?.split(',').map((value) => value.trim().replace(/^(['"])(.*)\1$/, '$2')).filter(Boolean) ?? [];
+  const blockTags = /^tags:\s*\r?\n((?:\s+-\s+.*\r?\n?)*)/mi.exec(frontmatter)?.[1]
+    ?.split(/\r?\n/).map((value) => value.replace(/^\s*-\s+/, '').trim()).filter(Boolean) ?? [];
+  const tags = [...new Set([...inlineTags, ...blockTags].map((value) => value.replace(/^#/, '').slice(0, 40)).filter(Boolean))].slice(0, 20);
+  const heading = titleFromContent(match ? content.slice(match[0].length) : content);
+  return { title: (titleValue || heading || filename || '未命名').slice(0, 256), tags };
+}
+
+function externalMime(path: string): string | null {
+  const extension = path.toLocaleLowerCase('en-US').split('.').at(-1) ?? '';
+  return IMAGE_MIMES[extension] ?? ATTACHMENT_MIMES[extension] ?? null;
+}
+
+async function replaceAsync(
+  value: string,
+  pattern: RegExp,
+  replacer: (...values: string[]) => Promise<string>,
+): Promise<string> {
+  const matches = [...value.matchAll(pattern)];
+  if (!matches.length) return value;
+  const replacements = await Promise.all(matches.map((match) => replacer(...match.slice(0))));
+  let result = '';
+  let cursor = 0;
+  for (const [index, match] of matches.entries()) {
+    result += value.slice(cursor, match.index) + replacements[index];
+    cursor = match.index! + match[0].length;
+  }
+  return result + value.slice(cursor);
+}
+
+async function importExternalEntries(
+  rawEntries: Array<{ path: string; bytes: Uint8Array }>,
+  config: ClientConfig,
+  progress: (text: string) => void,
+): Promise<ImportResult> {
+  if (!rawEntries.length || rawEntries.length > MAX_ENTRIES) throw new Error('请选择包含 Markdown 或 TXT 的目录或 ZIP。');
+  let total = 0;
+  const entries = new Map<string, { path: string; bytes: Uint8Array }>();
+  for (const raw of rawEntries) {
+    const path = normalizeExternalPath(raw.path);
+    if (path.startsWith('__MACOSX/') || path.split('/').some((part) => part.startsWith('.'))) continue;
+    total += raw.bytes.length;
+    if (total > MAX_ARCHIVE_BYTES) throw new Error('导入内容超过 64 MiB。');
+    const key = path.toLocaleLowerCase('en-US');
+    if (entries.has(key)) throw new Error(`导入目录存在重复路径：${path}`);
+    entries.set(key, { path, bytes: raw.bytes });
+  }
+  const noteEntries = [...entries.values()].filter((entry) => EXTERNAL_NOTE.test(entry.path));
+  if (!noteEntries.length) throw new Error('没有找到 Markdown 或 TXT 笔记。');
+
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const notes = noteEntries.map((entry) => {
+    if (entry.bytes.length > config.maxNoteBytes) throw new Error(`笔记超过大小限制：${entry.path}`);
+    let content: string;
+    try { content = decoder.decode(entry.bytes); } catch { throw new Error(`笔记不是 UTF-8：${entry.path}`); }
+    return { ...entry, id: crypto.randomUUID(), content, ...externalMetadata(entry.path, content) };
+  });
+  const noteByPath = new Map(notes.map((entry) => [entry.path.toLocaleLowerCase('en-US'), entry]));
+  const noteByStem = new Map<string, typeof notes[number] | null>();
+  for (const entry of notes) {
+    const stem = entry.path.split('/').at(-1)!.replace(EXTERNAL_NOTE, '').toLocaleLowerCase('en-US');
+    noteByStem.set(stem, noteByStem.has(stem) ? null : entry);
+  }
+  const resolveNote = (source: string, target: string) => {
+    const clean = target.split('#', 1)[0].trim();
+    const direct = relativePath(source, clean);
+    const candidates = direct ? [direct, `${direct}.md`, `${direct}.markdown`, `${direct}.txt`] : [];
+    for (const candidate of candidates) {
+      const found = noteByPath.get(candidate.toLocaleLowerCase('en-US'));
+      if (found) return found;
+    }
+    return noteByStem.get(clean.split('/').at(-1)!.toLocaleLowerCase('en-US')) ?? null;
+  };
+
+  const uploads = new Map<string, Promise<{ id: string; url: string }>>();
+  const upload = (source: string, target: string) => {
+    const path = relativePath(source, target);
+    if (!path) return null;
+    const key = path.toLocaleLowerCase('en-US');
+    const entry = entries.get(key);
+    const mime = externalMime(path);
+    if (!entry || !mime || EXTERNAL_NOTE.test(path)) return null;
+    let running = uploads.get(key);
+    if (!running) {
+      running = (async () => {
+        const file = new File([new Uint8Array(entry.bytes)], entry.path.split('/').at(-1)!, { type: mime });
+        const stored = mime.startsWith('image/')
+          ? await uploadImage(file, config.maxImageBytes, config.maxImagePixels)
+          : await uploadAttachment(file, config.maxAttachmentBytes);
+        progress(`上传引用文件 ${uploads.size}`);
+        return stored;
+      })();
+      uploads.set(key, running);
+    }
+    return running;
+  };
+
+  const prepared: Array<{ source: typeof notes[number]; content: string }> = [];
+  for (const source of notes) {
+    let content = source.content;
+    content = await replaceAsync(content, /!\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g,
+      async (original, target, label) => {
+        const stored = upload(source.path, target);
+        if (!stored) return original;
+        const file = await stored;
+        return externalMime(target)?.startsWith('image/')
+          ? `![${label || target}](${file.url})`
+          : `[${label || target}](${file.url})`;
+      });
+    content = await replaceAsync(content, /(?<!!)\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g,
+      async (original, target, label) => {
+        const linked = resolveNote(source.path, target);
+        return linked ? `[[${linked.id}|${label || linked.title}]]` : original;
+      });
+    content = await replaceAsync(content, /(!?)\[([^\]]*)\]\((<[^>]+>|[^)\s]+)(?:\s+["'][^)]*)?\)/g,
+      async (original, imageMarker, label, target) => {
+        const linked = resolveNote(source.path, target);
+        if (!imageMarker && linked) return `[[${linked.id}|${label || linked.title}]]`;
+        const stored = upload(source.path, target);
+        if (!stored) return original;
+        const file = await stored;
+        return `${imageMarker}[${label}](${file.url})`;
+      });
+    if (new TextEncoder().encode(content).length > config.maxNoteBytes) {
+      throw new Error(`转换后的笔记超过大小限制：${source.path}`);
+    }
+    prepared.push({ source, content });
+  }
+
+  const remapped = new Map<string, string>();
+  const fingerprints = new Map<string, string>();
+  const unique: typeof prepared = [];
+  let skipped = 0;
+  for (const candidate of prepared) {
+    const fingerprint = await duplicateKey(candidate.source.title, candidate.content);
+    const incoming = fingerprints.get(fingerprint);
+    if (incoming) {
+      remapped.set(candidate.source.id, incoming);
+      skipped++;
+      progress(`跳过重复笔记 ${skipped}`);
+      continue;
+    }
+    const existing = await api.duplicate(candidate.source.title, candidate.content);
+    if (existing.duplicate && existing.noteId) {
+      remapped.set(candidate.source.id, existing.noteId);
+      skipped++;
+      progress(`跳过重复笔记 ${skipped}`);
+      continue;
+    }
+    fingerprints.set(fingerprint, candidate.source.id);
+    unique.push(candidate);
+  }
+  const finalId = (id: string) => {
+    const visited = new Set<string>();
+    while (remapped.has(id) && !visited.has(id)) {
+      visited.add(id);
+      id = remapped.get(id)!;
+    }
+    return id;
+  };
+  let imported = 0;
+  for (const { source, content: preparedContent } of unique) {
+    const content = preparedContent.replace(
+      /\[\[([0-9a-f-]{36})(\|[^\]\r\n]{1,256}\]\])/gi,
+      (original, id: string, suffix: string) => idPattern.test(id) ? `[[${finalId(id)}${suffix}` : original,
+    );
+    await api.save(source.id, {
+      title: source.title,
+      content,
+      tags: source.tags,
+      pinned: false,
+      archived: false,
+      deletedAt: null,
+    }, 0, crypto.randomUUID());
+    imported++;
+    progress(`导入笔记 ${imported}/${notes.length}`);
+  }
+  return { imported, skipped };
+}
+
+export async function importExternalFiles(
+  selected: File[],
+  config: ClientConfig,
+  progress: (text: string) => void,
+): Promise<ImportResult> {
+  if (!selected.length) throw new Error('没有选择导入文件。');
+  if (selected.length === 1 && (selected[0].name.toLocaleLowerCase('en-US').endsWith('.zip') ||
+      EXTERNAL_NOTE.test(selected[0].name) && selected[0].size === 0)) {
+    return importArchive(selected[0], config, progress);
+  }
+  const entries = await Promise.all(selected.map(async (file) => ({
+    path: file.webkitRelativePath || file.name,
+    bytes: new Uint8Array(await file.arrayBuffer()),
+  })));
+  return importExternalEntries(entries, config, progress);
+}
+
 export async function importArchive(file: File, config: ClientConfig, progress: (text: string) => void): Promise<ImportResult> {
-  if (file.name.toLowerCase().endsWith('.md') || file.name.toLowerCase().endsWith('.txt')) {
+  if (EXTERNAL_NOTE.test(file.name)) {
     if (file.size > config.maxNoteBytes) throw new Error('笔记大小超过限制。');
     const content = await file.text();
     const title = titleFromContent(content);
@@ -211,10 +455,15 @@ export async function importArchive(file: File, config: ClientConfig, progress: 
     return { imported: 1, skipped: 0 };
   }
   const files = await unpack(file);
-  if (!files['manifest.json'] || files['manifest.json'].length > 2 * 1024 ** 2) throw new Error('未找到有效的 EasyNote 备份清单。');
+  if (!files['manifest.json']) {
+    return importExternalEntries(Object.entries(files).map(([path, bytes]) => ({ path, bytes })), config, progress);
+  }
+  if (files['manifest.json'].length > 2 * 1024 **2) throw new Error('EasyNote 备份清单过大。');
   const manifest = JSON.parse(strFromU8(files['manifest.json'])) as Manifest;
-  if (manifest.format !== 'easynote' || manifest.version !== 2 ||
-      !Array.isArray(manifest.notes) || !Array.isArray(manifest.files)) {
+  if (manifest.format !== 'easynote') {
+    return importExternalEntries(Object.entries(files).map(([path, bytes]) => ({ path, bytes })), config, progress);
+  }
+  if (manifest.version !== 2 || !Array.isArray(manifest.notes) || !Array.isArray(manifest.files)) {
     throw new Error('不支持的备份格式。');
   }
   const seen = new Set<string>();

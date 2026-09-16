@@ -212,13 +212,13 @@ renderer.renderer.rules.code_block = (tokens, index) => {
 renderer.renderer.rules.image = (tokens, index) => {
   const token = tokens[index];
   const src = token.attrGet('src') ?? '';
-  const id = /^\/api\/images\/(.+)$/.exec(src)?.[1];
+  const id = /^(?:\/api\/images\/|\/api\/public\/shares\/[a-f0-9]{64}\/images\/)([0-9a-f-]{36})$/i.exec(src)?.[1];
   if (!id || !idPattern.test(id)) return '<span class="blocked-image">[外部图片未加载]</span>';
   return `<img src="${src}" data-private-image="${id}" alt="${renderer.utils.escapeHtml(token.content)}" loading="lazy" />`;
 };
 renderer.renderer.rules.link_open = (tokens, index, options, _env, self) => {
   const href = tokens[index].attrGet('href') ?? '';
-  const id = /^\/api\/files\/(.+)$/.exec(href)?.[1];
+  const id = /^(?:\/api\/files\/|\/api\/public\/shares\/[a-f0-9]{64}\/files\/)([0-9a-f-]{36})$/i.exec(href)?.[1];
   if (id && idPattern.test(id)) {
     tokens[index].attrSet('data-private-file', id);
     tokens[index].attrSet('download', '');
@@ -276,7 +276,7 @@ function renderMarkdown(content: string, interactiveTasks: boolean): string {
   const parsed = new DOMParser().parseFromString(clean, 'text/html');
   parsed.body.querySelectorAll('img').forEach((image) => {
     const src = image.getAttribute('src') ?? '';
-    const id = /^\/api\/images\/(.+)$/.exec(src)?.[1];
+    const id = /^(?:\/api\/images\/|\/api\/public\/shares\/[a-f0-9]{64}\/images\/)([0-9a-f-]{36})$/i.exec(src)?.[1];
     if (id && idPattern.test(id)) {
       image.setAttribute('loading', 'lazy');
       image.setAttribute('data-private-image', id);
@@ -300,7 +300,8 @@ function renderMarkdown(content: string, interactiveTasks: boolean): string {
       link.removeAttribute('rel');
       return;
     }
-    const fileId = /^\/api\/files\/(.+)$/.exec(link.getAttribute('href') ?? '')?.[1];
+    const fileId = /^(?:\/api\/files\/|\/api\/public\/shares\/[a-f0-9]{64}\/files\/)([0-9a-f-]{36})$/i
+      .exec(link.getAttribute('href') ?? '')?.[1];
     if (fileId && idPattern.test(fileId)) {
       link.dataset.privateFile = fileId;
       link.setAttribute('download', '');

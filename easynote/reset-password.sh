@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(dirname "$0")/scripts/common.sh"
 
 if [[ "${1:-}" == "--help" ]]; then
-  printf 'Usage: bash reset-password.sh (--local|--remote)\n\nReset the single owner password interactively and revoke every session and AI token.\n'
+  printf 'Usage: bash reset-password.sh (--local|--remote)\n\nReset one account password interactively and revoke that account'\''s sessions and AI tokens.\n'
   exit 0
 fi
 [[ $# == 1 && ( "$1" == "--local" || "$1" == "--remote" ) ]] ||

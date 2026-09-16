@@ -63,12 +63,16 @@ export async function createRuntime(port?: number) {
   await db.batch([
     'DELETE FROM image_refs', 'DELETE FROM note_versions', 'DELETE FROM note_changes', 'DELETE FROM notes',
     'DELETE FROM sessions', 'DELETE FROM integration_tokens', 'DELETE FROM login_attempts', 'DELETE FROM images',
-    'DELETE FROM purged_notes', 'DELETE FROM users',
+    'DELETE FROM purged_notes', 'DELETE FROM note_shares', 'DELETE FROM account_attempts', 'DELETE FROM users',
   ].map((sql) => db.prepare(sql)));
   const bucket = await runtime.getR2Bucket('IMAGES');
   const objects = await bucket.list();
   if (objects.objects.length) await bucket.delete(objects.objects.map((object) => object.key));
-  await db.prepare('INSERT OR REPLACE INTO users VALUES(?,?,?,?)').bind(testUserId, 'tester', JSON.stringify(verifier), Date.now()).run();
+  const now = Date.now();
+  await db.prepare(`INSERT OR REPLACE INTO users
+    (id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    VALUES(?,?,?,?,'admin',1,?,?)`)
+    .bind(testUserId, 'tester', JSON.stringify(verifier), now, now, now).run();
   await db.prepare('INSERT OR REPLACE INTO sessions VALUES(?,?,?,?)').bind(await digest(testToken), testUserId, testCsrf, Date.now() + 86400_000).run();
   return { runtime, db, bucket };
 }

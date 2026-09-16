@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { strFromU8, unzipSync } from 'fflate';
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { testToken, testCsrf, testPassword } from './runtime';
 
 const origin = 'http://127.0.0.1:8792';
@@ -28,6 +28,11 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   expect(manifest).toMatchObject({
     name: 'EasyNote', start_url: '/', scope: '/', display: 'standalone',
     theme_color: '#3361cc', background_color: '#ffffff',
+    share_target: {
+      action: '/?share-target=1',
+      method: 'GET',
+      params: { title: 'title', text: 'text', url: 'url' },
+    },
   });
   expect(manifest.icons).toEqual(expect.arrayContaining([
     expect.objectContaining({ sizes: '192x192', type: 'image/png' }),
@@ -42,6 +47,7 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   const worker = await page.request.get('/sw.js');
   expect(worker.status()).toBe(200);
   expect(worker.headers()['content-type']).toContain('javascript');
+  expect(await worker.text()).toContain('easynote-pdf-v1');
   await expect.poll(() => page.evaluate(async () => Boolean(await navigator.serviceWorker.getRegistration('/')))).toBe(true);
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
   const cachedUrls = await page.evaluate(async () => {
@@ -52,8 +58,6 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
     return urls;
   });
   expect(cachedUrls.some((url) => new URL(url).pathname === '/index.html')).toBe(true);
-  expect(cachedUrls.some((url) => new URL(url).pathname.includes('/assets/html2canvas'))).toBe(true);
-  expect(cachedUrls.some((url) => new URL(url).pathname.includes('/assets/jspdf'))).toBe(true);
   expect(cachedUrls.some((url) => new URL(url).pathname.startsWith('/api/'))).toBe(false);
 
   await page.evaluate(() => {
@@ -76,6 +80,60 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'EasyNote' })).toBeVisible();
   await context.setOffline(false);
+});
+
+test('PWA share target creates an inbox note and removes shared data from the URL', async ({ page }) => {
+  const marker = randomUUID().slice(0, 8);
+  await page.goto(`/?share-target=1&title=${encodeURIComponent(`分享-${marker}`)}&text=${encodeURIComponent('来自手机的摘录')}&url=${encodeURIComponent('https://example.test/article')}`);
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(`分享-${marker}`);
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('来自手机的摘录');
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('https://example.test/article');
+  await expect(page.getByRole('textbox', { name: '笔记标签' })).toHaveValue('收件箱');
+  await expect(page).toHaveURL(origin + '/');
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+});
+
+test('task center opens the source note at the unfinished task', async ({ page }) => {
+  const title = `任务中心-${randomUUID().slice(0, 6)}`;
+  await page.goto('/');
+  await newNote(page, title, '开头\n\n- [x] 已完成\n- [ ] 精准定位\n\n结尾');
+  await page.getByRole('button', { name: '任务中心', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('精准定位', { exact: true })).toBeVisible();
+  await dialog.getByRole('button').filter({ hasText: '精准定位' }).click();
+  const editor = page.getByRole('textbox', { name: '笔记正文' });
+  await expect(editor).toBeFocused();
+  await page.keyboard.type('定位：');
+  await expect.poll(() => editor.locator('.cm-line').allTextContents()).toContain('定位：- [ ] 精准定位');
+});
+
+test('a note can create and revoke an expiring read-only share', async ({ page, browser }) => {
+  const title = `安全分享-${randomUUID().slice(0, 6)}`;
+  const bottomMarker = `分享页尾-${randomUUID().slice(0, 6)}`;
+  const content = ['公开正文', ...Array.from({ length: 40 }, (_, index) => `第 ${index + 1} 段内容`), bottomMarker].join('\n\n');
+  await page.goto('/');
+  await newNote(page, title, content);
+  await page.getByRole('button', { name: '只读分享', exact: true }).click();
+  await page.getByLabel('有效期').selectOption('24');
+  await page.getByRole('button', { name: '创建链接' }).click();
+  const url = await page.getByLabel('只读分享链接').inputValue();
+  expect(url).toMatch(/\/shared\/[a-f0-9]{64}$/);
+
+  const anonymous = await browser.newContext({ viewport: { width: 900, height: 500 } });
+  const shared = await anonymous.newPage();
+  await shared.goto(url);
+  await expect(shared.getByRole('heading', { name: title })).toBeVisible();
+  await expect(shared.getByText('公开正文', { exact: true })).toBeVisible();
+  await expect(shared.getByText('只读分享', { exact: true })).toBeVisible();
+  const scroll = shared.locator('.shared-page');
+  expect(await scroll.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await scroll.evaluate((element) => element.scrollTo(0, element.scrollHeight));
+  await expect(shared.getByText(bottomMarker, { exact: true })).toBeVisible();
+  await anonymous.close();
+
+  await page.getByRole('button', { name: '撤销' }).click();
+  await expect(page.getByText('分享链接已撤销', { exact: true })).toBeVisible();
+  expect((await page.request.get(url.replace('/shared/', '/api/public/shares/'))).status()).toBe(404);
 });
 
 test('an external PWA launch restores the session through the same-origin bootstrap request', async ({ page }) => {
@@ -107,6 +165,22 @@ test('AI integration tokens can be created once, listed and revoked', async ({ p
   await page.getByRole('button', { name: '撤销令牌 桌面 AI' }).click();
   await page.getByRole('button', { name: '确认撤销' }).click();
   await expect(page.getByText('桌面 AI', { exact: true })).toBeHidden();
+});
+
+test('administrator user management creates and removes an isolated tenant', async ({ page }) => {
+  const username = `ui-user-${randomUUID().slice(0, 7)}`;
+  await page.goto('/');
+  await page.locator('.account').click();
+  await page.getByRole('button', { name: '管理用户', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('tester（当前）', { exact: true })).toBeVisible();
+  await dialog.getByLabel('新用户用户名').fill(username);
+  await dialog.getByLabel('新用户密码').fill('UI-Managed-Password-482!');
+  await dialog.getByRole('button', { name: '创建', exact: true }).click();
+  await expect(dialog.getByText(username, { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: `删除用户 ${username}` }).click();
+  await dialog.getByRole('button', { name: '确认删除' }).click();
+  await expect(dialog.getByText(username, { exact: true })).toBeHidden();
 });
 
 test('create, autosave, reload, edit Markdown and preview safely', async ({ page }) => {
@@ -480,7 +554,7 @@ test('images render, export includes bytes, and import creates a readable copy',
   expect(new Set(manifest.notes.map((entry: { path: string }) => entry.path.toLocaleLowerCase('en-US'))).size)
     .toBe(manifest.notes.length);
   await expect(page.getByText('备份已下载', { exact: true })).toBeVisible();
-  await page.locator('input[accept=".zip,.md,.txt"]').setInputFiles({ name: 'backup.zip', mimeType: 'application/zip', buffer: await readFile(path!) });
+  await page.locator('input[accept=".zip,.md,.markdown,.txt"]').setInputFiles({ name: 'backup.zip', mimeType: 'application/zip', buffer: await readFile(path!) });
   await expect(page.locator('.toast')).toContainText('未导入：', { timeout: 30000 });
   await expect(page.locator('.toast')).toContainText('笔记已存在');
   const result = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}&view=archive`)).json();
@@ -488,7 +562,7 @@ test('images render, export includes bytes, and import creates a readable copy',
 
   const standaloneTitle = `正文标题-${randomUUID().slice(0, 6)}`;
   const standaloneContent = `# ${standaloneTitle}\n\n标题来自正文，而不是文件名。`;
-  const importInput = page.locator('input[accept=".zip,.md,.txt"]');
+  const importInput = page.locator('input[accept=".zip,.md,.markdown,.txt"]');
   const standaloneFile = {
     name: `${randomUUID()}.md`, mimeType: 'text/markdown', buffer: Buffer.from(standaloneContent),
   };
@@ -512,6 +586,40 @@ test('images render, export includes bytes, and import creates a readable copy',
   await importInput.setInputFiles(emptyFile);
   await expect(page.locator('.toast')).toHaveText('未导入：1 篇笔记已存在');
   expect((await (await page.request.get('/api/notes/blank')).json()).note.id).toBe(blank.note.id);
+});
+
+test('generic Obsidian ZIP imports frontmatter and rewrites wiki links', async ({ page }) => {
+  const marker = randomUUID().slice(0, 6);
+  const linkedTitle = `关联笔记-${marker}`;
+  const mainTitle = `入口笔记-${marker}`;
+  const archive = zipSync({
+    [`Vault/${linkedTitle}.md`]: strToU8(`# ${linkedTitle}\n\n被链接内容`),
+    [`Vault/${mainTitle}.md`]: strToU8(`---\ntags: [迁移, Obsidian]\n---\n# ${mainTitle}\n\n参见 [[${linkedTitle}]]`),
+  });
+  const existingId = randomUUID();
+  expect((await page.request.post(`${origin}/api/notes/${existingId}`, {
+    headers,
+    data: {
+      title: linkedTitle, content: `# ${linkedTitle}\n\n被链接内容`, tags: [], pinned: false,
+      archived: false, deletedAt: null, revision: 0, operationId: randomUUID(),
+    },
+  })).status()).toBe(201);
+  await page.goto('/');
+  await page.locator('.account').click();
+  await page.locator('input[accept=".zip,.md,.markdown,.txt"]').setInputFiles({
+    name: 'obsidian.zip',
+    mimeType: 'application/zip',
+    buffer: Buffer.from(archive),
+  });
+  await expect(page.locator('.toast')).toHaveText('已导入 1 篇，跳过 1 篇重复笔记');
+  const linked = (await (await page.request.get(`/api/notes?q=${encodeURIComponent(linkedTitle)}`)).json()).notes
+    .find((item: { title: string }) => item.title === linkedTitle);
+  const main = (await (await page.request.get(`/api/notes?q=${encodeURIComponent(mainTitle)}`)).json()).notes
+    .find((item: { title: string }) => item.title === mainTitle);
+  expect(linked.id).toBe(existingId);
+  expect(main.tags).toEqual(['迁移', 'Obsidian']);
+  const imported = (await (await page.request.get(`/api/notes/${main.id}`)).json()).note;
+  expect(imported.content).toContain(`[[${linked.id}|${linkedTitle}]]`);
 });
 
 test('mobile navigation, pin, archive, trash and restore remain usable without overflow', async ({ page }) => {
@@ -905,7 +1013,7 @@ test('Markdown todo items render and persist interactive checkbox changes', asyn
   await expect(editor).toContainText('- [ ] 标准待办');
 });
 
-test('current note prints as a ready A4 PDF document', async ({ page }) => {
+test('desktop export configures and downloads a structured PDF', async ({ page }) => {
   const title = `PDF/导出:${randomUUID().slice(0, 6)}`;
   const content = [
     '## 打印正文',
@@ -928,56 +1036,52 @@ test('current note prints as a ready A4 PDF document', async ({ page }) => {
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '导出当前笔记为 PDF' })).toBeVisible();
   await page.evaluate(() => {
-    const state = window as typeof window & {
-      printCapture?: {
-        title: string;
-        text: string;
-        diagrams: number;
-        pendingDiagrams: number;
-        imagesReady: boolean;
-      };
-    };
-    window.print = () => {
-      const root = document.querySelector<HTMLElement>('.print-document')!;
-      const images = [...root.querySelectorAll<HTMLImageElement>('img')];
-      state.printCapture = {
-        title: document.title,
-        text: root.textContent ?? '',
-        diagrams: root.querySelectorAll('.mermaid-diagram svg').length,
-        pendingDiagrams: root.querySelectorAll('[data-mermaid-source]').length,
-        imagesReady: images.length === 1 && images.every((item) => item.complete && item.naturalWidth > 0),
-      };
-    };
+    const state = window as typeof window & { desktopShareCalled?: boolean };
+    state.desktopShareCalled = false;
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: async () => { state.desktopShareCalled = true; },
+    });
   });
   await page.getByRole('textbox', { name: '笔记标题' }).press('Meta+p');
-  await expect.poll(() => page.evaluate(() =>
-    (window as typeof window & { printCapture?: unknown }).printCapture)).toBeTruthy();
-  const captured = await page.evaluate(() =>
-    (window as typeof window & { printCapture: {
-      title: string; text: string; diagrams: number; pendingDiagrams: number; imagesReady: boolean;
-    } }).printCapture);
-  expect(captured).toMatchObject({
-    title: expect.stringMatching(/^PDF-导出-/),
-    diagrams: 1,
-    pendingDiagrams: 0,
-    imagesReady: true,
-  });
-  expect(captured.text).toContain(title);
-  expect(captured.text).toContain('更新于');
-  expect(captured.text).toContain('#打印 #测试');
-  expect(captured.text).toContain('包含图表和私有图片。');
+  const exportDialog = page.getByRole('dialog');
+  await expect(exportDialog.getByRole('heading', { name: '导出为 PDF' })).toBeVisible();
+  await expect(exportDialog.getByLabel('PDF 文件名')).toHaveValue(title);
+  await expect(exportDialog.getByLabel('PDF 纸张')).toHaveValue('A4');
+  await expect(exportDialog.getByLabel('PDF 缩放')).toHaveValue('100');
+  const preview = exportDialog.getByRole('region', { name: 'PDF 分页预览' });
+  await expect(preview.getByRole('img', { name: 'PDF 第 1 页' })).toBeVisible({ timeout: 20_000 });
+  const portraitPreview = await preview.getByRole('img', { name: 'PDF 第 1 页' }).getAttribute('src');
+  await exportDialog.getByRole('button', { name: '横向' }).click();
+  await expect(preview).toHaveAttribute('aria-busy', 'true');
+  await expect(preview).toHaveAttribute('aria-busy', 'false', { timeout: 20_000 });
+  await expect(preview.getByRole('img', { name: 'PDF 第 1 页' })).not.toHaveAttribute('src', portraitPreview!);
+  await exportDialog.getByLabel('PDF 文件名').fill('重命名后的导出文件');
+  const template = page.locator('.print-document');
+  await expect(template).toContainText('包含图表和私有图片。');
+  await expect(template).not.toContainText(title);
+  await expect(template).not.toContainText('更新于');
+  await expect(template).not.toContainText('#打印');
+  await expect(template).not.toContainText(origin);
+  await expect(template.locator('.mermaid-diagram svg')).toHaveCount(1);
+  expect(await template.locator('img').evaluateAll((images: HTMLImageElement[]) =>
+    images.length === 1 && images.every((item) => item.complete && item.naturalWidth > 0))).toBe(true);
   expect(await page.title()).toBe('EasyNote');
-
-  await page.emulateMedia({ media: 'print' });
-  const printLayout = await page.evaluate(() => ({
-    printDisplay: getComputedStyle(document.querySelector('.print-document')!).display,
-    workspaceDisplay: getComputedStyle(document.querySelector('.workspace')!).display,
-    background: getComputedStyle(document.querySelector('.print-document')!).backgroundColor,
-  }));
-  expect(printLayout).toEqual({ printDisplay: 'block', workspaceDisplay: 'none', background: 'rgb(255, 255, 255)' });
-  await page.screenshot({ path: 'test-results/print-note.png', fullPage: true });
-  const pdf = await page.pdf({ format: 'A4', printBackground: true });
-  expect(pdf.subarray(0, 4).toString()).toBe('%PDF');
+  await page.screenshot({ path: 'test-results/desktop-pdf-export.png', fullPage: true });
+  const downloadPromise = page.waitForEvent('download');
+  await exportDialog.getByRole('button', { name: '导出 PDF' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('重命名后的导出文件.pdf');
+  const path = await download.path();
+  expect(path).toBeTruthy();
+  const pdfBytes = await readFile(path!);
+  expect(pdfBytes.subarray(0, 4).toString()).toBe('%PDF');
+  expect(new TextDecoder('latin1').decode(pdfBytes)).toContain('/FontFile');
+  expect(await page.evaluate(() =>
+    (window as typeof window & { desktopShareCalled?: boolean }).desktopShareCalled)).toBe(false);
+  await expect(exportDialog).toBeHidden();
+  await expect(page.getByRole('status')).toHaveText('PDF 已下载');
 });
 
 test('mobile browsers receive a real PDF through share or download', async ({ page }) => {
@@ -1006,6 +1110,14 @@ test('mobile browsers receive a real PDF through share or download', async ({ pa
       mobileShare?: { name: string; type: string; size: number; header: string };
       printCalls?: number;
     };
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
+    });
+    Object.defineProperty(navigator, 'userAgentData', {
+      configurable: true,
+      value: { mobile: true },
+    });
     state.printCalls = 0;
     window.print = () => { state.printCalls = (state.printCalls ?? 0) + 1; };
     Object.defineProperty(navigator, 'canShare', {
@@ -1030,11 +1142,13 @@ test('mobile browsers receive a real PDF through share or download', async ({ pa
   await expect(exportButton).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await exportButton.click();
-  const ready = page.getByRole('dialog');
-  await expect(ready.getByRole('heading', { name: 'PDF 已生成' })).toBeVisible({ timeout: 20_000 });
-  await expect(ready).toContainText('移动-PDF-');
-  await page.screenshot({ path: 'test-results/mobile-pdf-ready.png', fullPage: true });
-  await ready.getByRole('button', { name: '保存或分享' }).click();
+  const exportDialog = page.getByRole('dialog');
+  await expect(exportDialog.getByRole('heading', { name: '导出为 PDF' })).toBeVisible();
+  const preview = exportDialog.getByRole('region', { name: 'PDF 分页预览' });
+  await expect(preview.getByRole('img', { name: 'PDF 第 1 页' })).toBeVisible({ timeout: 20_000 });
+  expect(await preview.getByRole('img').count()).toBeGreaterThan(1);
+  await page.screenshot({ path: 'test-results/mobile-pdf-export.png', fullPage: true });
+  await exportDialog.getByRole('button', { name: '导出 PDF' }).click();
   await expect.poll(() => page.evaluate(() =>
     (window as typeof window & { mobileShare?: unknown }).mobileShare)).toBeTruthy();
   const shared = await page.evaluate(() =>
@@ -1052,9 +1166,11 @@ test('mobile browsers receive a real PDF through share or download', async ({ pa
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => false });
   });
   await exportButton.click();
-  await expect(page.getByRole('heading', { name: 'PDF 已生成' })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole('heading', { name: '导出为 PDF' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'PDF 分页预览' })
+    .getByRole('img', { name: 'PDF 第 1 页' })).toBeVisible({ timeout: 20_000 });
   const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下载 PDF' }).click();
+  await page.getByRole('button', { name: '导出 PDF' }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/^移动-PDF-.+\.pdf$/);
   await download.saveAs('test-results/mobile-note.pdf');
@@ -1062,7 +1178,12 @@ test('mobile browsers receive a real PDF through share or download', async ({ pa
   expect(path).toBeTruthy();
   const pdfBytes = await readFile(path!);
   expect(pdfBytes.subarray(0, 4).toString()).toBe('%PDF');
-  expect(new TextDecoder('latin1').decode(pdfBytes).match(/\/Type\s*\/Page\b/g)?.length ?? 0).toBeGreaterThan(1);
+  const pdfSource = new TextDecoder('latin1').decode(pdfBytes);
+  const pageCount = pdfSource.match(/\/Type\s*\/Page\b/g)?.length ?? 0;
+  const imageCount = pdfSource.match(/\/Subtype\s*\/Image\b/g)?.length ?? 0;
+  expect(pageCount).toBeGreaterThan(1);
+  expect(pdfSource).toContain('/FontFile');
+  expect(imageCount).toBeLessThanOrEqual(3);
 });
 
 test('outline, stable internal links and backlinks navigate between notes', async ({ page }) => {
@@ -1110,6 +1231,18 @@ test('full offline library supports cold start, full-text search and note readin
   await page.locator('.account').click();
   await page.getByRole('switch', { name: '离线笔记库' }).click();
   await expect(page.getByText(/离线笔记库 · \d+ 篇/)).toBeVisible();
+  const offlineAssets = await page.evaluate(async () => {
+    const urls: string[] = [];
+    for (const name of await caches.keys()) {
+      for (const request of await (await caches.open(name)).keys()) urls.push(request.url);
+    }
+    return urls.map((url) => new URL(url).pathname);
+  });
+  expect(offlineAssets.some((path) => path.includes('/assets/pdfmake'))).toBe(true);
+  expect(offlineAssets.some((path) => path.includes('/assets/pdfjs'))).toBe(true);
+  expect(offlineAssets.some((path) => path.includes('/assets/pdf.worker'))).toBe(true);
+  expect(offlineAssets).toContain('/fonts/NotoSansSC-Regular.otf');
+  expect(offlineAssets).toContain('/fonts/NotoSansSC-Bold.otf');
   await page.getByRole('button', { name: '关闭', exact: true }).click();
 
   await context.setOffline(true);

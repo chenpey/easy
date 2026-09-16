@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { filePath, noteInput, noteLinkIds, sameNoteInput, storedFileIds, type Note, type NoteInput, type NoteSummary, type Session } from '../shared/types';
+import { unfinishedTasks } from '../shared/tasks';
 import { api, ApiError } from './api';
+import { preparePdfExport } from './pdf';
 import {
   applyMirrorChanges,
   cacheFile,
@@ -407,7 +409,26 @@ export function useNotebook(session: Session) {
       .map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 180) }));
   };
 
+  const tasks = async () => {
+    if (!offlineLibraryRef.current || navigator.onLine && !session.offline) return (await api.tasks()).tasks;
+    return (await allAvailableNotes()).flatMap(unfinishedTasks);
+  };
+
   const configureOffline = async (enabled: boolean): Promise<void> => {
+    if (enabled && 'serviceWorker' in navigator) {
+      let timeout = 0;
+      try {
+        await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise<never>((_, reject) => {
+            timeout = window.setTimeout(() => reject(new Error('离线资源准备超时，请稍后重试。')), 20_000);
+          }),
+        ]);
+      } finally {
+        window.clearTimeout(timeout);
+      }
+      await preparePdfExport();
+    }
     await setOfflineEnabled(userId, enabled, session);
     offlineLibraryRef.current = enabled;
     setOfflineLibrary(enabled);
@@ -571,6 +592,6 @@ export function useNotebook(session: Session) {
     online, offlineLibrary, offlineCount,
     busy: running.current.size > 0, select, create, edit, append, save: () => note ? save(note.id) : Promise.resolve(true),
     retry, conflictCopy, purge, purgeTrash, refresh: () => refreshRef.current(), loadMore: () => refresh(true),
-    configureOffline, cachedFile, backlinks, searchAll, manageTag, bulkUpdate,
+    configureOffline, cachedFile, backlinks, tasks, searchAll, manageTag, bulkUpdate,
   };
 }

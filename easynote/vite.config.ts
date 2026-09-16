@@ -20,6 +20,11 @@ export default defineConfig({
         background_color: '#ffffff',
         theme_color: '#3361cc',
         categories: ['productivity'],
+        share_target: {
+          action: '/?share-target=1',
+          method: 'GET',
+          params: { title: 'title', text: 'text', url: 'url' },
+        },
         icons: [
           { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
           { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
@@ -34,9 +39,15 @@ export default defineConfig({
           'assets/index-*.js',
           'assets/editor-*.js',
           'assets/markdown-*.js',
-          'assets/html2canvas*.js',
-          'assets/jspdf*.js',
         ],
+        runtimeCaching: [{
+          urlPattern: /\/(?:assets\/(?:pdfmake|pdfjs|pdf\.worker)[^/]*\.(?:js|mjs)|fonts\/NotoSansSC-(?:Regular|Bold)\.otf)$/,
+          handler: 'CacheFirst',
+          options: {
+            cacheName: 'easynote-pdf-v1',
+            cacheableResponse: { statuses: [0, 200] },
+          },
+        }],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//],
         cleanupOutdatedCaches: true,
@@ -69,6 +80,8 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes('/@codemirror/') || id.includes('/@lezer/')) return 'editor';
           if (id.includes('/markdown-it/') || id.includes('/dompurify/')) return 'markdown';
+          if (id.includes('/pdfjs-dist/')) return 'pdfjs';
+          if (id.includes('/pdfmake/') || id.includes('/html-to-pdfmake/')) return 'pdfmake';
         },
       },
     },

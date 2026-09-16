@@ -3,6 +3,7 @@ import { ApiError, json, localHttp, type Env } from './core';
 import { cleanup, imageRoutes } from './images';
 import { integrationIdentity, integrationRoutes, integrationTokenRoutes } from './integrations';
 import { noteRoutes } from './notes';
+import { featureRoutes, publicShareRoutes } from './features';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -11,6 +12,11 @@ export default {
     try {
       if (new URL(request.url).protocol !== 'https:' && !localHttp(request, env)) {
         throw new ApiError(403, 'HTTPS is required.');
+      }
+      if (path.startsWith('/api/public/shares/')) {
+        const response = await publicShareRoutes(request, env, path);
+        if (response) return response;
+        throw new ApiError(404, 'Endpoint not found.');
       }
       const auth = await authRoute(request, env, path);
       if (auth) return auth;
@@ -27,7 +33,9 @@ export default {
         throw new ApiError(404, 'Endpoint not found.');
       }
       const user = await requireIdentity(request, env);
-      const response = await noteRoutes(request, env, user, path) ?? await imageRoutes(request, env, user, path);
+      const response = await featureRoutes(request, env, user, path) ??
+        await noteRoutes(request, env, user, path) ??
+        await imageRoutes(request, env, user, path);
       if (response) return response;
       throw new ApiError(404, 'Endpoint not found.');
     } catch (error) {

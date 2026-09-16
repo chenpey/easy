@@ -16,11 +16,11 @@
 
 ### [EasyNote](easynote/)
 
-基于 Cloudflare Workers 的个人自托管 Markdown 图片笔记应用。提供自动保存、私有图片、标签与搜索、回收站、版本历史、IndexedDB 草稿恢复、并发冲突保护和 ZIP 导入导出，并适配桌面与移动端。支持安装为 PWA；离线缓存只包含应用外壳，账号、笔记和私有图片仍需联网。
+基于 Cloudflare Workers 的多用户自托管 Markdown 图片笔记应用。用户即租户，笔记、附件、离线缓存和 AI 令牌完全隔离；管理员可管理用户及审批注册。提供自动保存、任务中心、PWA Share Target 快速收集、Obsidian/Markdown 导入、带逐页预览的跨平台 PDF 导出、可撤销限时只读分享、私有图片、搜索、回收站、版本历史、完整离线笔记库和并发冲突保护，并适配桌面与移动端。
 
-技术栈：React、TypeScript、CodeMirror、Cloudflare Workers、D1、R2。
+技术栈：React、TypeScript、CodeMirror、pdfmake、PDF.js、Cloudflare Workers、D1、R2。
 
-本地使用只需进入目录运行 `bash dev.sh`；生产部署运行 `bash deploy.sh`。账号和 Cloudflare 凭据均通过交互式流程处理。
+本地使用只需进入目录运行 `bash dev.sh`；生产部署运行 `bash deploy.sh`。初始管理员、密码恢复和 Cloudflare 凭据均通过交互式流程处理。
 
 详细说明见 [EasyNote README](easynote/README.md)。
 

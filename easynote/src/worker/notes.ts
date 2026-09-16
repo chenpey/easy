@@ -24,11 +24,11 @@ async function loadBlank(env: Env, userId: string): Promise<NoteRow | null> {
     .bind(userId).first<NoteRow>();
 }
 
-async function hasDuplicate(env: Env, userId: string, title: string, content: string): Promise<boolean> {
+async function duplicateNoteId(env: Env, userId: string, title: string, content: string): Promise<string | null> {
   const query = content
     ? env.DB.prepare('SELECT id FROM notes WHERE user_id=? AND content=? LIMIT 1').bind(userId, content)
     : env.DB.prepare("SELECT id FROM notes WHERE user_id=? AND title=? AND content='' LIMIT 1").bind(userId, title);
-  return !!await query.first();
+  return (await query.first<{ id: string }>())?.id ?? null;
 }
 
 function isBlank(input: NoteInput): boolean {
@@ -118,6 +118,10 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   }
   statements.push(env.DB.prepare(`INSERT INTO note_changes(user_id,note_id,changed_at)
     SELECT ?,?,? WHERE ${guard}`).bind(user.id, id, time, ...guardBinds));
+  if (input.deletedAt !== null) {
+    statements.push(env.DB.prepare(`DELETE FROM note_shares WHERE note_id=? AND ${guard}`)
+      .bind(id, ...guardBinds));
+  }
   for (const imageId of ids) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO image_refs SELECT ?,?,? WHERE ${guard}`)
       .bind(id, imageId, revision, ...guardBinds));
@@ -213,7 +217,8 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
         new TextEncoder().encode(data.content).length > clientConfig(env).maxNoteBytes) {
       throw new ApiError(400, 'Invalid note title or content.');
     }
-    return json({ duplicate: await hasDuplicate(env, user.id, data.title.trim(), data.content) });
+    const noteId = await duplicateNoteId(env, user.id, data.title.trim(), data.content);
+    return json({ duplicate: noteId !== null, noteId });
   }
   if (path === '/api/notes/trash' && request.method === 'DELETE') {
     const time = Date.now();

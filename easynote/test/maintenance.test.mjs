@@ -135,8 +135,8 @@ if (args[0] === 'd1' && args[1] === 'export') {
     const exportCall = calls.find((args) => args[0] === 'd1' && args[1] === 'export');
     const exportedTables = exportCall.flatMap((value, index) => value === '--table' ? [exportCall[index + 1]] : []);
     assert.deepEqual(exportedTables, [
-      'users', 'sessions', 'integration_tokens', 'login_attempts', 'notes',
-      'note_versions', 'note_changes', 'images', 'image_refs', 'purged_notes',
+      'users', 'sessions', 'integration_tokens', 'login_attempts', 'account_attempts', 'app_state',
+      'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
     ]);
     assert.ok(!exportedTables.includes('notes_fts'));
   } finally {
@@ -185,8 +185,8 @@ const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(join(directory, 'calls.jsonl'))}, JSON.stringify(args) + '\\n');
 if (args[0] === 'd1' && args[1] === 'execute' && args.some((value) => value.includes('sqlite_master'))) {
   console.log(JSON.stringify([{results:${JSON.stringify([
-    'users', 'sessions', 'integration_tokens', 'login_attempts', 'notes',
-    'note_versions', 'note_changes', 'images', 'image_refs', 'purged_notes',
+    'users', 'sessions', 'integration_tokens', 'login_attempts', 'account_attempts', 'app_state',
+    'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
   ].map((name) => ({ name })))}}]));
 } else if (args[0] === 'd1' && args[1] === 'execute') {
   console.log(JSON.stringify([{results:[{rows:process.env.NONEMPTY === '1' ? 1 : 0}]}]));

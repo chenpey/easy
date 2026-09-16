@@ -39,6 +39,38 @@ export interface IntegrationToken {
   lastUsedAt: number | null;
 }
 
+export interface NoteTask {
+  noteId: string;
+  noteTitle: string;
+  text: string;
+  line: number;
+  offset: number;
+  archived: boolean;
+}
+
+export interface UserAccount {
+  id: string;
+  username: string;
+  role: 'admin' | 'user';
+  enabled: boolean;
+  pendingApproval: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface NoteShare {
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface SharedNote {
+  title: string;
+  content: string;
+  tags: string[];
+  updatedAt: number;
+  expiresAt: number;
+}
+
 export interface ClientConfig {
   maxNoteBytes: number;
   maxImageBytes: number;
@@ -49,9 +81,10 @@ export interface ClientConfig {
 }
 
 export interface Session {
-  user: { id: string; username: string } | null;
+  user: { id: string; username: string; role: 'admin' | 'user'; hasRecoveryCode: boolean } | null;
   csrf: string | null;
   configured: boolean;
+  registrationEnabled: boolean;
   config: ClientConfig;
   expiresAt: number | null;
   offline?: boolean;

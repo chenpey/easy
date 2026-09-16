@@ -1,4 +1,18 @@
-import type { IntegrationToken, Note, NoteInput, NoteSummary, Session, Version, ImageRecord, StoredFile, SyncChange } from '../shared/types';
+import type {
+  ImageRecord,
+  IntegrationToken,
+  Note,
+  NoteInput,
+  NoteShare,
+  NoteSummary,
+  NoteTask,
+  Session,
+  SharedNote,
+  StoredFile,
+  SyncChange,
+  UserAccount,
+  Version,
+} from '../shared/types';
 
 const API_TIMEOUT_MS = 30_000;
 const UPLOAD_TIMEOUT_MS = 120_000;
@@ -60,18 +74,34 @@ export async function request<T>(path: string, method = 'GET', body?: unknown, s
 export const api = {
   session: () => request<Session>('/api/session'),
   login: (username: string, password: string) => request<Session>('/api/login', 'POST', { username, password }),
+  register: (username: string, password: string) =>
+    request<{ ok: true; pendingApproval: true; recoveryCode: string }>('/api/register', 'POST', { username, password }),
+  resetPassword: (username: string, recoveryCode: string, newPassword: string) =>
+    request<{ ok: true }>('/api/account/reset-password', 'POST', { username, recoveryCode, newPassword }),
   logout: () => request('/api/logout', 'POST', {}),
   changePassword: (currentPassword: string, newPassword: string) =>
     request<{ ok: true; otherSessionsRevoked: true }>('/api/account/password', 'POST', { currentPassword, newPassword }),
   logoutAll: (currentPassword: string) =>
     request<{ ok: true }>('/api/account/logout-all', 'POST', { currentPassword }),
+  createRecoveryCode: (currentPassword: string) =>
+    request<{ recoveryCode: string }>('/api/account/recovery-code', 'POST', { currentPassword }),
+  deleteAccount: (username: string, currentPassword: string) =>
+    request<{ ok: true }>('/api/account', 'DELETE', { username, currentPassword }),
+  users: () => request<{ users: UserAccount[] }>('/api/admin/users'),
+  createUser: (username: string, password: string, role: UserAccount['role']) =>
+    request<{ user: UserAccount }>('/api/admin/users', 'POST', { username, password, role }),
+  updateUser: (id: string, patch: Partial<Pick<UserAccount, 'username' | 'role' | 'enabled'>> & { password?: string }) =>
+    request<{ user: UserAccount; signedOut: boolean }>(`/api/admin/users/${id}`, 'PATCH', patch),
+  deleteUser: (id: string) => request<{ ok: true }>(`/api/admin/users/${id}`, 'DELETE', {}),
+  setRegistration: (enabled: boolean) =>
+    request<{ registrationEnabled: boolean }>('/api/admin/settings/registration', 'PATCH', { enabled }),
   list: (query: { q?: string; view?: string; tag?: string; offset?: number } = {}, signal?: AbortSignal) =>
     request<{ notes: NoteSummary[]; nextOffset: number | null }>(`/api/notes?${new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]))}`, 'GET', undefined, signal),
   tags: (view: string, signal?: AbortSignal) =>
     request<{ tags: string[] }>(`/api/tags?${new URLSearchParams({ view })}`, 'GET', undefined, signal),
   blank: () => request<{ note: Note | null }>('/api/notes/blank'),
   duplicate: (title: string, content: string) =>
-    request<{ duplicate: boolean }>('/api/notes/duplicate', 'POST', { title, content }),
+    request<{ duplicate: boolean; noteId: string | null }>('/api/notes/duplicate', 'POST', { title, content }),
   note: (id: string, signal?: AbortSignal) => request<{ note: Note }>(`/api/notes/${id}`, 'GET', undefined, signal),
   save: (id: string, input: NoteInput, revision: number, operationId: string) =>
     request<{ note: Note }>(`/api/notes/${id}`, revision === 0 ? 'POST' : 'PUT', { ...input, revision, operationId }),
@@ -79,6 +109,13 @@ export const api = {
   purgeTrash: () => request<{ deleted: number }>('/api/notes/trash', 'DELETE', {}),
   versions: (id: string) => request<{ versions: Version[] }>(`/api/notes/${id}/versions`),
   backlinks: (id: string) => request<{ notes: NoteSummary[] }>(`/api/notes/${id}/backlinks`),
+  tasks: () => request<{ tasks: NoteTask[] }>('/api/tasks'),
+  noteShare: (id: string) => request<{ share: NoteShare | null }>(`/api/notes/${id}/share`),
+  createNoteShare: (id: string, expiresInHours: number) =>
+    request<{ share: NoteShare; url: string }>(`/api/notes/${id}/share`, 'POST', { expiresInHours }),
+  revokeNoteShare: (id: string) => request<{ ok: true }>(`/api/notes/${id}/share`, 'DELETE', {}),
+  sharedNote: (shareToken: string) =>
+    request<{ note: SharedNote }>(`/api/public/shares/${shareToken}`),
   sync: (after: number, signal?: AbortSignal) =>
     request<{ changes: SyncChange[]; cursor: number; hasMore: boolean }>(`/api/sync?after=${after}&limit=200`, 'GET', undefined, signal),
   integrationTokens: () => request<{ tokens: IntegrationToken[] }>('/api/integrations/tokens'),

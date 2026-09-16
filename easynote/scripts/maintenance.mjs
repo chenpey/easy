@@ -15,8 +15,8 @@ const wrangler = fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js
 const isoName = () => new Date().toISOString().replace(/[:.]/g, '-');
 const sqlString = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const applicationTables = [
-  'users', 'sessions', 'integration_tokens', 'login_attempts', 'notes',
-  'note_versions', 'note_changes', 'images', 'image_refs', 'purged_notes',
+  'users', 'sessions', 'integration_tokens', 'login_attempts', 'account_attempts', 'app_state',
+  'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
 ];
 
 async function migrationsSha256() {
@@ -399,40 +399,48 @@ async function resetPassword(options) {
   const config = await configFor(options);
   const output = runWrangler([
     'd1', 'execute', 'DB', ...modeArgs(options),
-    '--command', 'SELECT id,username FROM users ORDER BY created_at LIMIT 2;',
+    '--command', 'SELECT id,username,role FROM users WHERE deletion_requested_at IS NULL ORDER BY created_at,id;',
     '--config', config.configPath, '--json',
   ], true);
   const users = parseWranglerJson(output).flatMap((entry) => entry.results ?? []);
-  if (users.length !== 1 || typeof users[0].id !== 'string' || typeof users[0].username !== 'string') {
-    fail('Password recovery requires exactly one initialized owner account.');
+  if (!users.length || users.some((user) => typeof user.id !== 'string' || typeof user.username !== 'string')) {
+    fail('Password recovery requires at least one initialized account.');
   }
   const io = terminalReader();
   try {
+    let user = users[0];
+    if (users.length > 1) {
+      process.stdout.write(`Accounts: ${users.map((entry) => entry.username).join(', ')}\n`);
+      const username = (await io.ask('Username to reset: ')).toLowerCase();
+      user = users.find((entry) => entry.username === username);
+      if (!user) fail('Account not found.');
+    }
     const password = await io.ask('New password (12-128 characters, hidden): ', true);
     if (password.length < 12 || password.length > 128) fail('Password must be 12-128 characters.');
     if (password !== await io.ask('Confirm password (hidden): ', true)) fail('Passwords do not match.');
-    const confirmation = await io.ask(`Type reset ${users[0].username} to continue: `);
-    if (confirmation !== `reset ${users[0].username}`) fail('Password reset cancelled.');
+    const confirmation = await io.ask(`Type reset ${user.username} to continue: `);
+    if (confirmation !== `reset ${user.username}`) fail('Password reset cancelled.');
     const salt = randomBytes(32).toString('hex');
     const key = pbkdf2Sync(password, Buffer.from(salt, 'hex'), 100000, 32, 'sha256');
     const proof = createHmac('sha256', key).update('easynote/password/v1').digest('hex');
     const verifier = JSON.stringify({ salt, proof });
-    const owner = JSON.stringify({ username: users[0].username, verifier: { salt, proof } });
+    const owner = JSON.stringify({ username: user.username, verifier: { salt, proof } });
     const sqlPath = resolve(`.wrangler/reset-password-${process.pid}.sql`);
     await mkdir(dirname(sqlPath), { recursive: true });
     try {
       await writeFile(sqlPath, [
-        `UPDATE users SET password_verifier=${sqlString(verifier)} WHERE id=${sqlString(users[0].id)};`,
-        `DELETE FROM sessions WHERE user_id=${sqlString(users[0].id)};`,
-        `UPDATE integration_tokens SET revoked_at=${Date.now()} WHERE user_id=${sqlString(users[0].id)} AND revoked_at IS NULL;`,
+        `UPDATE users SET password_verifier=${sqlString(verifier)},recovery_code_hash=NULL,recovery_code_created_at=NULL,updated_at=${Date.now()} WHERE id=${sqlString(user.id)};`,
+        `DELETE FROM sessions WHERE user_id=${sqlString(user.id)};`,
+        `UPDATE integration_tokens SET revoked_at=${Date.now()} WHERE user_id=${sqlString(user.id)} AND revoked_at IS NULL;`,
       ].join('\n'), { mode: 0o600 });
       runWrangler(['d1', 'execute', 'DB', ...modeArgs(options), '--file', sqlPath, '--config', config.configPath, '-y']);
     } finally {
       await rm(sqlPath, { force: true });
     }
-    if (options.mode === 'remote') {
+    const initialAccount = user.id === users[0].id;
+    if (options.mode === 'remote' && initialAccount) {
       putSecret(config.configPath, owner);
-    } else {
+    } else if (options.mode === 'local' && initialAccount) {
       const localPath = resolve('.dev.vars');
       const existing = existsSync(localPath) ? await readFile(localPath, 'utf8') : '';
       const line = `INITIAL_OWNER='${owner}'`;

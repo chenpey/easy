@@ -233,7 +233,9 @@ test('import duplicate checks use exact content and deduplicate blank notes', as
   await create({ title: '原始标题', content: '完全相同的正文', tags: [] });
   const duplicate = await request('/api/notes/duplicate', 'POST', { title: '另一个标题', content: '完全相同的正文' });
   assert.equal(duplicate.status, 200);
-  assert.equal((await duplicate.json() as any).duplicate, true);
+  const duplicateBody = await duplicate.json() as any;
+  assert.equal(duplicateBody.duplicate, true);
+  assert.match(duplicateBody.noteId, /^[0-9a-f-]{36}$/);
   assert.equal((await (await request('/api/notes/duplicate', 'POST', {
     title: '原始标题', content: '不同正文',
   })).json() as any).duplicate, false);
@@ -378,7 +380,9 @@ test('private images validate media type, have no public cache, and survive hist
 
 test('another account cannot read, edit or reference private notes and images', async () => {
   const otherId = randomUUID(), otherToken = 'c'.repeat(64);
-  await instance.db.prepare('INSERT INTO users VALUES(?,?,?,?)').bind(otherId, 'other', '{}', Date.now()).run();
+  await instance.db.prepare(`INSERT INTO users
+    (id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    VALUES(?,?,?,?,'user',1,?,?)`).bind(otherId, 'other', '{}', Date.now(), Date.now(), Date.now()).run();
   await instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(otherToken), otherId, testCsrf, Date.now() + 60000).run();
   const note = await create();
   const headers = { Cookie: `__Host-easynote=${otherToken}` };
@@ -400,8 +404,11 @@ test('password changes revoke other sessions and logout-all revokes the current 
   const csrf = '3'.repeat(64);
   const originalPassword = 'Original-Test-Password-938!';
   const newPassword = 'Updated-Test-Password-482!';
-  await instance.db.prepare('INSERT INTO users VALUES(?,?,?,?)')
-    .bind(userId, `account-${userId.slice(0, 8)}`, JSON.stringify(await passwordVerifier(originalPassword)), Date.now()).run();
+  await instance.db.prepare(`INSERT INTO users
+    (id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    VALUES(?,?,?,?,'user',1,?,?)`)
+    .bind(userId, `account-${userId.slice(0, 8)}`, JSON.stringify(await passwordVerifier(originalPassword)),
+      Date.now(), Date.now(), Date.now()).run();
   await instance.db.batch([
     instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(firstToken), userId, csrf, Date.now() + 60_000),
     instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(secondToken), userId, csrf, Date.now() + 60_000),
@@ -432,6 +439,107 @@ test('password changes revoke other sessions and logout-all revokes the current 
   assert.equal(loggedOut.status, 200, await loggedOut.clone().text());
   const currentSession = await (await request('/api/session', 'GET', undefined, accountHeaders)).json() as any;
   assert.equal(currentSession.user, null);
+});
+
+test('administrators manage isolated tenant accounts and registration approval', async () => {
+  const username = `tenant-${randomUUID().slice(0, 8)}`;
+  const password = 'Tenant-Test-Password-482!';
+  const created = await request('/api/admin/users', 'POST', { username, password, role: 'user' });
+  assert.equal(created.status, 201, await created.clone().text());
+  const account = (await created.json() as any).user;
+  assert.equal(account.role, 'user');
+  assert.equal(account.enabled, true);
+
+  const login = await request('/api/login', 'POST', { username, password });
+  assert.equal(login.status, 200, await login.clone().text());
+  const loginBody = await login.json() as any;
+  assert.equal(loginBody.user.role, 'user');
+  const accountCookie = login.headers.get('Set-Cookie')!.split(';')[0];
+  const tenantHeaders = { Cookie: accountCookie, 'X-CSRF-Token': loginBody.csrf };
+  const privateNote = await create({ title: `管理员私有-${randomUUID().slice(0, 6)}` });
+  assert.equal((await request(`/api/notes/${privateNote.id}`, 'GET', undefined, tenantHeaders)).status, 404);
+  const tenantNoteId = randomUUID();
+  assert.equal((await request(`/api/notes/${tenantNoteId}`, 'POST', {
+    ...base, title: '租户独立笔记', revision: 0, operationId: randomUUID(),
+  }, tenantHeaders)).status, 201);
+  assert.equal((await request(`/api/notes/${tenantNoteId}`)).status, 404);
+  assert.equal((await request('/api/admin/users', 'GET', undefined, tenantHeaders)).status, 403);
+
+  const disabled = await request(`/api/admin/users/${account.id}`, 'PATCH', { enabled: false });
+  assert.equal(disabled.status, 200, await disabled.clone().text());
+  assert.equal((await request('/api/session', 'GET', undefined, tenantHeaders)).status, 200);
+  assert.equal((await (await request('/api/session', 'GET', undefined, tenantHeaders)).json() as any).user, null);
+  assert.equal((await request('/api/login', 'POST', { username, password })).status, 401);
+
+  assert.equal((await request('/api/admin/settings/registration', 'PATCH', { enabled: true })).status, 200);
+  const pendingName = `pending-${randomUUID().slice(0, 8)}`;
+  const pendingPassword = 'Pending-Test-Password-592!';
+  const registration = await request('/api/register', 'POST', {
+    username: pendingName, password: pendingPassword,
+  }, { Cookie: '', 'X-CSRF-Token': '' });
+  assert.equal(registration.status, 201, await registration.clone().text());
+  const recoveryCode = (await registration.json() as any).recoveryCode;
+  assert.match(recoveryCode, /^(?:[a-f0-9]{8}-){7}[a-f0-9]{8}$/);
+  assert.equal((await request('/api/login', 'POST', { username: pendingName, password: pendingPassword })).status, 401);
+  const users = (await (await request('/api/admin/users')).json() as any).users;
+  const pending = users.find((item: any) => item.username === pendingName);
+  assert.equal(pending.pendingApproval, true);
+  assert.equal((await request(`/api/admin/users/${pending.id}`, 'PATCH', { enabled: true })).status, 200);
+  assert.equal((await request('/api/login', 'POST', { username: pendingName, password: pendingPassword })).status, 200);
+
+  const recoveredPassword = 'Recovered-Test-Password-593!';
+  assert.equal((await request('/api/account/reset-password', 'POST', {
+    username: pendingName, recoveryCode, newPassword: recoveredPassword,
+  }, { Cookie: '', 'X-CSRF-Token': '' })).status, 200);
+  assert.equal((await request('/api/login', 'POST', { username: pendingName, password: pendingPassword })).status, 401);
+  const recoveredLogin = await request('/api/login', 'POST', { username: pendingName, password: recoveredPassword });
+  assert.equal(recoveredLogin.status, 200);
+  const recoveredSession = await recoveredLogin.json() as any;
+  const recoveredHeaders = {
+    Cookie: recoveredLogin.headers.get('Set-Cookie')!.split(';')[0],
+    'X-CSRF-Token': recoveredSession.csrf,
+  };
+  assert.equal((await request('/api/account', 'DELETE', {
+    username: pendingName, currentPassword: recoveredPassword,
+  }, recoveredHeaders)).status, 202);
+  await cleanup({ DB: instance.db, IMAGES: instance.bucket, IMAGE_GRACE_HOURS: '24' } as any);
+  assert.equal(await instance.db.prepare('SELECT id FROM users WHERE id=?').bind(pending.id).first(), null);
+  assert.equal((await request('/api/admin/settings/registration', 'PATCH', { enabled: false })).status, 200);
+});
+
+test('task center aggregates unfinished tasks with source positions', async () => {
+  const first = await create({
+    title: '任务来源',
+    content: ['- [ ] 第一项', '- [x] 已完成', '```md', '- [ ] 代码示例', '```', '- [] 简写项'].join('\n'),
+  });
+  const archived = await create({ title: '归档任务', content: '- [ ] 仍需处理', archived: true });
+  const result = await request('/api/tasks');
+  assert.equal(result.status, 200);
+  const tasks = (await result.json() as any).tasks.filter((item: any) => [first.id, archived.id].includes(item.noteId));
+  const firstTasks = tasks.filter((item: any) => item.noteId === first.id);
+  assert.deepEqual(firstTasks.map((item: any) => item.text), ['第一项', '简写项']);
+  assert.deepEqual(firstTasks.map((item: any) => item.line), [1, 6]);
+  assert.equal(firstTasks[1].offset, first.content.lastIndexOf('- []'));
+  assert.equal(tasks.find((item: any) => item.noteId === archived.id).archived, true);
+});
+
+test('read-only note shares expire, revoke and remain scoped to current note files', async () => {
+  const note = await create({ title: '公开只读笔记', content: '仅可阅读' });
+  const created = await request(`/api/notes/${note.id}/share`, 'POST', { expiresInHours: 24 });
+  assert.equal(created.status, 201, await created.clone().text());
+  const share = await created.json() as any;
+  assert.match(share.url, /^https:\/\/easynote\.example\.test\/shared\/[a-f0-9]{64}$/);
+  const rawToken = share.url.split('/').at(-1);
+  const publicResponse = await request(`/api/public/shares/${rawToken}`, 'GET', undefined, {
+    Cookie: '', 'X-CSRF-Token': '',
+  });
+  assert.equal(publicResponse.status, 200);
+  assert.deepEqual((await publicResponse.json() as any).note.title, '公开只读笔记');
+  assert.equal(publicResponse.headers.get('Cache-Control'), 'no-store');
+  assert.equal((await request(`/api/notes/${note.id}/share`, 'DELETE', {})).status, 200);
+  assert.equal((await request(`/api/public/shares/${rawToken}`, 'GET', undefined, {
+    Cookie: '', 'X-CSRF-Token': '',
+  })).status, 404);
 });
 
 test('incremental sync emits current notes and purge tombstones', async () => {

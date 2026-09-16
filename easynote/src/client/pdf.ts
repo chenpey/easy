@@ -1,12 +1,40 @@
-const A4_WIDTH_MM = 210;
-const A4_HEIGHT_MM = 297;
-const MARGIN_X_MM = 18;
-const MARGIN_TOP_MM = 16;
-const MARGIN_BOTTOM_MM = 18;
-const CONTENT_WIDTH_MM = A4_WIDTH_MM - MARGIN_X_MM * 2;
-const CONTENT_HEIGHT_MM = A4_HEIGHT_MM - MARGIN_TOP_MM - MARGIN_BOTTOM_MM;
-const CANVAS_SCALE = 1.5;
-const MAX_PAGES = 200;
+import type {
+  Content,
+  PageOrientation,
+  PredefinedPageSize,
+  TDocumentDefinitions,
+  TFontDictionary,
+} from 'pdfmake/interfaces';
+
+const POINTS_PER_MM = 72 / 25.4;
+const PAGE_WIDTHS_MM: Record<PdfPageSize, number> = {
+  A4: 210,
+  LETTER: 215.9,
+};
+const PAGE_HEIGHTS_MM: Record<PdfPageSize, number> = {
+  A4: 297,
+  LETTER: 279.4,
+};
+const PAGE_MARGIN_MM = 18;
+const PDF_FONT_PATHS = [
+  'fonts/NotoSansSC-Regular.otf',
+  'fonts/NotoSansSC-Bold.otf',
+] as const;
+
+export type PdfPageSize = 'A4' | 'LETTER';
+export type PdfOrientation = PageOrientation;
+
+export interface PdfExportOptions {
+  pageSize: PdfPageSize;
+  orientation: PdfOrientation;
+  scale: number;
+}
+
+export const defaultPdfOptions: PdfExportOptions = {
+  pageSize: 'A4',
+  orientation: 'portrait',
+  scale: 100,
+};
 
 export function pdfFilename(title: string) {
   const safe = title.trim()
@@ -16,126 +44,292 @@ export function pdfFilename(title: string) {
   return `${safe || '未命名笔记'}.pdf`;
 }
 
-function pageSegments(source: HTMLElement, pageHeight: number) {
-  const totalHeight = Math.ceil(source.scrollHeight);
-  const sourceTop = source.getBoundingClientRect().top;
-  const article = source.querySelector('.markdown');
-  const blocks = [
-    ...source.querySelectorAll<HTMLElement>(':scope > header'),
-    ...(article ? [...article.children] as HTMLElement[] : []),
-  ];
-  const metrics = blocks.map((block) => {
-    const rect = block.getBoundingClientRect();
-    const margin = Number.parseFloat(getComputedStyle(block).marginBottom) || 0;
-    return {
-      top: Math.floor(rect.top - sourceTop),
-      bottom: Math.ceil(rect.bottom - sourceTop + margin),
-      height: Math.ceil(rect.height + margin),
-    };
-  }).filter(({ bottom }) => bottom > 0);
+function pdfResourceUrl(path: string) {
+  return new URL(path, new URL(import.meta.env.BASE_URL, document.baseURI)).href;
+}
 
-  const segments: Array<{ offset: number; height: number }> = [];
-  let offset = 0;
-  while (offset < totalHeight) {
-    const target = Math.min(offset + pageHeight, totalHeight);
-    let end = target;
-    if (target < totalHeight) {
-      const crossing = metrics.find(({ top, bottom, height }) =>
-        top > offset + 20 && top < target - 8 && bottom > target && height <= pageHeight);
-      if (crossing) {
-        end = crossing.top;
-      } else {
-        const minimum = offset + pageHeight * .55;
-        const safe = metrics.map(({ bottom }) => bottom)
-          .filter((value) => value >= minimum && value <= target - 8).at(-1);
-        if (safe) end = safe;
-      }
-    }
-    if (totalHeight - end < 48) end = totalHeight;
-    segments.push({ offset, height: Math.max(1, end - offset) });
-    offset = end;
-    if (segments.length > MAX_PAGES) throw new Error(`PDF 超过 ${MAX_PAGES} 页，无法在移动设备上生成。`);
+function blobDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error('图片读取失败。'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function canvasPng(image: HTMLImageElement): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('图片转换失败。');
+  context.drawImage(image, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+async function imageDataUrl(image: HTMLImageElement): Promise<string> {
+  if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+    throw new Error(`图片无法写入 PDF：${image.alt || '未命名图片'}`);
   }
-  return segments;
+  const source = image.currentSrc || image.src;
+  if (!source) throw new Error(`图片无法写入 PDF：${image.alt || '未命名图片'}`);
+  const response = await fetch(source);
+  if (!response.ok) throw new Error(`图片无法写入 PDF：${image.alt || '未命名图片'}`);
+  const blob = await response.blob();
+  if (blob.type === 'image/png' || blob.type === 'image/jpeg') return blobDataUrl(blob);
+  return canvasPng(image);
 }
 
-async function waitForImages(root: HTMLElement) {
-  await Promise.all([...root.querySelectorAll<HTMLImageElement>('img')].map(async (image) => {
-    if (image.complete && image.naturalWidth > 0) return;
-    try { await image.decode(); } catch { /* Checked below for a useful error. */ }
-    if (!image.complete || image.naturalWidth === 0) throw new Error(`图片无法写入 PDF：${image.alt || '未命名图片'}`);
-  }));
+function printableDimensions(options: PdfExportOptions) {
+  const portraitWidth = PAGE_WIDTHS_MM[options.pageSize];
+  const portraitHeight = PAGE_HEIGHTS_MM[options.pageSize];
+  const width = options.orientation === 'portrait' ? portraitWidth : portraitHeight;
+  const height = options.orientation === 'portrait' ? portraitHeight : portraitWidth;
+  return {
+    width: (width - PAGE_MARGIN_MM * 2) * POINTS_PER_MM,
+    height: (height - PAGE_MARGIN_MM * 2) * POINTS_PER_MM,
+  };
 }
 
-async function captureSegment(source: HTMLElement, offset: number, height: number, width: number) {
-  const viewport = document.createElement('div');
-  const content = source.cloneNode(true) as HTMLElement;
-  viewport.className = 'pdf-capture-page';
-  Object.assign(viewport.style, {
-    position: 'fixed',
-    left: '-10000px',
-    top: '0',
-    width: `${width}px`,
-    height: `${height}px`,
-    overflow: 'hidden',
-    background: '#ffffff',
-    zIndex: '-10000',
-  });
-  content.classList.remove('pdf-rendering');
-  content.classList.add('pdf-capture-content');
-  content.removeAttribute('aria-hidden');
-  Object.assign(content.style, {
-    display: 'block',
-    position: 'absolute',
-    left: '0',
-    top: `${-offset}px`,
-    width: `${width}px`,
-  });
-  viewport.appendChild(content);
-  document.body.appendChild(viewport);
+async function svgPngDataUrl(svg: SVGSVGElement): Promise<string> {
+  const source = svg.cloneNode(true) as SVGSVGElement;
+  source.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  const width = svg.viewBox.baseVal.width || svg.getBoundingClientRect().width;
+  const height = svg.viewBox.baseVal.height || svg.getBoundingClientRect().height;
+  if (width <= 0 || height <= 0) throw new Error('Mermaid 图表尺寸无效。');
+  const scale = Math.min(2.5, 2400 / width, 2400 / height);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.ceil(width * scale));
+  canvas.height = Math.max(1, Math.ceil(height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Mermaid 图表转换失败。');
+  const url = URL.createObjectURL(new Blob(
+    [new XMLSerializer().serializeToString(source)],
+    { type: 'image/svg+xml;charset=utf-8' },
+  ));
   try {
-    await waitForImages(content);
-    const { default: html2canvas } = await import('html2canvas');
-    return await html2canvas(viewport, {
-      backgroundColor: '#ffffff',
-      scale: CANVAS_SCALE,
-      width: Math.ceil(width),
-      height: Math.ceil(height),
-      windowWidth: Math.ceil(width),
-      windowHeight: Math.ceil(height),
-      scrollX: 0,
-      scrollY: 0,
-      imageTimeout: 15_000,
-      logging: false,
-      useCORS: false,
-    });
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/png');
   } finally {
-    viewport.remove();
-  }
-}
-
-export async function createPdfFile(source: HTMLElement, title: string) {
-  await document.fonts?.ready;
-  const width = source.getBoundingClientRect().width;
-  if (!Number.isFinite(width) || width <= 0) throw new Error('PDF 页面宽度无效。');
-  const pageHeight = width * CONTENT_HEIGHT_MM / CONTENT_WIDTH_MM;
-  const segments = pageSegments(source, pageHeight);
-  const { jsPDF } = await import('jspdf');
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
-  pdf.setProperties({ title: title.trim() || '未命名笔记', creator: 'EasyNote' });
-
-  for (const [index, segment] of segments.entries()) {
-    const canvas = await captureSegment(source, segment.offset, segment.height, width);
-    if (index > 0) pdf.addPage('a4', 'portrait');
-    const imageHeight = segment.height * CONTENT_WIDTH_MM / width;
-    pdf.setFillColor(255, 255, 255);
-    pdf.rect(0, 0, A4_WIDTH_MM, A4_HEIGHT_MM, 'F');
-    pdf.addImage(canvas, 'JPEG', MARGIN_X_MM, MARGIN_TOP_MM, CONTENT_WIDTH_MM, imageHeight, undefined, 'FAST');
+    URL.revokeObjectURL(url);
     canvas.width = 1;
     canvas.height = 1;
   }
+}
 
-  return new File([pdf.output('blob')], pdfFilename(title), { type: 'application/pdf' });
+async function replaceDiagrams(source: HTMLElement, target: HTMLElement, printable: { width: number; height: number }) {
+  const sourceDiagrams = [...source.querySelectorAll<SVGSVGElement>('.mermaid-diagram svg')];
+  const targetDiagrams = [...target.querySelectorAll<SVGSVGElement>('.mermaid-diagram svg')];
+  await Promise.all(targetDiagrams.map(async (svg, index) => {
+    const original = sourceDiagrams[index];
+    if (!original) throw new Error('Mermaid 图表尚未准备完成。');
+    const image = document.createElement('img');
+    image.src = await svgPngDataUrl(original);
+    image.alt = 'Mermaid 图表';
+    image.dataset.pdfmake = JSON.stringify({
+      fit: [
+        Math.round(printable.width),
+        Math.round(printable.height * .72),
+      ],
+    });
+    svg.closest('.mermaid-diagram')?.replaceWith(image);
+  }));
+}
+
+async function exportHtml(source: HTMLElement, options: PdfExportOptions): Promise<string> {
+  const article = source.querySelector<HTMLElement>('.markdown');
+  if (!article) throw new Error('PDF 正文尚未准备完成。');
+  const clone = article.cloneNode(true) as HTMLElement;
+  const sourceImages = [...article.querySelectorAll<HTMLImageElement>('img')];
+  const clonedImages = [...clone.querySelectorAll<HTMLImageElement>('img')];
+  const printable = printableDimensions(options);
+
+  await Promise.all(clonedImages.map(async (image, index) => {
+    const original = sourceImages[index];
+    if (!original) throw new Error(`图片无法写入 PDF：${image.alt || '未命名图片'}`);
+    image.src = await imageDataUrl(original);
+    image.removeAttribute('loading');
+    image.removeAttribute('width');
+    image.removeAttribute('height');
+    image.dataset.pdfmake = JSON.stringify({
+      fit: [
+        Math.round(printable.width),
+        Math.round(printable.height * .72),
+      ],
+    });
+  }));
+
+  clone.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((checkbox) => {
+    checkbox.replaceWith(document.createTextNode(checkbox.checked ? '☒ ' : '☐ '));
+  });
+  clone.querySelectorAll('button').forEach((button) => button.remove());
+  clone.querySelectorAll<HTMLAnchorElement>('a').forEach((link) => {
+    if (link.dataset.noteId || link.dataset.privateFile || link.dataset.footnoteBackref) {
+      link.removeAttribute('href');
+    }
+  });
+  clone.querySelectorAll<HTMLTableElement>('table').forEach((table) => {
+    const columns = Math.max(1, ...[...table.rows].map((row) =>
+      [...row.cells].reduce((count, cell) => count + Math.max(1, cell.colSpan), 0)));
+    table.dataset.pdfmake = JSON.stringify({
+      widths: Array.from({ length: columns }, () => '*'),
+      headerRows: table.tHead?.rows.length ?? 0,
+    });
+  });
+  await replaceDiagrams(article, clone, printable);
+  clone.querySelectorAll<HTMLElement>('pre').forEach((pre) => {
+    pre.style.backgroundColor = '#f5f6f7';
+    pre.style.border = '1px solid #d7d9dc';
+    pre.style.margin = '6px 0 12px';
+  });
+  clone.querySelectorAll<HTMLElement>('blockquote').forEach((quote) => {
+    quote.style.color = '#5d6268';
+    quote.style.margin = '6px 0 12px 12px';
+  });
+  clone.querySelectorAll<HTMLElement>('mark').forEach((mark) => {
+    mark.style.backgroundColor = '#fff2a8';
+  });
+
+  return clone.innerHTML;
+}
+
+function getPdfBlob(definition: TDocumentDefinitions, fonts: TFontDictionary): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    void import('pdfmake/build/pdfmake').then((pdfMake) => {
+      try {
+        pdfMake.createPdf(definition, undefined, fonts).getBlob(resolve);
+      } catch (error) {
+        reject(error);
+      }
+    }, reject);
+  });
+}
+
+function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error('PDF 预览生成失败。')),
+      'image/jpeg',
+      .9,
+    );
+  });
+}
+
+export async function renderPdfPreviewPages(file: File): Promise<Blob[]> {
+  const [{ getDocument, GlobalWorkerOptions }, { default: workerUrl }] = await Promise.all([
+    import('pdfjs-dist'),
+    import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+  ]);
+  GlobalWorkerOptions.workerSrc = workerUrl;
+  const loadingTask = getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
+  const document = await loadingTask.promise;
+  const pages: Blob[] = [];
+  try {
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+      const page = await document.getPage(pageNumber);
+      const original = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: Math.min(1.5, 760 / original.width) });
+      const canvas = window.document.createElement('canvas');
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('PDF 预览生成失败。');
+      await page.render({ canvas, canvasContext: context, viewport }).promise;
+      pages.push(await canvasBlob(canvas));
+      canvas.width = 1;
+      canvas.height = 1;
+      page.cleanup();
+    }
+    return pages;
+  } finally {
+    await document.destroy();
+  }
+}
+
+export async function preparePdfExport() {
+  const [, , , { default: workerUrl }] = await Promise.all([
+    import('pdfmake/build/pdfmake'),
+    import('html-to-pdfmake'),
+    import('pdfjs-dist'),
+    import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+  ]);
+  await Promise.all([...PDF_FONT_PATHS.map(pdfResourceUrl), workerUrl].map(async (url) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('PDF 离线资源下载失败。');
+    await response.arrayBuffer();
+  }));
+}
+
+export async function createPdfFile(
+  source: HTMLElement,
+  filename: string,
+  title: string,
+  options: PdfExportOptions,
+): Promise<File> {
+  const scale = Math.min(125, Math.max(75, options.scale)) / 100;
+  const html = await exportHtml(source, options);
+  const { default: htmlToPdfmake } = await import('html-to-pdfmake');
+  const content = htmlToPdfmake(html, {
+    window,
+    tableAutoSize: false,
+    removeExtraBlanks: true,
+    defaultStyles: {
+      h1: { fontSize: 21 * scale, bold: true, margin: [0, 14, 0, 8] },
+      h2: { fontSize: 17 * scale, bold: true, margin: [0, 12, 0, 7] },
+      h3: { fontSize: 14 * scale, bold: true, margin: [0, 10, 0, 6] },
+      h4: { fontSize: 12 * scale, bold: true, margin: [0, 8, 0, 5] },
+      h5: { fontSize: 11 * scale, bold: true, margin: [0, 7, 0, 4] },
+      h6: { fontSize: 10 * scale, bold: true, margin: [0, 6, 0, 4] },
+      p: { margin: [0, 0, 0, 9 * scale] },
+      ul: { margin: [8, 0, 0, 7 * scale] },
+      ol: { margin: [8, 0, 0, 7 * scale] },
+      pre: { fontSize: 9 * scale, margin: [0, 5, 0, 10] },
+      code: { fontSize: 9 * scale, background: '#f5f6f7' },
+      a: { color: '#2145a5', decoration: 'underline' },
+      table: { margin: [0, 5, 0, 12] },
+      th: { bold: true, fillColor: '#f0f1f2' },
+      td: { margin: [4, 4, 4, 4] },
+    },
+  }) as Content;
+  const fonts: TFontDictionary = {
+    NotoSansSC: {
+      normal: pdfResourceUrl(PDF_FONT_PATHS[0]),
+      bold: pdfResourceUrl(PDF_FONT_PATHS[1]),
+      italics: pdfResourceUrl(PDF_FONT_PATHS[0]),
+      bolditalics: pdfResourceUrl(PDF_FONT_PATHS[1]),
+    },
+  };
+  const definition: TDocumentDefinitions = {
+    content: html.trim() ? content : { text: '' },
+    pageSize: options.pageSize as PredefinedPageSize,
+    pageOrientation: options.orientation,
+    pageMargins: PAGE_MARGIN_MM * POINTS_PER_MM,
+    defaultStyle: {
+      font: 'NotoSansSC',
+      fontSize: 10.5 * scale,
+      lineHeight: 1.5,
+      color: '#202428',
+    },
+    info: {
+      title: title.trim() || '未命名笔记',
+      creator: 'EasyNote',
+      producer: 'EasyNote',
+    },
+    compress: true,
+  };
+  const blob = await getPdfBlob(definition, fonts);
+  return new File([blob], pdfFilename(filename), { type: 'application/pdf' });
+}
+
+export function isMobilePdfTarget() {
+  const userAgentData = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
+  if (typeof userAgentData.userAgentData?.mobile === 'boolean') return userAgentData.userAgentData.mobile;
+  const platform = (navigator as unknown as { platform?: string }).platform;
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    platform === 'MacIntel' && navigator.maxTouchPoints > 1;
 }
 
 export function downloadPdfFile(file: File) {

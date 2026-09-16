@@ -20,6 +20,11 @@ export interface Env {
   LOGIN_WINDOW_SECONDS: string;
   LOGIN_IP_LIMIT: string;
   LOGIN_GLOBAL_LIMIT: string;
+  ACCOUNT_WINDOW_SECONDS: string;
+  REGISTRATION_IP_LIMIT: string;
+  REGISTRATION_GLOBAL_LIMIT: string;
+  PASSWORD_RESET_IP_LIMIT: string;
+  PASSWORD_RESET_GLOBAL_LIMIT: string;
 }
 
 export class ApiError extends Error {

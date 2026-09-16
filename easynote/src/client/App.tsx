@@ -1,15 +1,25 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, Command, Download, FileText, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
-import type { Note, NoteInput, NoteSummary, Session, Version } from '../shared/types';
+import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ClipboardList, Command, Download, FileText, FolderOpen, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
+import type { Note, NoteInput, NoteSummary, NoteTask, Session, SharedNote, Version } from '../shared/types';
 import { api, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
 import { AccountSecurity } from './AccountSecurity';
 import { AiAccess } from './AiAccess';
 import { Editor, Preview, toggleMarkdownTask, type EditorHandle } from './Editor';
+import { NoteSharing } from './NoteSharing';
+import { UserManagement } from './UserManagement';
 import { clearAccountStorage, forgetCachedSession, loadOfflineSession, cacheSession } from './drafts';
 import { headings, noteLink } from './knowledge';
-import { createPdfFile, downloadPdfFile } from './pdf';
+import {
+  createPdfFile,
+  defaultPdfOptions,
+  downloadPdfFile,
+  isMobilePdfTarget,
+  pdfFilename,
+  renderPdfPreviewPages,
+  type PdfExportOptions,
+} from './pdf';
 import { useNotebook } from './useNotebook';
-import { exportArchive, exportLocalDrafts, importArchive } from './transfer';
+import { exportArchive, exportLocalDrafts, importExternalFiles } from './transfer';
 
 interface InstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -24,13 +34,36 @@ function BrandIcon({ size }: { size: number }) {
   return <img className="brand-icon" src="/easynote-icon.svg" width={size} height={size} alt="" aria-hidden="true" />;
 }
 
-function Modal({ title, children, close }: { title: string; children: ReactNode; close(): void }) {
+function Modal({ title, children, close, className }: { title: string; children: ReactNode; close(): void; className?: string }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => { ref.current?.showModal(); }, []);
-  return <dialog ref={ref} onCancel={(e) => { e.preventDefault(); close(); }} onClick={(e) => { if (e.target === ref.current) close(); }}>
+  return <dialog className={className} ref={ref}
+    onCancel={(e) => { e.preventDefault(); close(); }} onClick={(e) => { if (e.target === ref.current) close(); }}>
     <header className="dialog-header"><h2>{title}</h2><IconButton label="关闭" onClick={close}><X size={18} /></IconButton></header>
     {children}
   </dialog>;
+}
+
+function PdfPagePreview({ pages, progress, error }: { pages: Blob[]; progress: string; error: string }) {
+  const [urls, setUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const next = pages.map((page) => URL.createObjectURL(page));
+    setUrls(next);
+    return () => next.forEach((url) => URL.revokeObjectURL(url));
+  }, [pages]);
+  return <section className="pdf-preview-panel" aria-label="PDF 分页预览" aria-busy={!!progress}>
+    <header><strong>分页预览</strong><span>{pages.length ? `${pages.length} 页` : ''}</span></header>
+    <div className="pdf-preview-pages">
+      {progress || pages.length > 0 && !urls.length
+        ? <div className="pdf-preview-status"><LoaderCircle className="spin" size={18} />{progress || '正在打开分页预览'}</div>
+        : error
+          ? <div className="pdf-preview-error" role="alert">{error}</div>
+          : urls.map((url, index) => <figure key={url}>
+            <img src={url} alt={`PDF 第 ${index + 1} 页`} />
+            <figcaption>{index + 1} / {urls.length}</figcaption>
+          </figure>)}
+    </div>
+  </section>;
 }
 
 function moveButtonFocus(event: ReactKeyboardEvent<HTMLElement>, selector: string) {
@@ -78,10 +111,6 @@ async function waitForPrintReady() {
   throw new Error('PDF 内容准备超时，请检查笔记中的图片或图表后重试。');
 }
 
-function shouldCreatePdfFile() {
-  return navigator.maxTouchPoints > 0 || window.matchMedia('(max-width: 640px), (pointer: coarse)').matches;
-}
-
 function canSharePdf(file: File) {
   try {
     return typeof navigator.share === 'function' &&
@@ -92,11 +121,44 @@ function canSharePdf(file: File) {
   }
 }
 
+function SharedPage({ token }: { token: string }) {
+  const [note, setNote] = useState<SharedNote | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    void api.sharedNote(token).then(({ note: value }) => {
+      setNote(value);
+      document.title = `${value.title || '未命名笔记'} · EasyNote`;
+    }).catch((reason: unknown) => setError(String(reason)));
+  }, [token]);
+  return <main className="shared-page">
+    <header><div className="brand"><BrandIcon size={25} /><span>EasyNote</span></div><span>只读分享</span></header>
+    {error ? <div className="shared-error"><h1>链接不可用</h1><p>分享链接不存在、已撤销或已经过期。</p></div> :
+      !note ? <div className="shared-loading"><LoaderCircle className="spin" size={22} />正在读取笔记…</div> :
+        <article className="shared-document">
+          <h1>{note.title || '未命名笔记'}</h1>
+          <div className="document-meta">
+            <time>更新于 {new Date(note.updatedAt).toLocaleString('zh-CN')}</time>
+            <span>有效至 {new Date(note.expiresAt).toLocaleString('zh-CN')}</span>
+          </div>
+          <Preview content={note.content} onImage={(src) => window.open(src, '_blank', 'noopener,noreferrer')} />
+        </article>}
+  </main>;
+}
+
 export default function App() {
+  const shared = /^\/shared\/([a-f0-9]{64})$/.exec(window.location.pathname);
+  return shared ? <SharedPage token={shared[1]} /> : <PrivateApp />;
+}
+
+function PrivateApp() {
   const [session, updateSession] = useState<Session | null>(null);
   const [bootError, setBootError] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
+  const [confirmation, setConfirmation] = useState('');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [issuedRecoveryCode, setIssuedRecoveryCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const applySession = (value: Session) => {
@@ -190,14 +252,51 @@ export default function App() {
   return <main className="login">
     <form className="login-form" onSubmit={(e) => {
       e.preventDefault(); setBusy(true); setBootError('');
-      void api.login(username, password).then((value) => { applySession(value); setPassword(''); })
-        .catch((error: unknown) => setBootError(String(error))).finally(() => setBusy(false));
+      const action = authMode === 'login'
+        ? api.login(username, password).then((value) => { applySession(value); setPassword(''); })
+        : authMode === 'register'
+          ? password !== confirmation
+            ? Promise.reject(new Error('两次输入的密码不一致。'))
+            : api.register(username, password).then((value) => {
+              setIssuedRecoveryCode(value.recoveryCode);
+              setPassword('');
+              setConfirmation('');
+            })
+          : password !== confirmation
+            ? Promise.reject(new Error('两次输入的新密码不一致。'))
+            : api.resetPassword(username, recoveryCode, password).then(() => {
+              setAuthMode('login');
+              setPassword('');
+              setConfirmation('');
+              setRecoveryCode('');
+              setBootError('密码已重置，请登录。');
+            });
+      void action.catch((error: unknown) => setBootError(String(error))).finally(() => setBusy(false));
     }}>
       <div className="brand login-brand"><BrandIcon size={32} /><h1>EasyNote</h1></div>
-      <div className="login-heading">{session ? session.configured ? '登录笔记' : '等待初始化' : '正在连接'}</div>
+      <div className="login-heading">{authMode === 'register' ? '创建账户' : authMode === 'reset' ? '恢复账户' :
+        session ? session.configured ? '登录笔记' : '等待初始化' : '正在连接'}</div>
+      {issuedRecoveryCode && <div className="recovery-result" role="status">
+        <strong>保存恢复代码</strong>
+        <code>{issuedRecoveryCode}</code>
+        <p>账号需要管理员批准后才能登录，此代码仅显示一次。</p>
+        <button type="button" onClick={() => void navigator.clipboard.writeText(issuedRecoveryCode)}>复制恢复代码</button>
+      </div>}
       <label>用户名<input autoComplete="username" required maxLength={32} value={username} onChange={(e) => setUsername(e.target.value)} /></label>
-      <label>密码<input autoComplete="current-password" type="password" required maxLength={128} value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-      <button className="primary" disabled={busy || !session?.configured}>{busy ? '登录中…' : '登录'}</button>
+      {authMode === 'reset' && <label>恢复代码<input autoComplete="off" required value={recoveryCode} onChange={(e) => setRecoveryCode(e.target.value)} /></label>}
+      <label>{authMode === 'reset' ? '新密码' : '密码'}<input autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+        type="password" required minLength={authMode === 'login' ? undefined : 12} maxLength={128}
+        value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+      {authMode !== 'login' && <label>确认密码<input autoComplete="new-password" type="password" required minLength={12}
+        maxLength={128} value={confirmation} onChange={(e) => setConfirmation(e.target.value)} /></label>}
+      <button className="primary" disabled={busy || !session?.configured || authMode === 'register' && !session.registrationEnabled}>
+        {busy ? '处理中…' : authMode === 'register' ? '提交注册' : authMode === 'reset' ? '重置密码' : '登录'}
+      </button>
+      <div className="login-actions">
+        {authMode !== 'login' ? <button type="button" onClick={() => { setAuthMode('login'); setBootError(''); }}>返回登录</button> :
+          <>{session?.registrationEnabled && <button type="button" onClick={() => { setAuthMode('register'); setIssuedRecoveryCode(''); }}>注册</button>}
+            <button type="button" onClick={() => setAuthMode('reset')}>使用恢复代码</button></>}
+      </div>
       {bootError && <div role="alert" className="error-box"><pre>{bootError}</pre><button type="button" onClick={boot}>重新连接</button></div>}
     </form>
   </main>;
@@ -241,14 +340,24 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const resizeStart = useRef<{ pointerId: number; x: number; width: number } | null>(null);
   const [settings, setSettings] = useState(false);
   const [accountSecurity, setAccountSecurity] = useState(false);
+  const [userManagement, setUserManagement] = useState(false);
+  const [registrationEnabled, setRegistrationEnabled] = useState(session.registrationEnabled);
+  const [taskCenter, setTaskCenter] = useState(false);
+  const [tasks, setTasks] = useState<NoteTask[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [commandPalette, setCommandPalette] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [commandNotes, setCommandNotes] = useState<NoteSummary[]>([]);
   const [shortcutHelp, setShortcutHelp] = useState(false);
   const [printing, setPrinting] = useState(false);
-  const [renderingPdfFile, setRenderingPdfFile] = useState(false);
   const [pdfProgress, setPdfProgress] = useState('');
-  const [readyPdf, setReadyPdf] = useState<File | null>(null);
+  const [pdfExport, setPdfExport] = useState(false);
+  const [pdfName, setPdfName] = useState('');
+  const [pdfOptions, setPdfOptions] = useState<PdfExportOptions>(defaultPdfOptions);
+  const [pdfPreviewFile, setPdfPreviewFile] = useState<File | null>(null);
+  const [pdfPreviewPages, setPdfPreviewPages] = useState<Blob[]>([]);
+  const [pdfPreviewError, setPdfPreviewError] = useState('');
   const [printNote, setPrintNote] = useState<Note | null>(null);
   const [inspector, setInspector] = useState(false);
   const [backlinks, setBacklinks] = useState<NoteSummary[]>([]);
@@ -270,6 +379,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [lightbox, setLightbox] = useState('');
   const [uploading, setUploading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const pdfGeneration = useRef(0);
   const [transfer, setTransfer] = useState('');
   const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
   const [dark, setDark] = useState(() => localStorage.getItem('easynote-theme') === 'dark');
@@ -277,13 +387,15 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [tagText, setTagText] = useState('');
   const editor = useRef<EditorHandle>(null);
   const editorCursor = useRef(0);
-  const pendingEditorOffset = useRef<number | null>(null);
+  const pendingEditorOffset = useRef<{ noteId: string; offset: number } | null>(null);
+  const shareTargetHandled = useRef(false);
   const pendingInsertion = useRef<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const commandList = useRef<HTMLDivElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const importInput = useRef<HTMLInputElement>(null);
+  const importFolderInput = useRef<HTMLInputElement>(null);
   const note = book.note;
   const outline = useMemo(() => headings(note?.content ?? ''), [note?.content]);
   const updateNoteListWidth = (value: number) => {
@@ -324,12 +436,15 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('easynote-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { setTagText(note?.tags.join(', ') ?? ''); }, [note?.id, JSON.stringify(note?.tags)]);
   useEffect(() => {
-    editorCursor.current = 0;
-    pendingEditorOffset.current = null;
+    const pending = pendingEditorOffset.current;
+    editorCursor.current = pending && pending.noteId === note?.id
+      ? pending.offset
+      : 0;
   }, [note?.id]);
   useEffect(() => {
-    if (layout !== 'edit' || pendingEditorOffset.current === null) return;
-    const offset = pendingEditorOffset.current;
+    const pending = pendingEditorOffset.current;
+    if (!pending || layout !== 'edit' || pending.noteId !== note?.id) return;
+    const offset = pending.offset;
     pendingEditorOffset.current = null;
     const frame = requestAnimationFrame(() => editor.current?.goTo(offset));
     return () => cancelAnimationFrame(frame);
@@ -340,6 +455,61 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     return () => clearTimeout(timer);
   }, [notice]);
   const showNotice = (text: string) => setNotice({ id: Date.now(), text });
+  useEffect(() => {
+    if (!pdfExport || !printNote) return;
+    const generation = ++pdfGeneration.current;
+    const timer = window.setTimeout(() => {
+      setPrinting(true);
+      setPdfProgress('正在生成分页预览');
+      setPdfPreviewError('');
+      setPdfPreviewFile(null);
+      setPdfPreviewPages([]);
+      void (async () => {
+        await waitForPrintReady();
+        const source = document.querySelector<HTMLElement>('.print-document[data-printing="true"]');
+        if (!source) throw new Error('PDF 内容尚未准备完成。');
+        const file = await createPdfFile(source, printNote.title, printNote.title, pdfOptions);
+        if (pdfGeneration.current !== generation) return;
+        setPdfProgress('正在渲染分页预览');
+        const pages = await renderPdfPreviewPages(file);
+        if (pdfGeneration.current !== generation) return;
+        setPdfPreviewFile(file);
+        setPdfPreviewPages(pages);
+      })().catch((error: unknown) => {
+        if (pdfGeneration.current === generation) {
+          setPdfPreviewError(String(error).replace(/^Error:\s*/, ''));
+        }
+      }).finally(() => {
+        if (pdfGeneration.current === generation) {
+          setPdfProgress('');
+          setPrinting(false);
+        }
+      });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [pdfExport, printNote, pdfOptions]);
+  useEffect(() => {
+    if (shareTargetHandled.current || book.loading) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('share-target') !== '1') return;
+    shareTargetHandled.current = true;
+    const sharedTitle = (params.get('title') ?? '').trim();
+    const sharedText = (params.get('text') ?? '').trim();
+    const sharedUrl = (params.get('url') ?? '').trim();
+    let fallback = '收件箱';
+    try { if (sharedUrl) fallback = new URL(sharedUrl).hostname || fallback; } catch { /* Keep the inbox title. */ }
+    const content = [sharedText, sharedUrl && !sharedText.includes(sharedUrl) ? sharedUrl : ''].filter(Boolean).join('\n\n');
+    window.history.replaceState(null, '', window.location.pathname);
+    void book.create({
+      title: (sharedTitle || fallback).slice(0, 256),
+      content,
+      tags: ['收件箱'],
+    }).then(() => {
+      setMobileNote(true);
+      setLayout('edit');
+      showNotice('已保存到收件箱');
+    }).catch((error: unknown) => book.setError(String(error)));
+  }, [book.loading]);
   const showShortcutHelp = () => {
     setCommandPalette(false);
     setShortcutHelp(true);
@@ -350,7 +520,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       editor.current?.goTo(offset);
       return;
     }
-    pendingEditorOffset.current = offset;
+    if (note) pendingEditorOffset.current = { noteId: note.id, offset };
     setLayout('edit');
   };
   const showPreview = () => {
@@ -429,6 +599,24 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setCommandPalette(false);
     setLinkPicker(false);
   };
+  const openTaskCenter = async () => {
+    setTaskCenter(true);
+    setTasksLoading(true);
+    try { setTasks(await book.tasks()); }
+    catch (error) { book.setError(String(error)); }
+    finally { setTasksLoading(false); }
+  };
+  const openTask = async (task: NoteTask) => {
+    if (note?.id === task.noteId && layout === 'edit') {
+      setTaskCenter(false);
+      requestAnimationFrame(() => requestAnimationFrame(() => editor.current?.goTo(task.offset)));
+      return;
+    }
+    pendingEditorOffset.current = { noteId: task.noteId, offset: task.offset };
+    setLayout('edit');
+    setTaskCenter(false);
+    await openNote(task.noteId);
+  };
   const openHistory = () => {
     if (!note || note.revision === 0) return;
     void run(async () => {
@@ -438,50 +626,45 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       setChosenVersion(null);
     });
   };
-  const exportCurrentNote = async () => {
+  const exportCurrentNote = () => {
     if (!note || printing) return;
-    const snapshot = { ...note, tags: [...note.tags] };
-    const createFile = shouldCreatePdfFile();
-    const originalTitle = document.title;
-    setReadyPdf(null);
-    setPrintNote(snapshot);
-    setRenderingPdfFile(createFile);
-    setPdfProgress('正在准备 PDF');
-    setPrinting(true);
-    try {
-      await waitForPrintReady();
-      if (createFile) {
-        const source = document.querySelector<HTMLElement>('.print-document[data-printing="true"]');
-        if (!source) throw new Error('PDF 内容尚未准备完成。');
-        const file = await createPdfFile(source, snapshot.title);
-        setReadyPdf(file);
-      } else {
-        document.title = (snapshot.title.trim() || '未命名笔记').replace(/[\\/:*?"<>|]+/g, '-');
-        window.print();
-      }
-    } catch (error) {
-      book.setError(String(error));
-    } finally {
-      document.title = originalTitle;
-      setPdfProgress('');
-      setRenderingPdfFile(false);
-      setPrinting(false);
-    }
+    setPdfName(note.title);
+    setPdfOptions(defaultPdfOptions);
+    setPdfPreviewFile(null);
+    setPdfPreviewPages([]);
+    setPdfPreviewError('');
+    setPrintNote({ ...note, tags: [...note.tags] });
+    setPdfProgress('正在准备分页预览');
+    setPdfExport(true);
   };
-  const saveReadyPdf = async () => {
-    if (!readyPdf) return;
-    if (canSharePdf(readyPdf)) {
+  const closePdfExport = () => {
+    if (printing) return;
+    pdfGeneration.current += 1;
+    setPdfExport(false);
+    setPrintNote(null);
+    setPdfPreviewFile(null);
+    setPdfPreviewPages([]);
+    setPdfPreviewError('');
+    setPdfProgress('');
+  };
+  const confirmPdfExport = async () => {
+    if (!pdfPreviewFile || printing) return;
+    const file = new File([pdfPreviewFile], pdfFilename(pdfName.replace(/\.pdf$/i, '')), {
+      type: pdfPreviewFile.type,
+      lastModified: pdfPreviewFile.lastModified,
+    });
+    if (isMobilePdfTarget() && canSharePdf(file)) {
       try {
-        await navigator.share({ files: [readyPdf], title: readyPdf.name });
-        setReadyPdf(null);
+        await navigator.share({ files: [file], title: file.name });
+        closePdfExport();
         showNotice('PDF 已交给系统保存');
         return;
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return;
       }
     }
-    downloadPdfFile(readyPdf);
-    setReadyPdf(null);
+    downloadPdfFile(file);
+    closePdfExport();
     showNotice('PDF 已下载');
   };
   const beginLinkInsertion = () => {
@@ -553,7 +736,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         void syncNow();
       } else if (key === 'p' && note) {
         event.preventDefault();
-        void exportCurrentNote();
+        exportCurrentNote();
       } else if (key === 'e' && note && !note.deletedAt) {
         event.preventDefault();
         toggleLayout();
@@ -672,6 +855,11 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       action: () => { setCommandPalette(false); setInspector(true); },
     },
     {
+      id: 'tasks', label: '打开任务中心', aliases: ['任务', '待办', 'TODO'], icon: <ClipboardList size={16} />,
+      shortcut: '', disabled: false,
+      action: () => { setCommandPalette(false); void openTaskCenter(); },
+    },
+    {
       id: 'link', label: '插入内部链接', aliases: ['链接'], icon: <Link2 size={16} />,
       shortcut: '', disabled: !note || !!note.deletedAt || !!transfer,
       action: () => {
@@ -683,7 +871,12 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     {
       id: 'pdf', label: '导出当前笔记为 PDF', aliases: ['PDF', '打印', '导出'], icon: <Printer size={16} />,
       shortcut: 'Cmd/Ctrl+P', disabled: !note || printing,
-      action: () => { setCommandPalette(false); void exportCurrentNote(); },
+      action: () => { setCommandPalette(false); exportCurrentNote(); },
+    },
+    {
+      id: 'share', label: '创建只读分享链接', aliases: ['分享', '只读链接'], icon: <Share2 size={16} />,
+      shortcut: '', disabled: !note || note.revision === 0 || !!note.deletedAt || book.pending.some((item) => item.id === note.id),
+      action: () => { setCommandPalette(false); setSharing(true); },
     },
     {
       id: 'settings', label: '打开设置', aliases: ['设置'], icon: <Settings size={16} />,
@@ -710,6 +903,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       <button className="new-note" disabled={!!transfer || book.loading} onClick={() => void createNote()}><Plus size={17} />新建笔记</button>
       <nav aria-label="笔记分类">
         <button className={book.view === 'all' && !book.tag ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={17} />全部笔记</button>
+        <button onClick={() => void openTaskCenter()}><ClipboardList size={17} />任务中心</button>
         <button className={book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={17} />归档笔记</button>
         <button className={book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={17} />回收站</button>
       </nav>
@@ -785,14 +979,16 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         <span className={`save-status ${book.pending.length ? 'pending' : ''}`}><span className="status-dot" />{uploading ? '上传文件中' : syncing ? '正在同步' : note ? book.status : '笔记空间'}</span>
         <div className="toolbar-right">
           {note && <><div className="segmented" aria-label="显示模式"><button title="编辑" aria-label="编辑模式" aria-pressed={layout === 'edit'} onClick={() => editAt(Math.min(editorCursor.current, note.content.length))}><PenLine size={16} /></button><button title="预览" aria-label="预览模式" aria-pressed={layout === 'preview'} onClick={showPreview}><BookOpen size={16} /></button></div>
-            <IconButton label="插入内部链接" disabled={!!note.deletedAt || !!transfer} onClick={beginLinkInsertion}><Link2 size={17} /></IconButton>
-            <IconButton label="大纲与反向链接" aria-pressed={inspector} onClick={() => setInspector((value) => !value)}><ListTree size={17} /></IconButton>
+            <IconButton label="插入内部链接" className="icon-button toolbar-link-action" disabled={!!note.deletedAt || !!transfer} onClick={beginLinkInsertion}><Link2 size={17} /></IconButton>
+            <IconButton label="大纲与反向链接" className="icon-button toolbar-outline-action" aria-pressed={inspector} onClick={() => setInspector((value) => !value)}><ListTree size={17} /></IconButton>
             <IconButton label={wideDocument ? '使用阅读宽度' : '使用宽屏'} className="icon-button document-width-toggle" aria-pressed={wideDocument} onClick={toggleDocumentWidth}>{wideDocument ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</IconButton>
             <IconButton label={syncing ? '正在同步' : '立即同步'} disabled={disabled} onClick={() => void syncNow()}>{syncing ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}</IconButton>
             <IconButton label={note.pinned ? '取消置顶' : '置顶'} disabled={!!note.deletedAt || !!transfer} onClick={() => setNoteFields({ pinned: !note.pinned })}><Pin size={17} fill={note.pinned ? 'currentColor' : 'none'} /></IconButton>
             <IconButton label={note.archived ? '取消归档' : '归档'} disabled={!!note.deletedAt || !!transfer} onClick={() => setNoteFields({ archived: !note.archived })}>{note.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</IconButton>
-            <IconButton label={pdfProgress || '导出当前笔记为 PDF'} className="icon-button print-action" disabled={printing} onClick={() => void exportCurrentNote()}>{printing ? <LoaderCircle className="spin" size={17} /> : <Printer size={17} />}</IconButton>
-            <IconButton label="历史版本" disabled={disabled || note.revision === 0} onClick={openHistory}><History size={17} /></IconButton>
+            <IconButton label="只读分享" className="icon-button toolbar-share-action" disabled={disabled || note.revision === 0 || !!note.deletedAt || book.pending.some((item) => item.id === note.id)}
+              onClick={() => setSharing(true)}><Share2 size={17} /></IconButton>
+            <IconButton label={pdfProgress || '导出当前笔记为 PDF'} className="icon-button print-action" disabled={printing} onClick={exportCurrentNote}>{printing ? <LoaderCircle className="spin" size={17} /> : <Printer size={17} />}</IconButton>
+            <IconButton label="历史版本" className="icon-button toolbar-history-action" disabled={disabled || note.revision === 0} onClick={openHistory}><History size={17} /></IconButton>
             {!note.deletedAt ? <IconButton label="移入回收站" disabled={disabled} onClick={() => setConfirmAction('trash')}><Trash2 size={17} /></IconButton> :
               <IconButton label="恢复笔记" disabled={disabled} onClick={() => setNoteFields({ deletedAt: null })}><RotateCcw size={17} /></IconButton>}
           </>}
@@ -836,7 +1032,10 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           }} /></label>
           <span className="word-count">{note.content.length.toLocaleString()} 字符</span>
           <IconButton label={pdfProgress || '导出当前笔记为 PDF'} className="icon-button mobile-pdf-action" disabled={printing}
-            onClick={() => void exportCurrentNote()}>{printing ? <LoaderCircle className="spin" size={17} /> : <Printer size={17} />}</IconButton>
+            onClick={exportCurrentNote}>{printing ? <LoaderCircle className="spin" size={17} /> : <Printer size={17} />}</IconButton>
+          <IconButton label="只读分享" className="icon-button mobile-share-action"
+            disabled={disabled || note.revision === 0 || !!note.deletedAt || book.pending.some((item) => item.id === note.id)}
+            onClick={() => setSharing(true)}><Share2 size={17} /></IconButton>
           <IconButton label="插入附件" disabled={uploading || !!note.deletedAt || !!transfer || !book.online} onClick={() => {
             pendingInsertion.current = editor.current?.markInsertion() ?? null;
             attachmentInput.current?.click();
@@ -857,7 +1056,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       {installApp && <div className="setting-row"><span>应用</span><button disabled={disabled} onClick={() => void run(installApp)}><Download size={16} />安装 EasyNote</button></div>}
       <div className="setting-row"><span>数据</span><div className="button-group">
         <button disabled={!!transfer || !book.online} onClick={() => void transferAction(() => exportArchive(setTransfer), '备份已下载')}><Download size={16} />导出 ZIP</button>
-        <button disabled={!!transfer || !book.online} onClick={() => importInput.current?.click()}><Upload size={16} />导入</button>
+        <button disabled={!!transfer || !book.online} onClick={() => importInput.current?.click()}><Upload size={16} />导入文件</button>
+        <button disabled={!!transfer || !book.online} onClick={() => importFolderInput.current?.click()}><FolderOpen size={16} />导入目录</button>
         <button disabled={!!transfer || !book.pending.length} onClick={() => {
           setTransfer('正在准备草稿…');
           void exportLocalDrafts(session.user!.id, setTransfer).then((count) => showNotice(`已导出 ${count} 篇本机草稿`))
@@ -865,16 +1065,25 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         }}><Download size={16} />导出草稿</button>
       </div></div>
       <div className="setting-row"><span>账户安全</span><button disabled={disabled || session.offline} onClick={() => { setSettings(false); setAccountSecurity(true); }}><ShieldCheck size={16} />管理</button></div>
+      {session.user!.role === 'admin' && <div className="setting-row"><span>用户与注册</span><button disabled={disabled || session.offline}
+        onClick={() => { setSettings(false); setUserManagement(true); }}><Users size={16} />管理用户</button></div>}
       <AiAccess disabled={disabled || !book.online || !!session.offline} reportError={book.setError} notify={showNotice} />
-      <input hidden ref={importInput} type="file" accept=".zip,.md,.txt" onChange={(e) => {
-        const file = e.target.files?.[0];
-        if (file) void transferAction(() => importArchive(file, session.config, setTransfer), ({ imported, skipped }) =>
+      <input hidden ref={importInput} type="file" accept=".zip,.md,.markdown,.txt" multiple onChange={(e) => {
+        const files = Array.from(e.target.files ?? []);
+        if (files.length) void transferAction(() => importExternalFiles(files, session.config, setTransfer), ({ imported, skipped }) =>
+          imported ? `已导入 ${imported} 篇${skipped ? `，跳过 ${skipped} 篇重复笔记` : '笔记'}` : `未导入：${skipped} 篇笔记已存在`);
+        e.target.value = '';
+      }} />
+      <input hidden ref={importFolderInput} type="file" multiple {...{ webkitdirectory: '' }} onChange={(e) => {
+        const files = Array.from(e.target.files ?? []);
+        if (files.length) void transferAction(() => importExternalFiles(files, session.config, setTransfer), ({ imported, skipped }) =>
           imported ? `已导入 ${imported} 篇${skipped ? `，跳过 ${skipped} 篇重复笔记` : '笔记'}` : `未导入：${skipped} 篇笔记已存在`);
         e.target.value = '';
       }} />
       <details className="import-guide">
         <summary>查看导入格式示例</summary>
         <p>请选择 EasyNote 导出的完整 ZIP，不要解压后逐个选择笔记文件。</p>
+        <p>也可导入 Obsidian 目录、通用 Markdown/TXT ZIP 或多个 Markdown/TXT 文件；本地 Wiki 链接、相对链接和受支持附件会自动转换。</p>
         <pre>{`easynote-YYYY-MM-DD.zip
   manifest.json
   notes/
@@ -909,7 +1118,27 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       })}><LogOut size={16} />退出登录</button></div>
     </Modal>}
     {accountSecurity && <Modal title="账户安全" close={() => setAccountSecurity(false)}>
-      <AccountSecurity disabled={disabled || !!book.pending.length || !book.online || !!session.offline} notify={showNotice} reportError={book.setError} logout={logout} />
+      <AccountSecurity username={session.user!.username} disabled={disabled || !!book.pending.length || !book.online || !!session.offline}
+        notify={showNotice} reportError={book.setError} logout={logout} />
+    </Modal>}
+    {userManagement && <Modal title="用户与注册" close={() => setUserManagement(false)}>
+      <UserManagement currentUserId={session.user!.id} registrationEnabled={registrationEnabled}
+        onRegistrationChange={setRegistrationEnabled}
+        disabled={disabled || !book.online || !!session.offline} notify={showNotice} reportError={book.setError} />
+    </Modal>}
+    {taskCenter && <Modal title="任务中心" close={() => setTaskCenter(false)}>
+      <div className="task-center">
+        {tasksLoading ? <div className="panel-empty">正在汇总待办…</div> : !tasks.length
+          ? <div className="panel-empty">没有未完成的待办事项</div>
+          : tasks.map((task) => <button key={`${task.noteId}:${task.offset}`} onClick={() => void openTask(task)}>
+            <span>{task.text}</span>
+            <small>{task.noteTitle || '未命名笔记'} · 第 {task.line} 行{task.archived ? ' · 已归档' : ''}</small>
+          </button>)}
+      </div>
+    </Modal>}
+    {sharing && note && <Modal title="只读分享" close={() => setSharing(false)}>
+      <NoteSharing noteId={note.id} disabled={disabled || !!note.deletedAt || book.pending.some((item) => item.id === note.id)}
+        notify={showNotice} reportError={book.setError} />
     </Modal>}
     {commandPalette && <Modal title="快速跳转" close={() => setCommandPalette(false)}>
       <label className="command-search"><Search size={16} /><input autoFocus aria-label="快速跳转搜索" value={commandQuery}
@@ -990,28 +1219,51 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         setConfirmAction(null);
       })}>{confirmAction === 'purge-all' ? '全部永久删除' : confirmAction === 'purge' ? '永久删除' : '移入回收站'}</button></div>
     </Modal>}
-    {readyPdf && <Modal title="PDF 已生成" close={() => setReadyPdf(null)}>
-      <div className="pdf-ready">
-        <FileText size={22} />
-        <div><strong>{readyPdf.name}</strong><span>{(readyPdf.size / 1024 / 1024).toFixed(1)} MB</span></div>
-      </div>
-      <div className="dialog-actions">
-        <button onClick={() => setReadyPdf(null)}>取消</button>
-        <button className="primary" onClick={() => void saveReadyPdf()}>
-          {canSharePdf(readyPdf) ? <Share2 size={16} /> : <Download size={16} />}
-          {canSharePdf(readyPdf) ? '保存或分享' : '下载 PDF'}
-        </button>
+    {pdfExport && <Modal title="导出为 PDF" className="pdf-export-dialog" close={closePdfExport}>
+      <div className="pdf-export-layout">
+        <PdfPagePreview pages={pdfPreviewPages} progress={pdfProgress} error={pdfPreviewError} />
+        <div className="pdf-export-sidebar">
+          <div className="pdf-export-form">
+            <label className="single-field"><span>文件名</span><span className="pdf-name-input">
+              <input aria-label="PDF 文件名" maxLength={120} value={pdfName}
+                onChange={(event) => setPdfName(event.target.value)} /><span>.pdf</span>
+            </span></label>
+            <div className="pdf-export-options">
+              <label><span>纸张</span><select aria-label="PDF 纸张" value={pdfOptions.pageSize} disabled={printing}
+                onChange={(event) => setPdfOptions((value) => ({ ...value, pageSize: event.target.value as PdfExportOptions['pageSize'] }))}>
+                <option value="A4">A4</option>
+                <option value="LETTER">Letter</option>
+              </select></label>
+              <label><span>缩放</span><select aria-label="PDF 缩放" value={pdfOptions.scale} disabled={printing}
+                onChange={(event) => setPdfOptions((value) => ({ ...value, scale: Number(event.target.value) }))}>
+                <option value="85">85%</option>
+                <option value="100">100%</option>
+                <option value="115">115%</option>
+              </select></label>
+            </div>
+            <fieldset className="pdf-orientation" disabled={printing}>
+              <legend>方向</legend>
+              <div className="segmented" aria-label="PDF 方向">
+                <button type="button" aria-pressed={pdfOptions.orientation === 'portrait'}
+                  onClick={() => setPdfOptions((value) => ({ ...value, orientation: 'portrait' }))}>纵向</button>
+                <button type="button" aria-pressed={pdfOptions.orientation === 'landscape'}
+                  onClick={() => setPdfOptions((value) => ({ ...value, orientation: 'landscape' }))}>横向</button>
+              </div>
+            </fieldset>
+          </div>
+          <div className="dialog-actions">
+            <button disabled={printing} onClick={closePdfExport}>取消</button>
+            <button className="primary" disabled={printing || !pdfPreviewFile || !pdfName.trim()}
+              onClick={() => void confirmPdfExport()}>
+              {printing ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
+              导出 PDF
+            </button>
+          </div>
+        </div>
       </div>
     </Modal>}
     {lightbox && <Modal title="图片" close={() => setLightbox('')}><img className="lightbox-image" src={lightbox} alt="笔记图片" /></Modal>}
-    {printNote && <section className={`print-document ${renderingPdfFile ? 'pdf-rendering' : ''}`} data-printing={printing ? 'true' : 'false'} aria-hidden="true">
-      <header>
-        <h1>{printNote.title || '未命名笔记'}</h1>
-        <div className="print-meta">
-          <time>更新于 {new Date(printNote.updatedAt).toLocaleString('zh-CN')}</time>
-          {!!printNote.tags.length && <span>{printNote.tags.map((tag) => `#${tag}`).join(' ')}</span>}
-        </div>
-      </header>
+    {printNote && <section className={`print-document ${pdfExport ? 'pdf-rendering' : ''}`} data-printing={pdfExport ? 'true' : 'false'} aria-hidden="true">
       <Preview content={printNote.content} onImage={() => undefined}
         resolveFile={book.offlineLibrary ? book.cachedFile : undefined} dark={false} eagerImages />
     </section>}

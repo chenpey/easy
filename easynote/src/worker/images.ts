@@ -114,8 +114,12 @@ export async function cleanup(env: Env): Promise<void> {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM sessions WHERE expires_at<?').bind(Date.now()),
     env.DB.prepare('DELETE FROM login_attempts WHERE started_at<?').bind(Date.now() - 86400_000),
+    env.DB.prepare('DELETE FROM account_attempts WHERE started_at<?').bind(Date.now() - 86400_000),
+    env.DB.prepare('DELETE FROM note_shares WHERE expires_at<?').bind(Date.now()),
     env.DB.prepare(`DELETE FROM integration_tokens
       WHERE (expires_at IS NOT NULL AND expires_at<?) OR (revoked_at IS NOT NULL AND revoked_at<?)`)
       .bind(Date.now() - 30 * 86400_000, Date.now() - 30 * 86400_000),
+    env.DB.prepare(`DELETE FROM users WHERE deletion_requested_at IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM images WHERE images.user_id=users.id)`),
   ]);
 }

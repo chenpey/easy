@@ -12,6 +12,8 @@ interface TokenRow {
   id: string;
   user_id: string;
   username: string;
+  role: 'admin' | 'user';
+  has_recovery_code: number;
   name: string;
   token_hash: string;
   access: 'read' | 'read-write';
@@ -209,9 +211,11 @@ export async function integrationIdentity(request: Request, env: Env): Promise<I
   if (!match) throw new ApiError(401, 'A valid EasyNote integration token is required.');
   const tokenHash = await digest(match[1]);
   const now = Date.now();
-  const row = await env.DB.prepare(`SELECT t.*,u.username FROM integration_tokens t
+  const row = await env.DB.prepare(`SELECT t.*,u.username,u.role,
+      u.recovery_code_hash IS NOT NULL AS has_recovery_code FROM integration_tokens t
     JOIN users u ON u.id=t.user_id
-    WHERE t.token_hash=? AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>?)`)
+    WHERE t.token_hash=? AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>?)
+      AND u.enabled=1 AND u.deletion_requested_at IS NULL`)
     .bind(tokenHash, now).first<TokenRow>();
   if (!row) throw new ApiError(401, 'The integration token is invalid, expired, or revoked.');
   if (row.last_used_at === null || row.last_used_at < now - 15 * 60_000) {
@@ -220,6 +224,8 @@ export async function integrationIdentity(request: Request, env: Env): Promise<I
   return {
     id: row.user_id,
     username: row.username,
+    role: row.role,
+    hasRecoveryCode: !!row.has_recovery_code,
     csrf: '',
     tokenHash,
     sessionExpiresAt: null,
