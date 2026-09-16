@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { strFromU8, unzipSync } from 'fflate';
-import { testToken, testCsrf } from './runtime';
+import { testToken, testCsrf, testPassword } from './runtime';
 
 const origin = 'http://127.0.0.1:8792';
 const headers = { Origin: origin, 'X-CSRF-Token': testCsrf };
@@ -52,6 +52,8 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
     return urls;
   });
   expect(cachedUrls.some((url) => new URL(url).pathname === '/index.html')).toBe(true);
+  expect(cachedUrls.some((url) => new URL(url).pathname.includes('/assets/html2canvas'))).toBe(true);
+  expect(cachedUrls.some((url) => new URL(url).pathname.includes('/assets/jspdf'))).toBe(true);
   expect(cachedUrls.some((url) => new URL(url).pathname.startsWith('/api/'))).toBe(false);
 
   await page.evaluate(() => {
@@ -74,6 +76,18 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'EasyNote' })).toBeVisible();
   await context.setOffline(false);
+});
+
+test('an external PWA launch restores the session through the same-origin bootstrap request', async ({ page }) => {
+  await page.route('https://launcher.example.test/', (route) => route.fulfill({
+    contentType: 'text/html',
+    body: `<a href="${origin}/">Open EasyNote</a>`,
+  }));
+  await page.goto('https://launcher.example.test/');
+  await page.getByRole('link', { name: 'Open EasyNote' }).click();
+  await expect(page).toHaveURL(`${origin}/`);
+  await expect(page.locator('.account')).toContainText('tester');
+  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeHidden();
 });
 
 test('AI integration tokens can be created once, listed and revoked', async ({ page }) => {
@@ -141,6 +155,90 @@ test('create, autosave, reload, edit Markdown and preview safely', async ({ page
   expect(await page.evaluate(() => localStorage.getItem('easynote-document-width'))).toBe('wide');
   await page.screenshot({ path: 'test-results/desktop.png', fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('footnotes, lazy code highlighting and precise source switching work', async ({ page }) => {
+  const content = [
+    '## 起点',
+    '',
+    '开头段落。',
+    '',
+    '```javascript',
+    'const answer = 42;',
+    '```',
+    '',
+    '## 目标',
+    '',
+    '精准目标段落[^detail]',
+    '',
+    '[^detail]: 脚注正文。',
+  ].join('\n');
+  await page.goto('/');
+  await newNote(page, `阅读增强-${randomUUID().slice(0, 6)}`, content);
+  await page.getByRole('button', { name: '预览模式' }).click();
+
+  const preview = page.locator('.document .markdown');
+  await expect(preview.locator('a[data-footnote-ref="1"]')).toHaveText('[1]');
+  await expect(preview.locator('[data-footnote-id="1"]')).toContainText('脚注正文。');
+  await expect(preview.locator('code[data-code-language="javascript"] .hljs-keyword')).toHaveText('const');
+  await expect(preview.locator('code[data-code-language="javascript"] .hljs-number')).toHaveText('42');
+
+  await preview.locator('p[data-source-line]').filter({ hasText: '精准目标段落' }).dblclick();
+  const editor = page.getByRole('textbox', { name: '笔记正文' });
+  await expect(editor).toBeFocused();
+  await page.keyboard.type('定位：');
+  await expect.poll(() => editor.locator('.cm-line').allTextContents())
+    .toContain('定位：精准目标段落[^detail]');
+
+  await page.keyboard.press('Control+e');
+  await expect(page.getByRole('button', { name: '预览模式' })).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Control+e');
+  await expect(editor).toBeFocused();
+  await page.keyboard.type('继续');
+  await expect.poll(() => editor.locator('.cm-line').allTextContents())
+    .toContain('定位：继续精准目标段落[^detail]');
+});
+
+test('restoring a content version preserves the current pin state', async ({ page }) => {
+  const id = randomUUID();
+  const title = `版本置顶-${id.slice(0, 6)}`;
+  const created = await page.request.post(`${origin}/api/notes/${id}`, {
+    headers,
+    data: {
+      title, content: '旧正文', tags: [], pinned: false, archived: false,
+      deletedAt: null, revision: 0, operationId: randomUUID(),
+    },
+  });
+  expect(created.status()).toBe(201);
+  const updated = await page.request.put(`${origin}/api/notes/${id}`, {
+    headers,
+    data: {
+      title, content: '新正文', tags: [], pinned: false, archived: false,
+      deletedAt: null, revision: 1, operationId: randomUUID(),
+    },
+  });
+  expect(updated.status()).toBe(200);
+  const pinned = await page.request.put(`${origin}/api/notes/${id}`, {
+    headers,
+    data: {
+      title, content: '新正文', tags: [], pinned: true, archived: false,
+      deletedAt: null, revision: 2, operationId: randomUUID(),
+    },
+  });
+  expect(pinned.status()).toBe(200);
+
+  await page.goto('/');
+  await page.getByRole('button').filter({ hasText: title }).click();
+  await expect(page.getByRole('button', { name: '取消置顶' })).toBeVisible();
+  await page.getByRole('button', { name: '历史版本' }).click();
+  const history = page.getByRole('dialog');
+  await expect(history.getByText('修订 3', { exact: false })).toBeHidden();
+  await history.getByRole('button').filter({ hasText: '修订 1' }).click();
+  await history.getByRole('button', { name: '恢复此版本' }).click();
+  await expect.poll(async () => {
+    const response = await page.request.get(`${origin}/api/notes/${id}`);
+    return (await response.json()).note;
+  }).toMatchObject({ content: '旧正文', pinned: true, revision: 4 });
 });
 
 test('Mermaid flowcharts, mindmaps and sanitized HTML blocks render safely', async ({ page }) => {
@@ -372,7 +470,7 @@ test('images render, export includes bytes, and import creates a readable copy',
   expect(path).toBeTruthy();
   const archive = unzipSync(new Uint8Array(await readFile(path!)));
   const manifest = JSON.parse(strFromU8(archive['manifest.json']));
-  expect(manifest.version).toBe(1);
+  expect(manifest.version).toBe(2);
   expect(manifest.notes.find((entry: { title: string }) => entry.title === title)).toMatchObject({
     path: `notes/${title}.md`,
     pinned: false, archived: true, deletedAt: null,
@@ -660,7 +758,9 @@ test('an expired session returns to login without a page reload', async ({ page 
     contentType: 'application/json',
     body: JSON.stringify({ error: { message: 'Please sign in.' } }),
   }));
-  await page.evaluate(() => document.querySelector<HTMLButtonElement>('button[aria-label="同步"]')?.click());
+  const sync = page.getByRole('button', { name: '同步', exact: true });
+  await expect(sync).toBeEnabled();
+  await sync.click();
   await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible();
   await expect(page.getByText('登录已过期，请重新登录。', { exact: true })).toBeVisible();
 });
@@ -689,4 +789,464 @@ test('dark theme persists and the narrow mobile layout has no horizontal overflo
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+});
+
+test('command palette, cursor-position image insertion and private attachments work', async ({ page }) => {
+  const title = `快捷插入-${randomUUID().slice(0, 6)}`;
+  await page.goto('/');
+  await newNote(page, title, '开头\n结尾');
+  const editor = page.getByRole('textbox', { name: '笔记正文' });
+  await editor.press('ArrowLeft');
+  await editor.press('ArrowLeft');
+  const image = await page.locator('.document').screenshot({ type: 'png' });
+  await page.locator('input[type=file][accept^="image"]').setInputFiles({
+    name: '光标图片.png', mimeType: 'image/png', buffer: image,
+  });
+  await expect(page.getByText('图片已插入', { exact: true })).toBeVisible();
+  await expect.poll(async () => {
+    const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
+    return (await (await page.request.get(`/api/notes/${listed.notes[0].id}`)).json()).note.content;
+  }).toMatch(/开头\n!\[光标图片\.png\]\(\/api\/images\/[0-9a-f-]{36}\)\n\n结尾/);
+
+  await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles({
+    name: '资料.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF'),
+  });
+  await expect(page.getByText('附件已插入', { exact: true })).toBeVisible();
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '预览模式' }).click();
+  await expect(page.getByRole('link', { name: '资料.pdf' })).toHaveAttribute('href', /\/api\/files\/[0-9a-f-]{36}$/);
+
+  await page.keyboard.press('Meta+k');
+  const palette = page.getByRole('dialog');
+  await expect(palette.getByRole('heading', { name: '快速跳转' })).toBeVisible();
+  await palette.getByLabel('快速跳转搜索').fill(title);
+  await expect(palette.getByRole('button', { name: title, exact: true })).toBeVisible();
+  await palette.getByRole('button', { name: title, exact: true }).click();
+  await expect(palette).toBeHidden();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(title);
+  await page.keyboard.press('Meta+s');
+  await expect(page.getByRole('status')).toHaveText('已同步，内容为最新');
+});
+
+test('editing shortcuts and keyboard navigation work without pointer input', async ({ page }) => {
+  await page.goto('/');
+  await newNote(page, `键盘操作-${randomUUID().slice(0, 6)}`, '格式文本');
+  const editor = page.getByRole('textbox', { name: '笔记正文' });
+
+  await editor.press('Meta+a');
+  await editor.press('Meta+b');
+  await expect(editor).toContainText('**格式文本**');
+  await editor.press('Meta+b');
+  await expect(editor).toContainText('格式文本');
+  await expect(editor).not.toContainText('**');
+  await editor.press('Meta+a');
+  await editor.press('Meta+i');
+  await expect(editor).toContainText('*格式文本*');
+
+  await editor.press('Meta+Enter');
+  await expect(page.getByRole('button', { name: '预览模式' })).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Meta+Enter');
+  await expect(page.getByRole('button', { name: '编辑模式' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('textbox', { name: '笔记正文' }).press('Meta+/');
+  const shortcuts = page.getByRole('dialog');
+  await expect(shortcuts.getByRole('heading', { name: '快捷键' })).toBeVisible();
+  await expect(shortcuts).toContainText('Cmd/Ctrl+P');
+  await shortcuts.getByRole('button', { name: '关闭' }).click();
+
+  await page.keyboard.press('Meta+k');
+  const palette = page.getByRole('dialog');
+  const commandSearch = palette.getByLabel('快速跳转搜索');
+  await commandSearch.fill('设置');
+  await commandSearch.press('ArrowDown');
+  await expect(palette.getByRole('button', { name: '打开设置' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: '设置' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭' }).click();
+
+  await page.getByRole('button', { name: '新建笔记', exact: true }).first().click();
+  await page.getByRole('textbox', { name: '笔记标题' }).fill(`第二篇-${randomUUID().slice(0, 6)}`);
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  const rows = page.locator('.note-row');
+  expect(await rows.count()).toBeGreaterThanOrEqual(2);
+  await rows.first().focus();
+  await rows.first().press('ArrowDown');
+  await expect(rows.nth(1)).toBeFocused();
+  await rows.nth(1).press('Home');
+  await expect(rows.first()).toBeFocused();
+});
+
+test('Markdown todo items render and persist interactive checkbox changes', async ({ page }) => {
+  const title = `待办事项-${randomUUID().slice(0, 6)}`;
+  await page.goto('/');
+  await newNote(page, title, '- [] 兼容简写\n- [x] 已完成\n- [ ] 标准待办');
+  await page.getByRole('button', { name: '预览模式' }).click();
+
+  const compact = page.getByRole('checkbox', { name: '待办事项：兼容简写' });
+  const completed = page.getByRole('checkbox', { name: '待办事项：已完成' });
+  const standard = page.getByRole('checkbox', { name: '待办事项：标准待办' });
+  await expect(compact).toBeEnabled();
+  await expect(compact).not.toBeChecked();
+  await expect(completed).toBeChecked();
+  await expect(standard).not.toBeChecked();
+
+  await compact.click();
+  await completed.click();
+  await expect(compact).toBeChecked();
+  await expect(completed).not.toBeChecked();
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/desktop-todo.png', fullPage: true });
+
+  await page.getByRole('button', { name: '编辑模式' }).click();
+  const editor = page.getByRole('textbox', { name: '笔记正文' });
+  await expect(editor).toContainText('- [x] 兼容简写');
+  await expect(editor).toContainText('- [ ] 已完成');
+  await expect(editor).toContainText('- [ ] 标准待办');
+});
+
+test('current note prints as a ready A4 PDF document', async ({ page }) => {
+  const title = `PDF/导出:${randomUUID().slice(0, 6)}`;
+  const content = [
+    '## 打印正文',
+    '',
+    '包含图表和私有图片。',
+    '',
+    '```mermaid',
+    'flowchart LR',
+    '  A[准备] --> B[导出]',
+    '```',
+  ].join('\n');
+  await page.goto('/');
+  await newNote(page, title, content);
+  await page.getByRole('textbox', { name: '笔记标签' }).fill('打印, 测试');
+  await page.getByRole('textbox', { name: '笔记标签' }).press('Tab');
+  const image = await page.locator('.document').screenshot({ type: 'png' });
+  await page.locator('input[type=file][accept^="image"]').setInputFiles({
+    name: '打印图片.png', mimeType: 'image/png', buffer: image,
+  });
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '导出当前笔记为 PDF' })).toBeVisible();
+  await page.evaluate(() => {
+    const state = window as typeof window & {
+      printCapture?: {
+        title: string;
+        text: string;
+        diagrams: number;
+        pendingDiagrams: number;
+        imagesReady: boolean;
+      };
+    };
+    window.print = () => {
+      const root = document.querySelector<HTMLElement>('.print-document')!;
+      const images = [...root.querySelectorAll<HTMLImageElement>('img')];
+      state.printCapture = {
+        title: document.title,
+        text: root.textContent ?? '',
+        diagrams: root.querySelectorAll('.mermaid-diagram svg').length,
+        pendingDiagrams: root.querySelectorAll('[data-mermaid-source]').length,
+        imagesReady: images.length === 1 && images.every((item) => item.complete && item.naturalWidth > 0),
+      };
+    };
+  });
+  await page.getByRole('textbox', { name: '笔记标题' }).press('Meta+p');
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { printCapture?: unknown }).printCapture)).toBeTruthy();
+  const captured = await page.evaluate(() =>
+    (window as typeof window & { printCapture: {
+      title: string; text: string; diagrams: number; pendingDiagrams: number; imagesReady: boolean;
+    } }).printCapture);
+  expect(captured).toMatchObject({
+    title: expect.stringMatching(/^PDF-导出-/),
+    diagrams: 1,
+    pendingDiagrams: 0,
+    imagesReady: true,
+  });
+  expect(captured.text).toContain(title);
+  expect(captured.text).toContain('更新于');
+  expect(captured.text).toContain('#打印 #测试');
+  expect(captured.text).toContain('包含图表和私有图片。');
+  expect(await page.title()).toBe('EasyNote');
+
+  await page.emulateMedia({ media: 'print' });
+  const printLayout = await page.evaluate(() => ({
+    printDisplay: getComputedStyle(document.querySelector('.print-document')!).display,
+    workspaceDisplay: getComputedStyle(document.querySelector('.workspace')!).display,
+    background: getComputedStyle(document.querySelector('.print-document')!).backgroundColor,
+  }));
+  expect(printLayout).toEqual({ printDisplay: 'block', workspaceDisplay: 'none', background: 'rgb(255, 255, 255)' });
+  await page.screenshot({ path: 'test-results/print-note.png', fullPage: true });
+  const pdf = await page.pdf({ format: 'A4', printBackground: true });
+  expect(pdf.subarray(0, 4).toString()).toBe('%PDF');
+});
+
+test('mobile browsers receive a real PDF through share or download', async ({ page }) => {
+  const title = `移动/PDF:${randomUUID().slice(0, 6)}`;
+  const content = [
+    '## 移动端导出',
+    '',
+    '```mermaid',
+    'flowchart LR',
+    '  A[iOS] --> C[PDF]',
+    '  B[Android] --> C',
+    '```',
+    '',
+    ...Array.from({ length: 36 }, (_, index) => `第 ${index + 1} 段内容用于验证移动端 PDF 分页不会截断长笔记。`),
+  ].join('\n\n');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  await newNote(page, title, content);
+  const image = await page.locator('.document').screenshot({ type: 'png' });
+  await page.locator('input[type=file][accept^="image"]').setInputFiles({
+    name: '移动端图片.png', mimeType: 'image/png', buffer: image,
+  });
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    const state = window as typeof window & {
+      mobileShare?: { name: string; type: string; size: number; header: string };
+      printCalls?: number;
+    };
+    state.printCalls = 0;
+    window.print = () => { state.printCalls = (state.printCalls ?? 0) + 1; };
+    Object.defineProperty(navigator, 'canShare', {
+      configurable: true,
+      value: ({ files }: ShareData) => files?.[0]?.type === 'application/pdf',
+    });
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: async ({ files }: ShareData) => {
+        const file = files![0];
+        state.mobileShare = {
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          header: await file.slice(0, 4).text(),
+        };
+      },
+    });
+  });
+
+  const exportButton = page.locator('.mobile-pdf-action');
+  await expect(exportButton).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await exportButton.click();
+  const ready = page.getByRole('dialog');
+  await expect(ready.getByRole('heading', { name: 'PDF 已生成' })).toBeVisible({ timeout: 20_000 });
+  await expect(ready).toContainText('移动-PDF-');
+  await page.screenshot({ path: 'test-results/mobile-pdf-ready.png', fullPage: true });
+  await ready.getByRole('button', { name: '保存或分享' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { mobileShare?: unknown }).mobileShare)).toBeTruthy();
+  const shared = await page.evaluate(() =>
+    (window as typeof window & { mobileShare?: { name: string; type: string; size: number; header: string } }).mobileShare);
+  expect(shared).toMatchObject({
+    name: expect.stringMatching(/^移动-PDF-.+\.pdf$/),
+    type: 'application/pdf',
+    header: '%PDF',
+  });
+  expect(shared!.size).toBeGreaterThan(1_000);
+  expect(await page.evaluate(() => (window as typeof window & { printCalls?: number }).printCalls)).toBe(0);
+  await expect(page.getByRole('status')).toHaveText('PDF 已交给系统保存');
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => false });
+  });
+  await exportButton.click();
+  await expect(page.getByRole('heading', { name: 'PDF 已生成' })).toBeVisible({ timeout: 20_000 });
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下载 PDF' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^移动-PDF-.+\.pdf$/);
+  await download.saveAs('test-results/mobile-note.pdf');
+  const path = await download.path();
+  expect(path).toBeTruthy();
+  const pdfBytes = await readFile(path!);
+  expect(pdfBytes.subarray(0, 4).toString()).toBe('%PDF');
+  expect(new TextDecoder('latin1').decode(pdfBytes).match(/\/Type\s*\/Page\b/g)?.length ?? 0).toBeGreaterThan(1);
+});
+
+test('outline, stable internal links and backlinks navigate between notes', async ({ page }) => {
+  const marker = randomUUID().slice(0, 6);
+  const targetTitle = `知识目标-${marker}`;
+  const sourceTitle = `知识来源-${marker}`;
+  const targetId = randomUUID();
+  await page.goto('/');
+  const created = await page.request.post(`${origin}/api/notes/${targetId}`, {
+    headers,
+    data: {
+      title: targetTitle, content: '## 目标章节\n\n目标内容', tags: [], pinned: false,
+      archived: false, deletedAt: null, revision: 0, operationId: randomUUID(),
+    },
+  });
+  expect(created.status()).toBe(201);
+  await newNote(page, sourceTitle, '## 来源章节\n\n引用目标');
+  await page.getByRole('button', { name: '大纲与反向链接' }).click();
+  const panel = page.getByRole('complementary', { name: '笔记导航' });
+  await expect(panel.getByRole('button', { name: '来源章节' })).toBeVisible();
+
+  await page.getByRole('button', { name: '插入内部链接' }).click();
+  const picker = page.getByRole('dialog');
+  await picker.getByLabel('搜索链接目标').fill(targetTitle);
+  await picker.getByRole('button', { name: targetTitle, exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText(/\[\[[0-9a-f-]{36}\|知识目标-/);
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '预览模式' }).click();
+  await page.getByRole('link', { name: targetTitle }).click();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(targetTitle);
+  await expect(panel.getByRole('button', { name: sourceTitle, exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/desktop-knowledge-navigation.png', fullPage: true });
+});
+
+test('full offline library supports cold start, full-text search and note reading', async ({ page, context }) => {
+  const marker = randomUUID().slice(0, 7);
+  const title = `离线笔记-${marker}`;
+  await page.goto('/');
+  await newNote(page, title, `只有离线镜像中存在的检索词-${marker}`);
+  const image = await page.locator('.document').screenshot({ type: 'png' });
+  await page.locator('input[type=file][accept^="image"]').setInputFiles({
+    name: '离线图片.png', mimeType: 'image/png', buffer: image,
+  });
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await page.locator('.account').click();
+  await page.getByRole('switch', { name: '离线笔记库' }).click();
+  await expect(page.getByText(/离线笔记库 · \d+ 篇/)).toBeVisible();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+
+  await context.setOffline(true);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('离线', { exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: '搜索笔记' }).fill(`检索词-${marker}`);
+  await expect(page.getByRole('button').filter({ hasText: title })).toBeVisible();
+  await page.getByRole('button').filter({ hasText: title }).click();
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText(`检索词-${marker}`);
+  await page.getByRole('button', { name: '预览模式' }).click();
+  const cachedImage = page.locator('.markdown img');
+  await expect(cachedImage).toBeVisible();
+  await expect.poll(() => cachedImage.evaluate((element: HTMLImageElement) =>
+    element.src.startsWith('blob:') && element.complete && element.naturalWidth > 0)).toBe(true);
+  await page.getByRole('button', { name: '编辑模式' }).click();
+  const editor = page.getByRole('textbox', { name: '笔记正文' });
+  await expect(editor).toBeFocused();
+  await editor.press('Control+End');
+  await editor.press('Enter');
+  await editor.pressSequentially(`离线修改-${marker}`);
+  await expect(page.getByText('仅保存在本机', { exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/desktop-offline-library.png', fullPage: true });
+  await context.setOffline(false);
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible({ timeout: 15000 });
+  await expect.poll(async () => {
+    const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
+    return (await (await page.request.get(`/api/notes/${listed.notes[0].id}`)).json()).note.content;
+  }).toContain(`离线修改-${marker}`);
+});
+
+test('batch note actions and tag management preserve revisions', async ({ page }) => {
+  const marker = randomUUID().slice(0, 6);
+  const firstTitle = `批量一-${marker}`;
+  const secondTitle = `批量二-${marker}`;
+  const sourceTag = `来源-${marker}`;
+  const addedTag = `批量-${marker}`;
+  const renamedTag = `归并-${marker}`;
+  await page.goto('/');
+  for (const [title, content] of [[firstTitle, '第一篇'], [secondTitle, '第二篇']]) {
+    const response = await page.request.post(`${origin}/api/notes/${randomUUID()}`, {
+      headers,
+      data: {
+        title, content, tags: [sourceTag], pinned: false, archived: false,
+        deletedAt: null, revision: 0, operationId: randomUUID(),
+      },
+    });
+    expect(response.status()).toBe(201);
+  }
+  await page.reload();
+  await expect(page.getByRole('button').filter({ hasText: firstTitle })).toBeVisible();
+
+  await page.getByRole('button', { name: '批量选择' }).click();
+  await page.getByRole('button').filter({ hasText: firstTitle }).click();
+  await page.getByRole('button').filter({ hasText: secondTitle }).click();
+  await page.getByRole('button', { name: '加标签' }).click();
+  await page.getByRole('dialog').getByLabel('标签', { exact: true }).fill(addedTag);
+  await page.getByRole('dialog').getByRole('button', { name: '添加', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已为 2 篇笔记添加标签');
+
+  await page.getByRole('button', { name: '管理标签' }).click();
+  const manager = page.getByRole('dialog');
+  await manager.getByLabel('来源标签').fill(sourceTag);
+  await manager.getByLabel('操作').selectOption('merge');
+  await manager.getByLabel('目标标签').fill(renamedTag);
+  await manager.getByRole('button', { name: '应用' }).click();
+  await expect(page.getByRole('status')).toHaveText('已更新 2 篇笔记');
+
+  await page.getByRole('button', { name: '批量选择' }).click();
+  await page.getByRole('button').filter({ hasText: firstTitle }).click();
+  await page.getByRole('button').filter({ hasText: secondTitle }).click();
+  await page.locator('.bulk-toolbar').getByRole('button', { name: '归档', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已归档 2 篇笔记');
+  const archived = await (await page.request.get(`/api/notes?view=archive&q=${encodeURIComponent(marker)}`)).json();
+  expect(archived.notes).toHaveLength(2);
+  for (const summary of archived.notes) {
+    const full = await (await page.request.get(`/api/notes/${summary.id}`)).json();
+    expect(full.note.tags).toEqual(expect.arrayContaining([addedTag, renamedTag]));
+    expect(full.note.tags).not.toContain(sourceTag);
+    expect(full.note.revision).toBeGreaterThan(2);
+  }
+});
+
+test('a revoked offline session is removed as soon as the device reconnects', async ({ page, context }) => {
+  await page.goto('/');
+  const login = await page.request.post(`${origin}/api/login`, {
+    headers: { Origin: origin },
+    data: { username: 'tester', password: testPassword },
+  });
+  expect(login.status()).toBe(200);
+  const liveSession = await login.json();
+  await page.reload();
+  await page.locator('.account').click();
+  await page.getByRole('switch', { name: '离线笔记库' }).click();
+  await expect(page.getByText(/离线笔记库 · \d+ 篇/)).toBeVisible();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await context.setOffline(true);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('离线', { exact: true })).toBeVisible();
+
+  const sessionCookie = (await context.cookies()).find((cookie) => cookie.name === 'easynote_dev');
+  expect(sessionCookie).toBeTruthy();
+  const revoked = await fetch(`${origin}/api/logout`, {
+    method: 'POST',
+    headers: {
+      Origin: origin,
+      Cookie: `${sessionCookie!.name}=${sessionCookie!.value}`,
+      'X-CSRF-Token': liveSession.csrf,
+      'Content-Type': 'application/json',
+    },
+    body: '{}',
+  });
+  expect(revoked.status).toBe(200);
+
+  await context.setOffline(false);
+  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible({ timeout: 10_000 });
+  await context.setOffline(true);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible();
+  await context.setOffline(false);
+});
+
+test('account security changes the password and logs out every device', async ({ page }) => {
+  const newPassword = 'Changed-EasyNote-Password-842!';
+  await page.goto('/');
+  await page.locator('.account').click();
+  await page.getByRole('button', { name: '管理', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('当前密码').nth(0).fill(testPassword);
+  await dialog.getByLabel('新密码', { exact: true }).fill(newPassword);
+  await dialog.getByLabel('确认新密码').fill(newPassword);
+  await dialog.getByRole('button', { name: '确认修改' }).click();
+  await expect(page.getByRole('status')).toHaveText('密码已修改，其他设备已退出');
+  await dialog.getByLabel('当前密码').nth(1).fill(newPassword);
+  await dialog.getByRole('button', { name: '登出所有设备' }).click();
+  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible();
+  await page.getByLabel('用户名').fill('tester');
+  await page.getByLabel('密码').fill(newPassword);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '全部笔记' })).toBeVisible();
 });

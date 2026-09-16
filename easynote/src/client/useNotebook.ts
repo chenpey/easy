@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { noteInput, sameNoteInput, type Note, type NoteInput, type NoteSummary, type Session } from '../shared/types';
+import { filePath, noteInput, noteLinkIds, sameNoteInput, storedFileIds, type Note, type NoteInput, type NoteSummary, type Session } from '../shared/types';
 import { api, ApiError } from './api';
-import { loadDrafts, persistDraft, type Draft } from './drafts';
+import {
+  applyMirrorChanges,
+  cacheFile,
+  cacheMirroredNote,
+  cacheSession,
+  loadCachedFile,
+  loadDrafts,
+  loadMirroredNote,
+  loadMirroredNotes,
+  offlineEnabled,
+  persistDraft,
+  pruneCachedFiles,
+  setOfflineEnabled,
+  syncCursor,
+  type Draft,
+} from './drafts';
 
 export function useNotebook(session: Session) {
   const userId = session.user!.id;
@@ -26,7 +41,11 @@ export function useNotebook(session: Session) {
   const [error, setError] = useState('');
   const [conflict, setConflict] = useState<{ local: Note; remote?: Note } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [online, setOnline] = useState(navigator.onLine);
+  const [online, setOnline] = useState(navigator.onLine && !session.offline);
+  const [offlineLibrary, setOfflineLibrary] = useState(false);
+  const [offlineCount, setOfflineCount] = useState(0);
+  const mirror = useRef(new Map<string, Note>());
+  const offlineLibraryRef = useRef(false);
   const listGeneration = useRef(0);
   const selectionGeneration = useRef(0);
   const createInFlight = useRef<Promise<Note> | null>(null);
@@ -37,7 +56,85 @@ export function useNotebook(session: Session) {
   const show = useCallback((value: Note | null) => { current.current = value; setNote(value); }, []);
   const notify = () => { if (alive.current) bump((v) => v + 1); };
 
+  const renderMirror = useCallback(() => {
+    const scoped = [...mirror.current.values()].filter((item) => {
+      if (view === 'trash') {
+        if (item.deletedAt === null) return false;
+      } else if (item.deletedAt !== null || item.archived !== (view === 'archive')) return false;
+      if (tag && !item.tags.includes(tag)) return false;
+      return !query || `${item.title} ${item.content}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+    });
+    scoped.sort((left, right) => Number(right.pinned) - Number(left.pinned) ||
+      right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+    setNotes(scoped.map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 180) })));
+    const viewTags = new Set<string>();
+    for (const item of mirror.current.values()) {
+      const inView = view === 'trash' ? item.deletedAt !== null :
+        item.deletedAt === null && item.archived === (view === 'archive');
+      if (inView) item.tags.forEach((value) => viewTags.add(value));
+    }
+    setTags([...viewTags].sort((left, right) => left.localeCompare(right, 'zh-CN')));
+    setNextOffset(null);
+    setOfflineCount(mirror.current.size);
+  }, [query, tag, view]);
+
+  const cacheReferencedFiles = useCallback(async (changed: Note[]) => {
+    const ids = new Set(changed.flatMap((item) => storedFileIds(item.content)));
+    for (const id of ids) {
+      if (await loadCachedFile(userId, id)) continue;
+      const response = await fetch(filePath(id), { credentials: 'same-origin' });
+      if (!response.ok) throw new Error(`GET ${filePath(id)} [${response.status}]\n${await response.text()}`);
+      const disposition = response.headers.get('Content-Disposition') ?? '';
+      const encodedName = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+      let filename = id;
+      try { if (encodedName) filename = decodeURIComponent(encodedName); } catch { /* Keep the stable ID as fallback. */ }
+      await cacheFile(userId, id, {
+        blob: await response.blob(),
+        mime: response.headers.get('Content-Type') ?? 'application/octet-stream',
+        filename,
+      });
+    }
+  }, [userId]);
+
+  const syncOfflineMirror = useCallback(async (signal?: AbortSignal) => {
+    let cursor = await syncCursor(userId);
+    const changed: Note[] = [];
+    let hasMore = true;
+    while (hasMore) {
+      const page = await api.sync(cursor, signal);
+      await applyMirrorChanges(userId, page.changes, page.cursor);
+      for (const change of page.changes) {
+        if (change.note) {
+          mirror.current.set(change.noteId, change.note);
+          changed.push(change.note);
+          if (current.current?.id === change.noteId && !drafts.current.has(change.noteId) &&
+              change.note.revision > current.current.revision) show(change.note);
+        } else {
+          mirror.current.delete(change.noteId);
+          if (current.current?.id === change.noteId && !drafts.current.has(change.noteId)) show(null);
+        }
+      }
+      cursor = page.cursor;
+      hasMore = page.hasMore;
+    }
+    await cacheReferencedFiles(changed.length ? changed : [...mirror.current.values()]);
+    const referenced = new Set([
+      ...[...mirror.current.values()].flatMap((item) => storedFileIds(item.content)),
+      ...[...drafts.current.values()].flatMap((draft) => storedFileIds(draft.note.content)),
+    ]);
+    await pruneCachedFiles(userId, referenced);
+    if (alive.current) {
+      setOnline(true);
+      setOfflineCount(mirror.current.size);
+    }
+  }, [cacheReferencedFiles, show, userId]);
+
   const refresh = useCallback(async (append = false, signal?: AbortSignal) => {
+    if (offlineLibraryRef.current) {
+      if (navigator.onLine && !session.offline) await syncOfflineMirror(signal);
+      if (alive.current) renderMirror();
+      return;
+    }
     const generation = ++listGeneration.current;
     const result = await api.list({ q: query, view, tag, offset: append ? nextOffset ?? 0 : 0 }, signal);
     if (!alive.current || generation !== listGeneration.current) return;
@@ -45,7 +142,7 @@ export function useNotebook(session: Session) {
     setNextOffset(result.nextOffset);
     const data = await api.tags(view, signal);
     if (alive.current && generation === listGeneration.current) setTags(data.tags);
-  }, [query, view, tag, nextOffset]);
+  }, [nextOffset, query, renderMirror, session.offline, syncOfflineMirror, tag, view]);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
@@ -59,11 +156,11 @@ export function useNotebook(session: Session) {
     }, session.config.autosaveMs));
   };
 
-  const save = async (id: string): Promise<boolean> => {
+  const save = async (id: string, refreshAfter = true): Promise<boolean> => {
     if (running.current.has(id)) return false;
     const draft = drafts.current.get(id);
     if (!draft) return true;
-    if (!navigator.onLine) { notify(); return false; }
+    if (!navigator.onLine || session.offline) { notify(); return false; }
     running.current.add(id);
     notify();
     let ok = false;
@@ -82,11 +179,16 @@ export function useNotebook(session: Session) {
         if (current.current?.id === id) show(updated.note);
         await persist(id, updated);
       }
+      if (offlineLibraryRef.current) {
+        mirror.current.set(saved.id, saved);
+        await cacheMirroredNote(userId, saved);
+      }
       blocked.current.delete(id);
       ok = true;
-      await refreshRef.current();
+      if (refreshAfter) await refreshRef.current();
     } catch (e) {
       if (!alive.current) return false;
+      if (!(e instanceof ApiError) && offlineLibraryRef.current) setOnline(false);
       blocked.current.add(id);
       if (e instanceof ApiError && [409, 410].includes(e.status)) {
         setConflict({ local: drafts.current.get(id)?.note ?? draft.note, remote: e.body.error?.current });
@@ -120,10 +222,26 @@ export function useNotebook(session: Session) {
     try {
       const local = drafts.current.get(id);
       if (local) { show(local.note); return; }
+      if (offlineLibraryRef.current && (!navigator.onLine || session.offline)) {
+        const cached = mirror.current.get(id) ?? await loadMirroredNote(userId, id);
+        if (!cached) throw new Error('这篇笔记尚未保存到本机。');
+        show(cached);
+        return;
+      }
       const result = await api.note(id);
       if (!alive.current || generation !== selectionGeneration.current) return;
+      if (offlineLibraryRef.current) {
+        mirror.current.set(id, result.note);
+        await cacheMirroredNote(userId, result.note);
+      }
       show(drafts.current.get(id)?.note ?? result.note);
-    } catch (e) { if (alive.current) setError(String(e)); }
+    } catch (e) {
+      const cached = offlineLibraryRef.current ? mirror.current.get(id) ?? await loadMirroredNote(userId, id) : null;
+      if (cached && alive.current && generation === selectionGeneration.current) {
+        setOnline(false);
+        show(cached);
+      } else if (alive.current) setError(String(e));
+    }
   };
 
   const append = (target: Note, text: string) => {
@@ -144,7 +262,7 @@ export function useNotebook(session: Session) {
           .find((item): item is Note => !!item && !item.title && !item.content && !item.tags.length &&
             !item.archived && item.deletedAt === null);
         if (local) return open(local);
-        if (navigator.onLine) {
+        if (navigator.onLine && !session.offline) {
           const existing = await api.blank();
           if (existing.note) return open(existing.note);
         }
@@ -215,15 +333,124 @@ export function useNotebook(session: Session) {
     return result.deleted;
   };
 
+  const allAvailableNotes = async (): Promise<Note[]> => {
+    if (offlineLibraryRef.current) {
+      const values = new Map(mirror.current);
+      for (const draft of drafts.current.values()) values.set(draft.note.id, draft.note);
+      return [...values.values()];
+    }
+    const summaries: NoteSummary[] = [];
+    let offset: number | null = 0;
+    do {
+      const page = await api.list({ view: 'export', offset });
+      summaries.push(...page.notes);
+      offset = page.nextOffset;
+    } while (offset !== null);
+    return Promise.all(summaries.map(async (item) => drafts.current.get(item.id)?.note ?? (await api.note(item.id)).note));
+  };
+
+  const bulkUpdate = async (ids: string[], transform: (value: Note) => Partial<NoteInput>): Promise<number> => {
+    const wanted = new Set(ids);
+    const targets = (await allAvailableNotes()).filter((item) => wanted.has(item.id));
+    let updated = 0;
+    for (const target of targets) {
+      const latest = drafts.current.get(target.id)?.note ?? target;
+      const next = { ...latest, ...transform(latest) };
+      if (sameNoteInput(noteInput(latest), noteInput(next))) continue;
+      const draft = { note: next, operationId: crypto.randomUUID() };
+      drafts.current.set(target.id, draft);
+      await persist(target.id, draft);
+      blocked.current.delete(target.id);
+      if (current.current?.id === target.id) show(next);
+      if (navigator.onLine && !session.offline) {
+        if (!await save(target.id, false)) {
+          throw new Error(`批量操作已处理 ${updated} 篇，在“${target.title || '未命名笔记'}”处停止。`);
+        }
+      }
+      updated++;
+    }
+    notify();
+    await refreshRef.current();
+    return updated;
+  };
+
+  const manageTag = async (source: string, target: string | null): Promise<number> => {
+    const affected = (await allAvailableNotes()).filter((item) => item.tags.includes(source));
+    return bulkUpdate(affected.map((item) => item.id), (item) => ({
+      tags: [...new Set(item.tags.flatMap((value) => value === source ? target ? [target] : [] : [value]))],
+    }));
+  };
+
+  const searchAll = async (value: string): Promise<NoteSummary[]> => {
+    const q = value.trim().toLocaleLowerCase();
+    if (offlineLibraryRef.current) {
+      return (await allAvailableNotes())
+        .filter((item) => item.deletedAt === null && (!q || `${item.title} ${item.content}`.toLocaleLowerCase().includes(q)))
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, 30)
+        .map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 180) }));
+    }
+    const [active, archived] = await Promise.all([
+      api.list({ q: value, view: 'all' }),
+      api.list({ q: value, view: 'archive' }),
+    ]);
+    return [...active.notes, ...archived.notes]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 30);
+  };
+
+  const backlinks = async (id: string): Promise<NoteSummary[]> => {
+    if (!offlineLibraryRef.current) return (await api.backlinks(id)).notes;
+    return (await allAvailableNotes())
+      .filter((item) => item.deletedAt === null && noteLinkIds(item.content).includes(id))
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 180) }));
+  };
+
+  const configureOffline = async (enabled: boolean): Promise<void> => {
+    await setOfflineEnabled(userId, enabled, session);
+    offlineLibraryRef.current = enabled;
+    setOfflineLibrary(enabled);
+    if (enabled) {
+      mirror.current = await loadMirroredNotes(userId);
+      await cacheSession(session);
+      if (navigator.onLine && !session.offline) await syncOfflineMirror();
+      renderMirror();
+    } else {
+      mirror.current.clear();
+      setOfflineCount(0);
+      await refreshRef.current();
+    }
+  };
+
+  const cachedFile = useCallback(async (id: string): Promise<string | null> => {
+    const value = await loadCachedFile(userId, id);
+    return value ? URL.createObjectURL(value.blob) : null;
+  }, [userId]);
+
   useEffect(() => {
     alive.current = true;
-    void loadDrafts(userId).then(async (loaded) => {
+    void Promise.all([loadDrafts(userId), offlineEnabled(userId)]).then(async ([loaded, enabled]) => {
       if (!alive.current) return;
       drafts.current = loaded;
+      offlineLibraryRef.current = enabled;
+      setOfflineLibrary(enabled);
+      if (enabled) {
+        mirror.current = await loadMirroredNotes(userId);
+        setOfflineCount(mirror.current.size);
+        if (!session.offline) await cacheSession(session);
+      }
       ready.current = true;
       for (const id of loaded.keys()) blocked.current.add(id);
       if (loaded.size) show(loaded.values().next().value!.note);
-      await refreshRef.current();
+      try {
+        if (enabled && loaded.size && navigator.onLine && !session.offline) await retry();
+        else await refreshRef.current();
+      } catch (error) {
+        if (!enabled || !mirror.current.size) throw error;
+        setOnline(false);
+        renderMirror();
+      }
     }).catch((e: unknown) => { if (alive.current) setError(String(e)); }).finally(() => {
       if (alive.current) { setLoading(false); notify(); }
     });
@@ -236,25 +463,32 @@ export function useNotebook(session: Session) {
 
   useEffect(() => {
     if (!ready.current) return;
-    const timer = setTimeout(() => void refreshRef.current().catch((e: unknown) => setError(String(e))), 200);
+    const timer = setTimeout(() => {
+      if (offlineLibraryRef.current) renderMirror();
+      else void refreshRef.current().catch((e: unknown) => setError(String(e)));
+    }, 200);
     return () => clearTimeout(timer);
-  }, [view, query, tag]);
+  }, [view, query, tag, renderMirror]);
+
+  useEffect(() => {
+    setOnline(navigator.onLine && !session.offline);
+  }, [session.offline]);
 
   useEffect(() => {
     const poll = async () => {
-      if (!ready.current || document.hidden || !navigator.onLine || pollInFlight.current) return;
+      if (!ready.current || document.hidden || !navigator.onLine || session.offline || pollInFlight.current) return;
       pollInFlight.current = true;
       const controller = new AbortController();
       pollAbort.current = controller;
       const timeout = setTimeout(() => controller.abort(), session.config.pollSeconds * 1000);
       try {
         let checked = false;
-        if (notes.length <= 50) {
+        if (offlineLibraryRef.current || notes.length <= 50) {
           await refreshRef.current(false, controller.signal);
           checked = true;
         }
         const before = current.current;
-        if (before && !drafts.current.has(before.id)) {
+        if (!offlineLibraryRef.current && before && !drafts.current.has(before.id)) {
           const remote = (await api.note(before.id, controller.signal)).note;
           if (current.current?.id === before.id && !drafts.current.has(before.id) && remote.revision > current.current.revision) show(remote);
           checked = true;
@@ -266,6 +500,7 @@ export function useNotebook(session: Session) {
         }
       } catch (e) {
         if (alive.current && !controller.signal.aborted) {
+          if (offlineLibraryRef.current) setOnline(false);
           const message = `后台同步失败，将自动重试。\n${String(e)}`;
           pollError.current = message;
           setError(message);
@@ -277,8 +512,11 @@ export function useNotebook(session: Session) {
       }
     };
     const network = () => {
-      setOnline(navigator.onLine);
-      if (navigator.onLine) void poll();
+      setOnline(navigator.onLine && !session.offline);
+      if (navigator.onLine && !session.offline) {
+        if (offlineLibraryRef.current && drafts.current.size) void retry();
+        else void poll();
+      }
       else pollAbort.current?.abort();
     };
     const visibility = () => {
@@ -293,6 +531,10 @@ export function useNotebook(session: Session) {
     window.addEventListener('online', network);
     window.addEventListener('offline', network);
     window.addEventListener('beforeunload', beforeUnload);
+    if (ready.current && navigator.onLine && !session.offline) {
+      if (offlineLibraryRef.current && drafts.current.size) void retry();
+      else void poll();
+    }
     return () => {
       clearInterval(timer);
       pollAbort.current?.abort();
@@ -301,7 +543,7 @@ export function useNotebook(session: Session) {
       window.removeEventListener('offline', network);
       window.removeEventListener('beforeunload', beforeUnload);
     };
-  }, [session.config.pollSeconds, notes.length, show]);
+  }, [session.config.pollSeconds, session.offline, notes.length, show]);
 
   const pending = [...drafts.current.values()].map((draft) => draft.note);
   const visible = notes.map((item) => {
@@ -326,7 +568,9 @@ export function useNotebook(session: Session) {
   return {
     note, notes: filtered, tags, view, query, tag, setView, setQuery, setTag,
     nextOffset, loading, error, setError, conflict, setConflict, status, pending,
+    online, offlineLibrary, offlineCount,
     busy: running.current.size > 0, select, create, edit, append, save: () => note ? save(note.id) : Promise.resolve(true),
     retry, conflictCopy, purge, purgeTrash, refresh: () => refreshRef.current(), loadMore: () => refresh(true),
+    configureOffline, cachedFile, backlinks, searchAll, manageTag, bulkUpdate,
   };
 }

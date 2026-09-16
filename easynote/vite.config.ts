@@ -34,6 +34,8 @@ export default defineConfig({
           'assets/index-*.js',
           'assets/editor-*.js',
           'assets/markdown-*.js',
+          'assets/html2canvas*.js',
+          'assets/jspdf*.js',
         ],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//],

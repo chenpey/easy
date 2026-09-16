@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createRuntime, testCsrf, testToken, testUserId, testPassword } from './runtime';
 import { digest } from '../src/worker/core';
 import { cleanup } from '../src/worker/images';
+import { passwordVerifier } from '../src/worker/auth';
 
 let instance: Awaited<ReturnType<typeof createRuntime>>;
 const origin = 'https://easynote.example.test';
@@ -44,8 +45,10 @@ test('login uses HttpOnly secure cookie; logout revokes the session', async () =
   const cookie = good.headers.get('Set-Cookie')!;
   assert.match(cookie, /HttpOnly/); assert.match(cookie, /Secure/); assert.match(cookie, /SameSite=Strict/);
   const data = await good.json() as any;
+  assert.ok(data.expiresAt > Date.now());
   assert.equal((await request('/api/logout', 'POST', {}, { Cookie: cookie.split(';')[0], 'X-CSRF-Token': data.csrf })).status, 200);
   assert.equal((await request('/api/notes', 'GET', undefined, { Cookie: cookie.split(';')[0] })).status, 401);
+  assert.equal((await (await request('/api/session', 'GET', undefined, { Cookie: cookie.split(';')[0] })).json() as any).expiresAt, null);
 });
 
 test('AI tokens are scoped, revocable and preserve revision history', async () => {
@@ -62,18 +65,108 @@ test('AI tokens are scoped, revocable and preserve revision history', async () =
 
   const id = randomUUID();
   const aiCreate = await request(`/api/integrations/notes/${id}`, 'POST', {
-    ...base, title: 'AI 创建', revision: 0, operationId: randomUUID(),
+    ...base, title: 'AI 创建', content: '## 影响\n\n法兰克福 AI 上下文', revision: 0, operationId: randomUUID(),
   }, bearer);
   assert.equal(aiCreate.status, 201, await aiCreate.clone().text());
   const note = (await aiCreate.json() as any).note;
-  const search = await (await request('/api/integrations/notes?q=AI&view=all&limit=10', 'GET', undefined, bearer)).json() as any;
-  assert.ok(search.notes.some((item: any) => item.id === id));
+  const search = await (await request(`/api/integrations/notes?q=${encodeURIComponent('法兰克福')}&view=all&limit=10`, 'GET', undefined, bearer)).json() as any;
+  const searchResult = search.notes.find((item: any) => item.id === id);
+  assert.equal(searchResult.uri, `easynote://notes/${id}.md`);
+  assert.ok(searchResult.matches.some((match: any) =>
+    match.field === 'content' && match.line === 3 && match.heading === '影响' && match.snippet.includes('法兰克福')));
+  assert.match(searchResult.excerpt, /法兰克福/);
+  const titleSearch = await (await request('/api/integrations/notes?q=AI&limit=10', 'GET', undefined, bearer)).json() as any;
+  assert.ok(titleSearch.notes.find((item: any) => item.id === id).matches.some((match: any) =>
+    match.field === 'title' && match.line === null && match.heading === null && match.snippet.includes('AI')));
+  assert.equal((await request('/api/integrations/notes?limit=21', 'GET', undefined, bearer)).status, 400);
+  assert.equal((await request('/api/integrations/notes?sort=invalid', 'GET', undefined, bearer)).status, 400);
+
+  const secondId = randomUUID();
+  const secondCreate = await request(`/api/integrations/notes/${secondId}`, 'POST', {
+    ...base, title: '批量读取第二篇', revision: 0, operationId: randomUUID(),
+  }, bearer);
+  assert.equal(secondCreate.status, 201, await secondCreate.clone().text());
+  const batch = await (await request(
+    `/api/integrations/notes/batch?ids=${encodeURIComponent(`${secondId},${id}`)}`,
+    'GET',
+    undefined,
+    bearer,
+  )).json() as any;
+  assert.deepEqual(batch.notes.map((item: any) => item.id), [secondId, id]);
+  assert.equal((await request('/api/integrations/notes/batch?ids=invalid', 'GET', undefined, bearer)).status, 400);
+  assert.equal((await request(
+    `/api/integrations/notes/batch?ids=${Array.from({ length: 21 }, () => randomUUID()).join(',')}`,
+    'GET',
+    undefined,
+    bearer,
+  )).status, 400);
+  assert.equal((await request(
+    `/api/integrations/notes/batch?ids=${randomUUID()}`,
+    'GET',
+    undefined,
+    bearer,
+  )).status, 404);
+
+  const rankMarker = `rank${randomUUID().replaceAll('-', '').slice(0, 8)}`;
+  const rankedNotes = [
+    { id: randomUUID(), title: rankMarker, content: '标题完全匹配' },
+    { id: randomUUID(), title: '正文重复命中', content: `${rankMarker}\n${rankMarker}\n${rankMarker}` },
+    { id: randomUUID(), title: '正文单次命中', content: `${'填充 '.repeat(80)}${rankMarker}` },
+  ];
+  for (const item of rankedNotes) {
+    const response = await request(`/api/integrations/notes/${item.id}`, 'POST', {
+      ...base,
+      title: item.title,
+      content: item.content,
+      revision: 0,
+      operationId: randomUUID(),
+    }, bearer);
+    assert.equal(response.status, 201, await response.clone().text());
+  }
+  const ranked = await (await request(
+    `/api/integrations/notes?q=${rankMarker}&limit=10`,
+    'GET',
+    undefined,
+    bearer,
+  )).json() as any;
+  assert.deepEqual(ranked.notes.slice(0, 3).map((item: any) => item.id), rankedNotes.map((item) => item.id));
+  assert.equal(ranked.notes[1].matches.length, 3);
+
+  const literalId = randomUUID();
+  assert.equal((await request(`/api/integrations/notes/${literalId}`, 'POST', {
+    ...base,
+    title: '字面量检索',
+    content: '部署状态是 100%_ready',
+    revision: 0,
+    operationId: randomUUID(),
+  }, bearer)).status, 201);
+  const literalSearch = await (await request(
+    `/api/integrations/notes?q=${encodeURIComponent('100%_ready')}`,
+    'GET',
+    undefined,
+    bearer,
+  )).json() as any;
+  assert.deepEqual(literalSearch.notes.map((item: any) => item.id), [literalId]);
 
   const aiUpdate = await request(`/api/integrations/notes/${id}`, 'PUT', {
-    ...base, title: 'AI 更新', revision: note.revision, operationId: randomUUID(),
+    ...base, title: 'AI 更新', content: '## 结果\n\n索引迁移到了苏黎世区域', revision: note.revision, operationId: randomUUID(),
   }, bearer);
   assert.equal(aiUpdate.status, 200, await aiUpdate.clone().text());
   const updated = (await aiUpdate.json() as any).note;
+  const removedMatch = await (await request(
+    `/api/integrations/notes?q=${encodeURIComponent('法兰克福')}`,
+    'GET',
+    undefined,
+    bearer,
+  )).json() as any;
+  assert.ok(!removedMatch.notes.some((item: any) => item.id === id));
+  const updatedMatch = await (await request(
+    `/api/integrations/notes?q=${encodeURIComponent('苏黎世')}`,
+    'GET',
+    undefined,
+    bearer,
+  )).json() as any;
+  assert.ok(updatedMatch.notes.some((item: any) => item.id === id));
   assert.equal((await request(`/api/integrations/notes/${id}`, 'PUT', {
     ...base, title: '陈旧写入', revision: note.revision, operationId: randomUUID(),
   }, bearer)).status, 409);
@@ -90,6 +183,7 @@ test('AI tokens are scoped, revocable and preserve revision history', async () =
   const readOnlyHeaders = { Authorization: `Bearer ${readOnly.secret}`, Cookie: '', 'X-CSRF-Token': '' };
   assert.equal((await request('/api/integrations/notes?q=AI&limit=1', 'GET', undefined, readOnlyHeaders)).status, 200);
   assert.equal((await request(`/api/integrations/notes/${id}`, 'GET', undefined, readOnlyHeaders)).status, 200);
+  assert.equal((await request(`/api/integrations/notes/batch?ids=${id}`, 'GET', undefined, readOnlyHeaders)).status, 200);
   assert.equal((await request(`/api/integrations/notes/${id}`, 'PUT', {
     ...base, revision: updated.revision, operationId: randomUUID(),
   }, readOnlyHeaders)).status, 403);
@@ -161,13 +255,20 @@ test('unchanged saves do not create revisions, including reordered tags', async 
   const changed = await save(note.id, 1, { tags: ['个人', '工作'], pinned: true });
   assert.equal(changed.status, 200, await changed.clone().text());
   assert.equal((await changed.json() as any).note.revision, 2);
+  const afterPin = await (await request(`/api/notes/${note.id}/versions`)).json() as any;
+  assert.deepEqual(afterPin.versions.map((version: any) => version.revision), [1]);
+  const unpinned = await save(note.id, 2, { tags: ['个人', '工作'], pinned: false });
+  assert.equal(unpinned.status, 200, await unpinned.clone().text());
+  assert.equal((await unpinned.json() as any).note.revision, 3);
+  const afterUnpin = await (await request(`/api/notes/${note.id}/versions`)).json() as any;
+  assert.deepEqual(afterUnpin.versions.map((version: any) => version.revision), [1]);
 });
 
-test('history collapses consecutive duplicate revisions left by older versions', async () => {
+test('history collapses consecutive revisions that differ only by pin state', async () => {
   const note = await create({ content: 'legacy duplicate' });
   await instance.db.prepare(`INSERT INTO note_versions
     (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived)
-    SELECT note_id, 2, title, content, tags, pinned, deleted_at, saved_at + 1, archived
+    SELECT note_id, 2, title, content, tags, CASE pinned WHEN 1 THEN 0 ELSE 1 END, deleted_at, saved_at + 1, archived
     FROM note_versions WHERE note_id=? AND revision=1`).bind(note.id).run();
   const data = await (await request(`/api/notes/${note.id}/versions`)).json() as any;
   assert.deepEqual(data.versions.map((version: any) => version.revision), [2]);
@@ -234,13 +335,15 @@ test('all trash notes can be permanently deleted in one operation', async () => 
   assert.equal((await (await request('/api/notes/trash', 'DELETE', {})).json() as any).deleted, 0);
 });
 
-test('history records versions and keeps the configured limit', async () => {
+test('history keeps the configured content-version limit across pin revision gaps', async () => {
   const note = await create();
-  for (let revision = 1; revision <= 5; revision++) {
-    assert.equal((await save(note.id, revision, { content: `version ${revision + 1}` })).status, 200);
-  }
+  assert.equal((await save(note.id, 1, { pinned: true })).status, 200);
+  assert.equal((await save(note.id, 2, { content: 'version 3', pinned: true })).status, 200);
+  assert.equal((await save(note.id, 3, { content: 'version 3', pinned: false })).status, 200);
+  assert.equal((await save(note.id, 4, { content: 'version 5' })).status, 200);
+  assert.equal((await save(note.id, 5, { content: 'version 6' })).status, 200);
   const data = await (await request(`/api/notes/${note.id}/versions`)).json() as any;
-  assert.deepEqual(data.versions.map((v: any) => v.revision), [6, 5, 4]);
+  assert.deepEqual(data.versions.map((v: any) => v.revision), [6, 5, 3]);
 });
 
 test('validation rejects malformed notes, missing images and oversized content', async () => {
@@ -288,4 +391,108 @@ test('another account cannot read, edit or reference private notes and images', 
     { ...base, content: `![private](/api/images/${imageId})`, revision: 0, operationId: randomUUID() }, headers);
   assert.equal(foreign.status, 409);
   assert.equal((await request(`/api/images/${imageId}`, 'GET', undefined, headers)).status, 404);
+});
+
+test('password changes revoke other sessions and logout-all revokes the current session', async () => {
+  const userId = randomUUID();
+  const firstToken = '1'.repeat(64);
+  const secondToken = '2'.repeat(64);
+  const csrf = '3'.repeat(64);
+  const originalPassword = 'Original-Test-Password-938!';
+  const newPassword = 'Updated-Test-Password-482!';
+  await instance.db.prepare('INSERT INTO users VALUES(?,?,?,?)')
+    .bind(userId, `account-${userId.slice(0, 8)}`, JSON.stringify(await passwordVerifier(originalPassword)), Date.now()).run();
+  await instance.db.batch([
+    instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(firstToken), userId, csrf, Date.now() + 60_000),
+    instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(secondToken), userId, csrf, Date.now() + 60_000),
+  ]);
+  const accountHeaders = { Cookie: `__Host-easynote=${firstToken}`, 'X-CSRF-Token': csrf };
+  assert.equal((await request('/api/account/password', 'POST', {
+    currentPassword: 'wrong', newPassword,
+  }, accountHeaders)).status, 403);
+  const changed = await request('/api/account/password', 'POST', {
+    currentPassword: originalPassword, newPassword,
+  }, accountHeaders);
+  assert.equal(changed.status, 200, await changed.clone().text());
+  assert.equal((await request('/api/session', 'GET', undefined, accountHeaders)).status, 200);
+  assert.equal((await request('/api/session', 'GET', undefined, {
+    Cookie: `__Host-easynote=${secondToken}`, 'X-CSRF-Token': csrf,
+  })).status, 200);
+  const secondSession = await (await request('/api/session', 'GET', undefined, {
+    Cookie: `__Host-easynote=${secondToken}`, 'X-CSRF-Token': csrf,
+  })).json() as any;
+  assert.equal(secondSession.user, null);
+  assert.equal((await request('/api/login', 'POST', {
+    username: `account-${userId.slice(0, 8)}`, password: originalPassword,
+  })).status, 401);
+  assert.equal((await request('/api/login', 'POST', {
+    username: `account-${userId.slice(0, 8)}`, password: newPassword,
+  })).status, 200);
+  const loggedOut = await request('/api/account/logout-all', 'POST', { currentPassword: newPassword }, accountHeaders);
+  assert.equal(loggedOut.status, 200, await loggedOut.clone().text());
+  const currentSession = await (await request('/api/session', 'GET', undefined, accountHeaders)).json() as any;
+  assert.equal(currentSession.user, null);
+});
+
+test('incremental sync emits current notes and purge tombstones', async () => {
+  const created = await create({ title: `离线同步-${randomUUID().slice(0, 6)}`, content: '第一版' });
+  const first = await (await request('/api/sync?after=0&limit=200')).json() as any;
+  const creation = first.changes.find((change: any) => change.noteId === created.id);
+  assert.equal(creation.note.content, '第一版');
+  assert.ok(first.cursor >= creation.sequence);
+
+  const updatedResponse = await save(created.id, created.revision, { title: created.title, content: '第二版' });
+  const updated = (await updatedResponse.json() as any).note;
+  const second = await (await request(`/api/sync?after=${first.cursor}&limit=200`)).json() as any;
+  assert.equal(second.changes.find((change: any) => change.noteId === created.id).note.content, '第二版');
+
+  await save(created.id, updated.revision, { title: created.title, content: '第二版', deletedAt: Date.now() });
+  const trashed = await (await request(`/api/notes/${created.id}`)).json() as any;
+  await request(`/api/notes/${created.id}`, 'DELETE', { revision: trashed.note.revision });
+  const third = await (await request(`/api/sync?after=${second.cursor}&limit=200`)).json() as any;
+  assert.equal(third.changes.find((change: any) => change.noteId === created.id).note, null);
+});
+
+test('stable internal links expose backlinks', async () => {
+  const target = await create({ title: '链接目标', content: '目标正文' });
+  const source = await create({ title: '链接来源', content: `参见 [[${target.id}|链接目标]]` });
+  const backlinks = await (await request(`/api/notes/${target.id}/backlinks`)).json() as any;
+  assert.ok(backlinks.notes.some((note: any) => note.id === source.id));
+});
+
+test('private PDF and text attachments are validated and downloaded safely', async () => {
+  const pdfId = randomUUID();
+  const pdf = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF');
+  const upload = await instance.runtime.dispatchFetch(`${origin}/api/files/${pdfId}`, {
+    method: 'PUT',
+    headers: {
+      Origin: origin,
+      Cookie: `__Host-easynote=${testToken}`,
+      'X-CSRF-Token': testCsrf,
+      'Content-Type': 'application/pdf',
+      'X-Filename': encodeURIComponent('资料.pdf'),
+    },
+    body: pdf,
+  });
+  assert.equal(upload.status, 201, await upload.clone().text());
+  const stored = (await upload.json() as any).file;
+  assert.equal(stored.url, `/api/files/${pdfId}`);
+  const downloaded = await request(`/api/files/${pdfId}`);
+  assert.equal(downloaded.status, 200);
+  assert.match(downloaded.headers.get('Content-Disposition') ?? '', /^attachment;/);
+  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), pdf);
+  assert.equal((await request(`/api/images/${pdfId}`)).status, 404);
+
+  const invalid = await instance.runtime.dispatchFetch(`${origin}/api/files/${randomUUID()}`, {
+    method: 'PUT',
+    headers: {
+      Origin: origin,
+      Cookie: `__Host-easynote=${testToken}`,
+      'X-CSRF-Token': testCsrf,
+      'Content-Type': 'application/pdf',
+      'X-Filename': encodeURIComponent('伪造.pdf'),
+    },
+    body: Buffer.from('not a pdf'),
+  });
+  assert.equal(invalid.status, 415);
 });

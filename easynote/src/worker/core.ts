@@ -9,6 +9,7 @@ export interface Env {
   MAX_NOTE_BYTES: string;
   MAX_IMAGE_BYTES: string;
   MAX_IMAGE_PIXELS: string;
+  MAX_ATTACHMENT_BYTES: string;
   IMAGE_QUOTA_BYTES: string;
   MAX_NOTES: string;
   VERSIONS_KEPT: string;
@@ -46,6 +47,7 @@ export function clientConfig(env: Env): ClientConfig {
     maxNoteBytes: numberSetting(env, 'MAX_NOTE_BYTES', 1024, 1024 * 1024),
     maxImageBytes: numberSetting(env, 'MAX_IMAGE_BYTES', 1024, 20 * 1024 * 1024),
     maxImagePixels: numberSetting(env, 'MAX_IMAGE_PIXELS', 1, 100_000_000),
+    maxAttachmentBytes: numberSetting(env, 'MAX_ATTACHMENT_BYTES', 1024, 50 * 1024 * 1024),
     autosaveMs: numberSetting(env, 'AUTOSAVE_MS', 300, 10_000),
     pollSeconds: numberSetting(env, 'POLL_SECONDS', 10, 600),
   };

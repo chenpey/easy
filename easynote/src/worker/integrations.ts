@@ -1,7 +1,12 @@
-import { idPattern, type IntegrationToken } from '../shared/types';
+import {
+  idPattern,
+  type IntegrationNoteSummary,
+  type IntegrationToken,
+  type NoteSearchMatch,
+} from '../shared/types';
 import type { Identity } from './auth';
 import { ApiError, digest, json, readJson, token, type Env } from './core';
-import { noteRoutes } from './notes';
+import { noteRoutes, toNote, type NoteRow } from './notes';
 
 interface TokenRow {
   id: string;
@@ -28,6 +33,123 @@ const tokenRecord = (row: Omit<TokenRow, 'user_id' | 'username' | 'token_hash'>)
   expiresAt: row.expires_at,
   lastUsedAt: row.last_used_at,
 });
+
+const noteUri = (id: string) => `easynote://notes/${id}.md`;
+const trigramLength = 3;
+const titleSearchWeight = 8;
+
+function snippetAround(value: string, index: number, length: number): string {
+  const start = Math.max(0, index - 90);
+  const end = Math.min(value.length, index + length + 90);
+  const snippet = value.slice(start, end).replace(/\s+/g, ' ').trim();
+  return `${start > 0 ? '...' : ''}${snippet}${end < value.length ? '...' : ''}`;
+}
+
+function closestHeading(content: string, index: number): string | null {
+  let heading: string | null = null;
+  for (const match of content.slice(0, index).matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/gm)) {
+    heading = match[1].trim();
+  }
+  return heading;
+}
+
+function searchMatches(row: NoteRow, query: string): NoteSearchMatch[] {
+  if (!query) return [];
+  const matches: NoteSearchMatch[] = [];
+  const needle = query.toLowerCase();
+  const titleIndex = row.title.toLowerCase().indexOf(needle);
+  if (titleIndex >= 0) {
+    matches.push({
+      field: 'title',
+      line: null,
+      heading: null,
+      snippet: snippetAround(row.title, titleIndex, query.length),
+    });
+  }
+
+  const content = row.content;
+  const normalizedContent = content.toLowerCase();
+  const matchedLines = new Set<number>();
+  let index = normalizedContent.indexOf(needle);
+  while (index >= 0 && matches.length < 3) {
+    const line = content.slice(0, index).split('\n').length;
+    if (!matchedLines.has(line)) {
+      matches.push({
+        field: 'content',
+        line,
+        heading: closestHeading(content, index),
+        snippet: snippetAround(content, index, query.length),
+      });
+      matchedLines.add(line);
+    }
+    index = normalizedContent.indexOf(needle, index + Math.max(needle.length, 1));
+  }
+  return matches;
+}
+
+async function searchNotes(request: Request, env: Env, user: IntegrationIdentity): Promise<Response> {
+  const url = new URL(request.url);
+  const query = (url.searchParams.get('q') ?? '').slice(0, 200);
+  const ftsQuery = Array.from(query).length >= trigramLength && /\S/.test(query)
+    ? `"${query.replaceAll('"', '""')}"`
+    : null;
+  const view = url.searchParams.get('view') ?? 'all';
+  if (!['all', 'archive'].includes(view)) throw new ApiError(400, 'AI search only supports active or archived notes.');
+  const offset = Number(url.searchParams.get('offset') ?? 0);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError(400, 'Invalid offset.');
+  const limit = Number(url.searchParams.get('limit') ?? 20);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new ApiError(400, 'Invalid limit.');
+  const sort = url.searchParams.get('sort') ?? 'default';
+  if (!['default', 'updated'].includes(sort)) throw new ApiError(400, 'Invalid sort.');
+  const tag = (url.searchParams.get('tag') ?? '').slice(0, 40);
+  const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
+  const filters: string[] = [];
+  const binds: unknown[] = [];
+  if (ftsQuery) {
+    filters.push('notes_fts MATCH ?');
+    binds.push(ftsQuery);
+  }
+  filters.push('n.user_id=?', 'n.deleted_at IS NULL', `n.archived=${view === 'archive' ? 1 : 0}`);
+  binds.push(user.id);
+  if (query) {
+    filters.push("(n.title LIKE ? ESCAPE '\\' OR n.content LIKE ? ESCAPE '\\')");
+    binds.push(`%${escape(query)}%`, `%${escape(query)}%`);
+  }
+  if (tag) {
+    filters.push('EXISTS(SELECT 1 FROM json_each(n.tags) WHERE value=?)');
+    binds.push(tag);
+  }
+  const orderBinds: unknown[] = [];
+  let order = sort === 'updated' ? 'n.updated_at DESC,n.id ASC' : 'n.pinned DESC,n.updated_at DESC,n.id ASC';
+  if (query && sort === 'default') {
+    const escaped = escape(query);
+    order = `CASE WHEN n.title = ? COLLATE NOCASE THEN 0
+      WHEN n.title LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,
+      ${ftsQuery
+        ? `bm25(notes_fts,${titleSearchWeight},1.0),`
+        : `((length(lower(n.title))-length(replace(lower(n.title),?,'')))*8+
+          length(lower(n.content))-length(replace(lower(n.content),?,''))) DESC,`}
+      n.pinned DESC,n.updated_at DESC,n.id ASC`;
+    orderBinds.push(query, `${escaped}%`);
+    if (!ftsQuery) orderBinds.push(query.toLowerCase(), query.toLowerCase());
+  }
+  const source = ftsQuery ? 'notes_fts JOIN notes n ON n.rowid=notes_fts.rowid' : 'notes n';
+  const result = await env.DB.prepare(`SELECT n.* FROM ${source} WHERE ${filters.join(' AND ')}
+    ORDER BY ${order} LIMIT ? OFFSET ?`)
+    .bind(...binds, ...orderBinds, limit + 1, offset).all<NoteRow>();
+  const notes: IntegrationNoteSummary[] = result.results.slice(0, limit).map((row) => {
+    const { content, ...note } = toNote(row);
+    const matches = searchMatches(row, query);
+    return {
+      ...note,
+      excerpt: matches.find((match) => match.field === 'content')?.snippet ??
+        matches[0]?.snippet ?? content.slice(0, 180),
+      matches,
+      uri: noteUri(row.id),
+    };
+  });
+  return json({ notes, nextOffset: result.results.length > limit ? offset + limit : null });
+}
 
 export async function integrationTokenRoutes(
   request: Request,
@@ -100,6 +222,7 @@ export async function integrationIdentity(request: Request, env: Env): Promise<I
     username: row.username,
     csrf: '',
     tokenHash,
+    sessionExpiresAt: null,
     actorType: 'ai',
     actorName: row.name,
     access: row.access,
@@ -118,9 +241,21 @@ export async function integrationRoutes(
     return json({ account: user.username, integration: user.actorName, access: user.access });
   }
   if (path === '/api/integrations/notes' && request.method === 'GET') {
-    const view = url.searchParams.get('view') ?? 'all';
-    if (!['all', 'archive'].includes(view)) throw new ApiError(400, 'AI search only supports active or archived notes.');
-    return noteRoutes(request, env, user, '/api/notes');
+    return searchNotes(request, env, user);
+  }
+  if (path === '/api/integrations/notes/batch' && request.method === 'GET') {
+    const rawIds = url.searchParams.get('ids');
+    const ids = rawIds?.split(',') ?? [];
+    if (url.searchParams.getAll('ids').length !== 1 || ids.length < 1 || ids.length > 20 ||
+        ids.some((id) => !idPattern.test(id))) {
+      throw new ApiError(400, 'Provide between 1 and 20 valid note IDs.');
+    }
+    const rows = await env.DB.prepare(`SELECT * FROM notes WHERE user_id=? AND id IN
+      (${ids.map(() => '?').join(',')})`).bind(user.id, ...ids).all<NoteRow>();
+    const notesById = new Map(rows.results.map((row) => [row.id, toNote(row)]));
+    const missingIds = ids.filter((id) => !notesById.has(id));
+    if (missingIds.length) throw new ApiError(404, 'One or more notes were not found.', { missingIds });
+    return json({ notes: ids.map((id) => notesById.get(id)!) });
   }
   const noteMatch = /^\/api\/integrations\/notes\/([^/]+)$/.exec(path);
   if (noteMatch && ['GET', 'POST', 'PUT'].includes(request.method)) {

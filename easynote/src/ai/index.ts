@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 /// <reference types="node" />
 import { randomUUID } from 'node:crypto';
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import * as z from 'zod/v4';
-import { noteInput, type Note, type NoteInput } from '../shared/types.js';
+import {
+  idPattern,
+  noteInput,
+  type IntegrationNoteSummary,
+  type Note,
+  type NoteInput,
+} from '../shared/types.js';
 import { EasyNoteClient } from './client.js';
 import { configPathFromArgs, loadConfig, setupConfig } from './config.js';
 
@@ -25,6 +31,20 @@ const noteResultSchema = z.object({
   operationId: z.string(),
 });
 
+const noteSearchMatchSchema = z.object({
+  field: z.enum(['title', 'content']),
+  line: z.number().int().positive().nullable(),
+  heading: z.string().nullable(),
+  snippet: z.string(),
+});
+
+const readNoteSchema = z.object({
+  note: noteMetadataSchema,
+  content: z.string(),
+  truncated: z.boolean(),
+  nextOffset: z.number().int().nonnegative().nullable(),
+});
+
 const writeAnnotations = {
   readOnlyHint: false,
   destructiveHint: false,
@@ -32,19 +52,23 @@ const writeAnnotations = {
   openWorldHint: true,
 } as const;
 
+function noteMetadata(note: Note) {
+  return {
+    id: note.id,
+    title: note.title,
+    tags: note.tags,
+    pinned: note.pinned,
+    archived: note.archived,
+    deletedAt: note.deletedAt,
+    createdAt: note.createdAt,
+    updatedAt: note.updatedAt,
+    revision: note.revision,
+  };
+}
+
 function noteResult(note: Note, operationId: string) {
   const result = {
-    note: {
-      id: note.id,
-      title: note.title,
-      tags: note.tags,
-      pinned: note.pinned,
-      archived: note.archived,
-      deletedAt: note.deletedAt,
-      createdAt: note.createdAt,
-      updatedAt: note.updatedAt,
-      revision: note.revision,
-    },
+    note: noteMetadata(note),
     operationId,
   };
   return {
@@ -75,22 +99,43 @@ async function save(
   return noteResult(result.note, operationId);
 }
 
+async function recentNotes(client: EasyNoteClient, view: 'all' | 'archive'): Promise<IntegrationNoteSummary[]> {
+  const notes: IntegrationNoteSummary[] = [];
+  let offset = 0;
+  while (notes.length < 50) {
+    const page = await client.search({ view, sort: 'updated', limit: Math.min(20, 50 - notes.length), offset });
+    notes.push(...page.notes);
+    if (page.nextOffset === null) break;
+    offset = page.nextOffset;
+  }
+  return notes;
+}
+
+function resourceMarkdown(note: Note): string {
+  const title = note.title.replace(/\s+/g, ' ').trim() || 'Untitled note';
+  return `# ${title}\n\n${note.content}`;
+}
+
 async function createMcpServer(client: EasyNoteClient): Promise<McpServer> {
   const status = await client.status();
   const server = new McpServer({ name: 'easynote-mcp-server', version: '0.1.0' });
 
   server.registerTool('easynote_search_notes', {
     title: 'Search EasyNote Notes',
-    description: 'Search active or archived EasyNote notes by title and Markdown body, optionally filtering by one exact tag. Returns compact metadata, excerpts, IDs and revisions with offset pagination.',
+    description: 'Search active or archived EasyNote notes by exact substring with full-text relevance ranking, optionally filtering by one exact tag. Returns up to three contextual matches per note plus metadata, resource URIs and offset pagination.',
     inputSchema: z.object({
       query: z.string().max(200).default('').describe('Text matched against title and Markdown body. Chinese substring search is supported.'),
       tag: z.string().max(40).default('').describe('Optional exact tag filter.'),
       view: z.enum(['all', 'archive']).default('all').describe('all means active, non-archived notes; archive means archived notes.'),
-      limit: z.number().int().min(1).max(50).default(20),
+      limit: z.number().int().min(1).max(20).default(20),
       offset: z.number().int().min(0).default(0),
     }).strict(),
     outputSchema: z.object({
-      notes: z.array(noteMetadataSchema.extend({ excerpt: z.string() })),
+      notes: z.array(noteMetadataSchema.extend({
+        excerpt: z.string(),
+        matches: z.array(noteSearchMatchSchema).max(3),
+        uri: z.string(),
+      })),
       count: z.number(),
       offset: z.number(),
       hasMore: z.boolean(),
@@ -129,12 +174,7 @@ async function createMcpServer(client: EasyNoteClient): Promise<McpServer> {
       offset: z.number().int().min(0).default(0).describe('Character offset in the Markdown body.'),
       limit: z.number().int().min(1).max(50_000).default(25_000).describe('Maximum Markdown characters to return.'),
     }).strict(),
-    outputSchema: z.object({
-      note: noteMetadataSchema,
-      content: z.string(),
-      truncated: z.boolean(),
-      nextOffset: z.number().nullable(),
-    }),
+    outputSchema: readNoteSchema,
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -147,20 +187,50 @@ async function createMcpServer(client: EasyNoteClient): Promise<McpServer> {
       const content = note.content.slice(offset, offset + limit);
       const truncated = offset + content.length < note.content.length;
       const result = {
-        note: {
-          id: note.id,
-          title: note.title,
-          tags: note.tags,
-          pinned: note.pinned,
-          archived: note.archived,
-          deletedAt: note.deletedAt,
-          createdAt: note.createdAt,
-          updatedAt: note.updatedAt,
-          revision: note.revision,
-        },
+        note: noteMetadata(note),
         content,
         truncated,
         nextOffset: truncated ? offset + content.length : null,
+      };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return toolError(error);
+    }
+  });
+
+  server.registerTool('easynote_read_notes', {
+    title: 'Read Multiple EasyNote Notes',
+    description: 'Read up to 20 EasyNote notes in one request, preserving the requested ID order. Each Markdown body is independently bounded; use easynote_read_note with nextOffset to continue a truncated note.',
+    inputSchema: z.object({
+      ids: z.array(z.uuid()).min(1).max(20).describe('Stable note IDs returned by easynote_search_notes.'),
+      max_chars_per_note: z.number().int().min(1).max(25_000).default(12_000),
+    }).strict(),
+    outputSchema: z.object({
+      notes: z.array(readNoteSchema),
+    }),
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ ids, max_chars_per_note }) => {
+    try {
+      const notes = (await client.notes(ids)).notes;
+      const result = {
+        notes: notes.map((note) => {
+          const content = note.content.slice(0, max_chars_per_note);
+          const truncated = content.length < note.content.length;
+          return {
+            note: noteMetadata(note),
+            content,
+            truncated,
+            nextOffset: truncated ? content.length : null,
+          };
+        }),
       };
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
@@ -196,6 +266,39 @@ async function createMcpServer(client: EasyNoteClient): Promise<McpServer> {
     } catch (error) {
       return toolError(error);
     }
+  });
+
+  const noteTemplate = new ResourceTemplate('easynote://notes/{id}.md', {
+    list: async () => {
+      const notes = (await Promise.all([
+        recentNotes(client, 'all'),
+        recentNotes(client, 'archive'),
+      ])).flat().sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id)).slice(0, 100);
+      return {
+        resources: notes.map((note) => ({
+          uri: `easynote://notes/${note.id}.md`,
+          name: note.title || 'Untitled note',
+          description: `Revision ${note.revision}${note.tags.length ? `; tags: ${note.tags.join(', ')}` : ''}`,
+          mimeType: 'text/markdown',
+        })),
+      };
+    },
+  });
+  server.registerResource('easynote_note', noteTemplate, {
+    title: 'EasyNote Note',
+    description: 'A live EasyNote note represented as Markdown.',
+    mimeType: 'text/markdown',
+  }, async (uri, variables) => {
+    const id = variables.id;
+    if (typeof id !== 'string' || !idPattern.test(id)) throw new Error('The EasyNote resource URI has an invalid note ID.');
+    const note = (await client.note(id)).note;
+    return {
+      contents: [{
+        uri: uri.href,
+        mimeType: 'text/markdown',
+        text: resourceMarkdown(note),
+      }],
+    };
   });
 
   if (status.access !== 'read-write') return server;

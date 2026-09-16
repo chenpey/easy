@@ -1,4 +1,4 @@
-import type { Note, NoteInput, NoteSummary } from '../shared/types.js';
+import type { IntegrationNoteSummary, Note, NoteInput } from '../shared/types.js';
 
 export interface BridgeConfig {
   url: string;
@@ -12,7 +12,7 @@ export interface IntegrationStatus {
 }
 
 export interface SearchPage {
-  notes: NoteSummary[];
+  notes: IntegrationNoteSummary[];
   nextOffset: number | null;
 }
 
@@ -90,7 +90,14 @@ export class EasyNoteClient {
     return this.json('/api/integrations/status');
   }
 
-  search(query: { q?: string; view?: 'all' | 'archive'; tag?: string; offset?: number; limit?: number }): Promise<SearchPage> {
+  search(query: {
+    q?: string;
+    view?: 'all' | 'archive';
+    tag?: string;
+    sort?: 'default' | 'updated';
+    offset?: number;
+    limit?: number;
+  }): Promise<SearchPage> {
     const parameters = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined && value !== '') parameters.set(key, String(value));
@@ -100,6 +107,11 @@ export class EasyNoteClient {
 
   note(id: string): Promise<{ note: Note }> {
     return this.json(`/api/integrations/notes/${encodeURIComponent(id)}`);
+  }
+
+  notes(ids: string[]): Promise<{ notes: Note[] }> {
+    const parameters = new URLSearchParams({ ids: ids.join(',') });
+    return this.json(`/api/integrations/notes/batch?${parameters}`);
   }
 
   save(id: string, input: NoteInput, revision: number, operationId: string): Promise<{ note: Note; unchanged?: boolean }> {

@@ -93,6 +93,7 @@ test('MCP searches, reads and writes through the EasyNote API', async () => {
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_update_note'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_search_notes'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_read_note'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_read_notes'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_connection_status'));
     assert.ok(!tools.tools.some((tool) => tool.name.includes('sync') || tool.name.includes('purge')));
 
@@ -100,17 +101,49 @@ test('MCP searches, reads and writes through the EasyNote API', async () => {
       name: 'easynote_search_notes',
       arguments: { query: '法兰克福', limit: 10 },
     });
-    assert.ok((evaluationSearch.structuredContent as { notes: Array<{ title: string }> }).notes
-      .some((item) => item.title === 'Atlas 发布验收'));
-
-    const atlas = (evaluationSearch.structuredContent as { notes: Array<{ id: string; title: string }> }).notes
+    const evaluationNotes = (evaluationSearch.structuredContent as {
+      notes: Array<{
+        id: string;
+        title: string;
+        uri: string;
+        matches: Array<{ field: string; line: number | null; heading: string | null; snippet: string }>;
+      }>;
+    }).notes;
+    const acceptance = evaluationNotes.find((item) => item.title === 'Atlas 发布验收');
+    assert.ok(acceptance);
+    const atlas = evaluationNotes
       .find((item) => item.title === 'Atlas 事故复盘');
     assert.ok(atlas);
+    assert.equal(atlas.uri, `easynote://notes/${atlas.id}.md`);
+    assert.ok(atlas.matches.some((match) =>
+      match.field === 'content' && match.heading === '影响' && match.snippet.includes('法兰克福')));
+
     const read = await client.callTool({
       name: 'easynote_read_note',
       arguments: { id: atlas.id, limit: 100 },
     });
     assert.match((read.structuredContent as { content: string }).content, /47 分钟/);
+
+    const batchRead = await client.callTool({
+      name: 'easynote_read_notes',
+      arguments: { ids: [acceptance.id, atlas.id], max_chars_per_note: 40 },
+    });
+    const batchNotes = (batchRead.structuredContent as {
+      notes: Array<{ note: { id: string }; content: string; truncated: boolean; nextOffset: number | null }>;
+    }).notes;
+    assert.deepEqual(batchNotes.map((item) => item.note.id), [acceptance.id, atlas.id]);
+    assert.match(batchNotes[0].content, /99\.96%/);
+    assert.match(batchNotes[1].content, /47 分钟/);
+    assert.ok(batchNotes.every((item) => item.truncated && item.nextOffset === 40));
+
+    const templates = await client.listResourceTemplates();
+    assert.ok(templates.resourceTemplates.some((template) => template.uriTemplate === 'easynote://notes/{id}.md'));
+    const resources = await client.listResources();
+    assert.ok(resources.resources.some((resource) => resource.uri === atlas.uri && resource.name === atlas.title));
+    const resource = await client.readResource({ uri: atlas.uri });
+    assert.equal(resource.contents[0].mimeType, 'text/markdown');
+    assert.match((resource.contents[0] as { text: string }).text, /^# Atlas 事故复盘/);
+    assert.match((resource.contents[0] as { text: string }).text, /47 分钟/);
 
     const result = await client.callTool({
       name: 'easynote_create_note',
@@ -161,6 +194,7 @@ test('read-only MCP credentials do not expose write tools', async () => {
     assert.deepEqual(tools.tools.map((tool) => tool.name), [
       'easynote_search_notes',
       'easynote_read_note',
+      'easynote_read_notes',
       'easynote_connection_status',
     ]);
   } finally {

@@ -6,6 +6,7 @@ export interface Identity {
   username: string;
   csrf: string;
   tokenHash: string;
+  sessionExpiresAt: number | null;
   actorType: 'user' | 'ai';
   actorName: string;
 }
@@ -27,7 +28,7 @@ function parseVerifier(value: string): Verifier {
   return parsed;
 }
 
-async function matches(password: string, stored?: string): Promise<boolean> {
+export async function passwordMatches(password: string, stored?: string): Promise<boolean> {
   let valid = false;
   let verifier: Verifier = { salt: '0'.repeat(64), proof: '0'.repeat(64) };
   try { verifier = parseVerifier(stored ?? ''); valid = true; } catch { /* Keep the password derivation path uniform. */ }
@@ -35,6 +36,29 @@ async function matches(password: string, stored?: string): Promise<boolean> {
   let difference = 0;
   for (let i = 0; i < 64; i++) difference |= derived.proof.charCodeAt(i) ^ verifier.proof.charCodeAt(i);
   return valid && difference === 0;
+}
+
+function accountPasswords(data: Record<string, unknown>, includeNew: boolean): { currentPassword: string; newPassword?: string } {
+  const allowed = includeNew ? ['currentPassword', 'newPassword'] : ['currentPassword'];
+  if (Object.keys(data).some((key) => !allowed.includes(key)) ||
+      typeof data.currentPassword !== 'string' || data.currentPassword.length > 128 ||
+      includeNew && (typeof data.newPassword !== 'string' || data.newPassword.length < 12 || data.newPassword.length > 128)) {
+    throw new ApiError(400, includeNew
+      ? 'Current password and a new password of 12-128 characters are required.'
+      : 'Current password is required.');
+  }
+  return {
+    currentPassword: data.currentPassword,
+    ...(includeNew ? { newPassword: data.newPassword as string } : {}),
+  };
+}
+
+async function requireCurrentPassword(env: Env, user: Identity, password: string): Promise<void> {
+  const account = await env.DB.prepare('SELECT password_verifier FROM users WHERE id=?')
+    .bind(user.id).first<{ password_verifier: string }>();
+  if (!account || !await passwordMatches(password, account.password_verifier)) {
+    throw new ApiError(403, 'Current password is incorrect.');
+  }
 }
 
 export async function ensureOwner(env: Env): Promise<boolean> {
@@ -62,8 +86,9 @@ export async function identity(request: Request, env: Env): Promise<Identity | n
   const value = request.headers.get('Cookie')?.split(';').map((part) => part.trim()).find((part) => part.startsWith(name))?.slice(name.length);
   if (!value || !/^[a-f0-9]{64}$/.test(value)) return null;
   const tokenHash = await digest(value);
-  const row = await env.DB.prepare(`SELECT u.id, u.username, s.csrf FROM sessions s JOIN users u ON s.user_id=u.id
-    WHERE s.token_hash=? AND s.expires_at>?`).bind(tokenHash, Date.now()).first<{ id: string; username: string; csrf: string }>();
+  const row = await env.DB.prepare(`SELECT u.id, u.username, s.csrf, s.expires_at AS sessionExpiresAt
+    FROM sessions s JOIN users u ON s.user_id=u.id WHERE s.token_hash=? AND s.expires_at>?`)
+    .bind(tokenHash, Date.now()).first<{ id: string; username: string; csrf: string; sessionExpiresAt: number }>();
   return row ? { ...row, tokenHash, actorType: 'user', actorName: row.username } : null;
 }
 
@@ -81,7 +106,13 @@ export async function authRoute(request: Request, env: Env, path: string): Promi
   if (path === '/api/session' && request.method === 'GET') {
     const configured = await ensureOwner(env);
     const user = await identity(request, env);
-    return json({ user: user ? { id: user.id, username: user.username } : null, csrf: user?.csrf ?? null, configured, config: clientConfig(env) });
+    return json({
+      user: user ? { id: user.id, username: user.username } : null,
+      csrf: user?.csrf ?? null,
+      configured,
+      config: clientConfig(env),
+      expiresAt: user?.sessionExpiresAt ?? null,
+    });
   }
   if (path === '/api/login' && request.method === 'POST') {
     requireOrigin(request);
@@ -106,18 +137,40 @@ export async function authRoute(request: Request, env: Env, path: string): Promi
     }
     const user = await env.DB.prepare('SELECT id, username, password_verifier FROM users WHERE username=?')
       .bind(data.username.trim().toLowerCase()).first<{ id: string; username: string; password_verifier: string }>();
-    if (!await matches(data.password, user?.password_verifier) || !user) throw new ApiError(401, 'Incorrect username or password.');
+    if (!await passwordMatches(data.password, user?.password_verifier) || !user) throw new ApiError(401, 'Incorrect username or password.');
     const value = token();
     const csrf = token();
     const ttl = numberSetting(env, 'SESSION_DAYS', 1, 90) * 86400;
-    await env.DB.prepare('INSERT INTO sessions VALUES(?, ?, ?, ?)').bind(await digest(value), user.id, csrf, Date.now() + ttl * 1000).run();
-    return json({ user: { id: user.id, username: user.username }, csrf, configured: true, config: clientConfig(env) }, 200, {
+    const expiresAt = Date.now() + ttl * 1000;
+    await env.DB.prepare('INSERT INTO sessions VALUES(?, ?, ?, ?)').bind(await digest(value), user.id, csrf, expiresAt).run();
+    return json({ user: { id: user.id, username: user.username }, csrf, configured: true, config: clientConfig(env), expiresAt }, 200, {
       'Set-Cookie': cookie(request, env, value, ttl),
     });
   }
   if (path === '/api/logout' && request.method === 'POST') {
     const user = await requireIdentity(request, env);
     await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(user.tokenHash).run();
+    return json({ ok: true }, 200, { 'Set-Cookie': cookie(request, env, '', 0) });
+  }
+  if (path === '/api/account/password' && request.method === 'POST') {
+    const user = await requireIdentity(request, env);
+    const passwords = accountPasswords(await readJson(request, 4096), true);
+    await requireCurrentPassword(env, user, passwords.currentPassword);
+    if (passwords.currentPassword === passwords.newPassword) throw new ApiError(400, 'The new password must be different.');
+    const verifier = await passwordVerifier(passwords.newPassword!);
+    await env.DB.batch([
+      env.DB.prepare('UPDATE users SET password_verifier=? WHERE id=?')
+        .bind(JSON.stringify(verifier), user.id),
+      env.DB.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash<>?')
+        .bind(user.id, user.tokenHash),
+    ]);
+    return json({ ok: true, otherSessionsRevoked: true });
+  }
+  if (path === '/api/account/logout-all' && request.method === 'POST') {
+    const user = await requireIdentity(request, env);
+    const passwords = accountPasswords(await readJson(request, 4096), false);
+    await requireCurrentPassword(env, user, passwords.currentPassword);
+    await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(user.id).run();
     return json({ ok: true }, 200, { 'Set-Cookie': cookie(request, env, '', 0) });
   }
   return null;

@@ -5,5 +5,6 @@ dist/
 wrangler.deploy.json
 test-results/
 playwright-report/
+backups/
 *.log
 .DS_Store

@@ -1,15 +1,17 @@
 import { zip, unzip, strToU8, strFromU8 } from 'fflate';
-import { idPattern, imageIds, imagePath, type ClientConfig } from '../shared/types';
-import { api, uploadImage } from './api';
+import { filePath, idPattern, imagePath, storedFileIds, type ClientConfig } from '../shared/types';
+import { api, uploadAttachment, uploadImage } from './api';
+import { loadCachedFile, loadDrafts } from './drafts';
 
 const MAX_ARCHIVE_BYTES = 64 * 1024 ** 2;
 const MAX_ENTRIES = 1200;
 const NOTE_PATH = /^notes\/[^<>:"/\\|?*\u0000-\u001f]+\.md$/;
+const FILE_PATH = /^files\/[0-9a-f-]{36}-[^<>:"/\\|?*\u0000-\u001f]+$/i;
 interface Manifest {
   format: 'easynote';
-  version: 1;
+  version: 2;
   notes: Array<{ id: string; path: string; title: string; tags: string[]; pinned: boolean; archived: boolean; deletedAt: number | null }>;
-  images: Array<{ id: string; path: string; mime: string; filename: string; sha256: string }>;
+  files: Array<{ id: string; path: string; mime: string; filename: string; sha256: string }>;
 }
 export interface ImportResult {
   imported: number;
@@ -44,9 +46,28 @@ function noteExportPath(title: string, used: Set<string>): string {
   return `notes/${filename}`;
 }
 
+function safeFilename(value: string): string {
+  return value.normalize('NFC').trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/\s+/g, ' ')
+    .replace(/^[. ]+|[. ]+$/g, '').slice(0, 120).replace(/[. ]+$/g, '') || '附件';
+}
+
+function responseFilename(response: Response, fallback: string): string {
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(response.headers.get('Content-Disposition') ?? '')?.[1];
+  try { return encoded ? decodeURIComponent(encoded) : fallback; } catch { return fallback; }
+}
+
+function download(name: string, bytes: Uint8Array): void {
+  const href = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'application/zip' }));
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(href), 10000);
+}
+
 export async function exportArchive(progress: (text: string) => void): Promise<void> {
   const files: Record<string, Uint8Array> = {};
-  const manifest: Manifest = { format: 'easynote', version: 1, notes: [], images: [] };
+  const manifest: Manifest = { format: 'easynote', version: 2, notes: [], files: [] };
   let total = 0;
   const add = (path: string, bytes: Uint8Array) => {
     total += bytes.byteLength;
@@ -60,7 +81,7 @@ export async function exportArchive(progress: (text: string) => void): Promise<v
     page.notes.forEach((n) => ids.add(n.id));
     offset = page.nextOffset;
   } while (offset !== null);
-  const images = new Set<string>();
+  const storedFiles = new Set<string>();
   const noteFilenames = new Set<string>();
   for (const id of ids) {
     const { note } = await api.note(id);
@@ -70,32 +91,84 @@ export async function exportArchive(progress: (text: string) => void): Promise<v
       id, path, title: note.title, tags: note.tags,
       pinned: note.pinned, archived: note.archived, deletedAt: note.deletedAt,
     });
-    imageIds(note.content).forEach((image) => images.add(image));
+    storedFileIds(note.content).forEach((file) => storedFiles.add(file));
     progress(`导出笔记 ${manifest.notes.length}/${ids.size}`);
   }
-  for (const id of images) {
-    const path = `images/${id}`;
-    const response = await fetch(imagePath(id));
-    if (!response.ok) throw new Error(`GET ${imagePath(id)} [${response.status}]\n${await response.text()}`);
+  for (const id of storedFiles) {
+    const response = await fetch(filePath(id));
+    if (!response.ok) throw new Error(`GET ${filePath(id)} [${response.status}]\n${await response.text()}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
+    const filename = responseFilename(response, id);
+    const path = `files/${id}-${safeFilename(filename)}`;
     add(path, bytes);
     const mime = response.headers.get('Content-Type') ?? '';
-    const extension = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' } as Record<string, string>)[mime];
-    if (!extension) throw new Error('Unsupported backup image type.');
-    manifest.images.push({ id, path, mime, filename: `${id}.${extension}`, sha256: await sha(bytes) });
-    progress(`导出图片 ${manifest.images.length}/${images.size}`);
+    manifest.files.push({ id, path, mime, filename, sha256: await sha(bytes) });
+    progress(`导出文件 ${manifest.files.length}/${storedFiles.size}`);
   }
-  // Keep Markdown readable after extraction; the manifest retains the original stable image identifiers.
+  // Keep Markdown readable after extraction; the manifest retains stable file identifiers.
   for (const entry of manifest.notes) {
-    files[entry.path] = strToU8(strFromU8(files[entry.path]).replace(/\/api\/images\/([0-9a-f-]{36})/gi, '../images/$1'));
+    let content = strFromU8(files[entry.path]);
+    for (const stored of manifest.files) {
+      content = content.replaceAll(imagePath(stored.id), `../${stored.path}`)
+        .replaceAll(filePath(stored.id), `../${stored.path}`);
+    }
+    files[entry.path] = strToU8(content);
   }
   add('manifest.json', strToU8(JSON.stringify(manifest, null, 2)));
   const bytes = await new Promise<Uint8Array>((resolve, reject) =>
     zip(files, { level: 0 }, (error, data) => error ? reject(error) : resolve(data)));
-  const href = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'application/zip' }));
-  const link = document.createElement('a');
-  link.href = href; link.download = `easynote-${new Date().toISOString().slice(0, 10)}.zip`; link.click();
-  setTimeout(() => URL.revokeObjectURL(href), 10000);
+  download(`easynote-${new Date().toISOString().slice(0, 10)}.zip`, bytes);
+}
+
+export async function exportLocalDrafts(userId: string, progress: (text: string) => void): Promise<number> {
+  const drafts = await loadDrafts(userId);
+  if (!drafts.size) throw new Error('当前没有待同步的本机草稿。');
+  const files: Record<string, Uint8Array> = {};
+  let total = 0;
+  const add = (path: string, bytes: Uint8Array) => {
+    total += bytes.byteLength;
+    if (total > MAX_ARCHIVE_BYTES || Object.keys(files).length >= MAX_ENTRIES) {
+      throw new Error('本机草稿导出上限为 64 MiB / 1200 个文件。');
+    }
+    files[path] = bytes;
+  };
+  const used = new Set<string>();
+  const manifest = {
+    format: 'easynote-local-drafts',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    drafts: [] as Array<{ id: string; path: string; title: string; revision: number; operationId: string }>,
+    files: [] as Array<{ id: string; path: string; mime: string; filename: string; sha256: string }>,
+  };
+  const referenced = new Set<string>();
+  for (const [id, draft] of drafts) {
+    const path = noteExportPath(draft.note.title, used).replace(/^notes\//, 'drafts/');
+    add(path, strToU8(draft.note.content));
+    manifest.drafts.push({ id, path, title: draft.note.title, revision: draft.note.revision, operationId: draft.operationId });
+    storedFileIds(draft.note.content).forEach((file) => referenced.add(file));
+  }
+  for (const id of referenced) {
+    const cached = await loadCachedFile(userId, id);
+    if (!cached) continue;
+    const path = `files/${id}-${safeFilename(cached.filename)}`;
+    const bytes = new Uint8Array(await cached.blob.arrayBuffer());
+    add(path, bytes);
+    manifest.files.push({ id, path, mime: cached.mime, filename: cached.filename, sha256: await sha(bytes) });
+  }
+  for (const draft of manifest.drafts) {
+    let content = strFromU8(files[draft.path]);
+    for (const stored of manifest.files) {
+      content = content.replaceAll(imagePath(stored.id), `../${stored.path}`)
+        .replaceAll(filePath(stored.id), `../${stored.path}`);
+    }
+    files[draft.path] = strToU8(content);
+  }
+  add('manifest.json', strToU8(JSON.stringify(manifest, null, 2)));
+  progress(`正在打包 ${drafts.size} 篇草稿`);
+  const bytes = await new Promise<Uint8Array>((resolve, reject) =>
+    zip(files, { level: 0 }, (error, data) => error ? reject(error) : resolve(data)));
+  download(`easynote-local-drafts-${new Date().toISOString().slice(0, 10)}.zip`, bytes);
+  return drafts.size;
 }
 
 async function unpack(file: File): Promise<Record<string, Uint8Array>> {
@@ -140,17 +213,20 @@ export async function importArchive(file: File, config: ClientConfig, progress: 
   const files = await unpack(file);
   if (!files['manifest.json'] || files['manifest.json'].length > 2 * 1024 ** 2) throw new Error('未找到有效的 EasyNote 备份清单。');
   const manifest = JSON.parse(strFromU8(files['manifest.json'])) as Manifest;
-  if (manifest.format !== 'easynote' || manifest.version !== 1 ||
-      !Array.isArray(manifest.notes) || !Array.isArray(manifest.images)) {
+  if (manifest.format !== 'easynote' || manifest.version !== 2 ||
+      !Array.isArray(manifest.notes) || !Array.isArray(manifest.files)) {
     throw new Error('不支持的备份格式。');
   }
   const seen = new Set<string>();
-  for (const entry of manifest.images) {
-    if (!entry || typeof entry.id !== 'string' || !idPattern.test(entry.id) || seen.has(entry.id) || entry.path !== `images/${entry.id}` ||
-        !files[entry.path] || files[entry.path].length > config.maxImageBytes ||
+  for (const entry of manifest.files) {
+    if (!entry || typeof entry.id !== 'string' || !idPattern.test(entry.id) || seen.has(entry.id) ||
+        typeof entry.path !== 'string' || entry.path.length > 240 || !FILE_PATH.test(entry.path) || !entry.path.startsWith(`files/${entry.id}-`) ||
+        !files[entry.path] ||
         typeof entry.filename !== 'string' || !entry.filename || entry.filename.length > 180 || /[/\\\u0000-\u001f]/.test(entry.filename) ||
-        !['image/jpeg', 'image/png', 'image/webp'].includes(entry.mime) || await sha(files[entry.path]) !== entry.sha256) {
-      throw new Error('图片缺失、重复或校验失败。');
+        !['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'text/plain', 'text/markdown', 'text/csv', 'application/json'].includes(entry.mime) ||
+        files[entry.path].length > (entry.mime.startsWith('image/') ? config.maxImageBytes : config.maxAttachmentBytes) ||
+        await sha(files[entry.path]) !== entry.sha256) {
+      throw new Error('文件缺失、重复或校验失败。');
     }
     seen.add(entry.id);
   }
@@ -169,8 +245,12 @@ export async function importArchive(file: File, config: ClientConfig, progress: 
     }
     planned.add(entry.id);
     notePaths.add(pathKey);
-    const content = strFromU8(files[entry.path]).replace(/\.\.\/images\/([0-9a-f-]{36})/gi, '/api/images/$1');
-    if (imageIds(content).some((id) => !seen.has(id))) throw new Error('笔记引用的图片不在备份中。');
+    let content = strFromU8(files[entry.path]);
+    for (const stored of manifest.files) {
+      const canonical = stored.mime.startsWith('image/') ? imagePath(stored.id) : filePath(stored.id);
+      content = content.replaceAll(`../${stored.path}`, canonical);
+    }
+    if (storedFileIds(content).some((id) => !seen.has(id))) throw new Error('笔记引用的文件不在备份中。');
     prepared.push({ entry, content });
   }
   const unique: typeof prepared = [];
@@ -186,18 +266,24 @@ export async function importArchive(file: File, config: ClientConfig, progress: 
     fingerprints.add(fingerprint);
     unique.push(candidate);
   }
-  const neededImages = new Set(unique.flatMap(({ content }) => imageIds(content)));
+  const neededFiles = new Set(unique.flatMap(({ content }) => storedFileIds(content)));
   const remap = new Map<string, string>();
   let imported = 0;
   try {
-    for (const entry of manifest.images.filter((image) => neededImages.has(image.id))) {
-      const image = await uploadImage(new File([new Uint8Array(files[entry.path])], entry.filename, { type: entry.mime }), config.maxImageBytes, config.maxImagePixels);
-      remap.set(entry.id, image.id);
-      progress(`恢复图片 ${remap.size}/${neededImages.size}`);
+    for (const entry of manifest.files.filter((file) => neededFiles.has(file.id))) {
+      const source = new File([new Uint8Array(files[entry.path])], entry.filename, { type: entry.mime });
+      const uploaded = entry.mime.startsWith('image/')
+        ? await uploadImage(source, config.maxImageBytes, config.maxImagePixels)
+        : await uploadAttachment(source, config.maxAttachmentBytes);
+      remap.set(entry.id, uploaded.id);
+      progress(`恢复文件 ${remap.size}/${neededFiles.size}`);
     }
     for (const { entry, content: sourceContent } of unique) {
       const content = sourceContent
-        .replace(/(?:\.\.\/images\/|\/api\/images\/)([0-9a-f-]{36})/gi, (_all, id: string) => imagePath(remap.get(id) ?? id));
+        .replace(/\/api\/(images|files)\/([0-9a-f-]{36})/gi, (_all, kind: string, id: string) => {
+          const next = remap.get(id) ?? id;
+          return kind.toLowerCase() === 'images' ? imagePath(next) : filePath(next);
+        });
       await api.save(crypto.randomUUID(), {
         title: entry.title, content, tags: entry.tags, pinned: entry.pinned,
         archived: entry.archived, deletedAt: entry.deletedAt,

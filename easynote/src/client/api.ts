@@ -1,4 +1,4 @@
-import type { IntegrationToken, Note, NoteInput, NoteSummary, Session, Version, ImageRecord } from '../shared/types';
+import type { IntegrationToken, Note, NoteInput, NoteSummary, Session, Version, ImageRecord, StoredFile, SyncChange } from '../shared/types';
 
 const API_TIMEOUT_MS = 30_000;
 const UPLOAD_TIMEOUT_MS = 120_000;
@@ -61,6 +61,10 @@ export const api = {
   session: () => request<Session>('/api/session'),
   login: (username: string, password: string) => request<Session>('/api/login', 'POST', { username, password }),
   logout: () => request('/api/logout', 'POST', {}),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ ok: true; otherSessionsRevoked: true }>('/api/account/password', 'POST', { currentPassword, newPassword }),
+  logoutAll: (currentPassword: string) =>
+    request<{ ok: true }>('/api/account/logout-all', 'POST', { currentPassword }),
   list: (query: { q?: string; view?: string; tag?: string; offset?: number } = {}, signal?: AbortSignal) =>
     request<{ notes: NoteSummary[]; nextOffset: number | null }>(`/api/notes?${new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]))}`, 'GET', undefined, signal),
   tags: (view: string, signal?: AbortSignal) =>
@@ -74,20 +78,22 @@ export const api = {
   purge: (note: Note) => request(`/api/notes/${note.id}`, 'DELETE', { revision: note.revision }),
   purgeTrash: () => request<{ deleted: number }>('/api/notes/trash', 'DELETE', {}),
   versions: (id: string) => request<{ versions: Version[] }>(`/api/notes/${id}/versions`),
+  backlinks: (id: string) => request<{ notes: NoteSummary[] }>(`/api/notes/${id}/backlinks`),
+  sync: (after: number, signal?: AbortSignal) =>
+    request<{ changes: SyncChange[]; cursor: number; hasMore: boolean }>(`/api/sync?after=${after}&limit=200`, 'GET', undefined, signal),
   integrationTokens: () => request<{ tokens: IntegrationToken[] }>('/api/integrations/tokens'),
   createIntegrationToken: (name: string, access: IntegrationToken['access'], expiresInDays: number | null) =>
     request<{ token: IntegrationToken; secret: string }>('/api/integrations/tokens', 'POST', { name, access, expiresInDays }),
   revokeIntegrationToken: (id: string) => request(`/api/integrations/tokens/${encodeURIComponent(id)}`, 'DELETE', {}),
 };
 
-export async function uploadImage(file: File, maxBytes: number, maxPixels: number): Promise<ImageRecord> {
-  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('仅支持 JPEG、PNG、WebP 图片。');
-  if (file.size > maxBytes) throw new Error(`图片不能超过 ${Math.round(maxBytes / 1024 ** 2)} MiB。`);
-  const bitmap = await createImageBitmap(file);
-  const pixels = bitmap.width * bitmap.height;
-  bitmap.close();
-  if (pixels > maxPixels) throw new Error('图片尺寸超过限制。');
-  const path = `/api/images/${crypto.randomUUID()}`;
+async function uploadStoredFile<T extends 'image' | 'file'>(
+  file: File,
+  route: T,
+  maxBytes: number,
+): Promise<T extends 'image' ? ImageRecord : StoredFile> {
+  if (file.size > maxBytes) throw new Error(`文件不能超过 ${Math.round(maxBytes / 1024 ** 2)} MiB。`);
+  const path = `/api/${route === 'image' ? 'images' : 'files'}/${crypto.randomUUID()}`;
   const requestCsrf = csrf;
   const { response, raw } = await timedFetch(path, {
     method: 'PUT', credentials: 'same-origin',
@@ -98,5 +104,26 @@ export async function uploadImage(file: File, maxBytes: number, maxPixels: numbe
   let body;
   try { body = JSON.parse(raw); } catch { throw new Error(`PUT ${path} [${response.status}]\n${raw}`); }
   if (!response.ok) throw new ApiError(response.status, body, 'PUT', path);
-  return body.image;
+  return body[route] as T extends 'image' ? ImageRecord : StoredFile;
+}
+
+export async function uploadImage(file: File, maxBytes: number, maxPixels: number): Promise<ImageRecord> {
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('仅支持 JPEG、PNG、WebP 图片。');
+  if (file.size > maxBytes) throw new Error(`图片不能超过 ${Math.round(maxBytes / 1024 ** 2)} MiB。`);
+  const bitmap = await createImageBitmap(file);
+  const pixels = bitmap.width * bitmap.height;
+  bitmap.close();
+  if (pixels > maxPixels) throw new Error('图片尺寸超过限制。');
+  return uploadStoredFile(file, 'image', maxBytes);
+}
+
+export async function uploadAttachment(file: File, maxBytes: number): Promise<StoredFile> {
+  const allowed = new Set(['application/pdf', 'text/plain', 'text/markdown', 'text/csv', 'application/json']);
+  const extension = file.name.toLocaleLowerCase().split('.').pop() ?? '';
+  const inferred = ({ pdf: 'application/pdf', md: 'text/markdown', txt: 'text/plain', csv: 'text/csv', json: 'application/json' } as Record<string, string>)[extension];
+  const mime = allowed.has(file.type) ? file.type : inferred;
+  if (!mime) throw new Error('仅支持 PDF、Markdown、TXT、CSV 和 JSON 附件。');
+  const normalized = file.type === mime ? file : new File([file], file.name, { type: mime });
+  if (normalized.size > maxBytes) throw new Error(`附件不能超过 ${Math.round(maxBytes / 1024 ** 2)} MiB。`);
+  return uploadStoredFile(normalized, 'file', maxBytes);
 }

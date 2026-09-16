@@ -1,11 +1,15 @@
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, ChevronDown, Download, FileText, History, ImagePlus, LoaderCircle, LogOut, Maximize2, Minimize2, Moon, MoreHorizontal, PanelLeftClose, Pin, Plus, RefreshCw, Save, Search, Settings, Sun, Tag, Trash2, Upload, X, RotateCcw, PenLine } from 'lucide-react';
-import type { NoteInput, Session, Version } from '../shared/types';
-import { api, setSession, setUnauthorizedHandler, uploadImage } from './api';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, Command, Download, FileText, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
+import type { Note, NoteInput, NoteSummary, Session, Version } from '../shared/types';
+import { api, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
+import { AccountSecurity } from './AccountSecurity';
 import { AiAccess } from './AiAccess';
-import { Editor, Preview } from './Editor';
+import { Editor, Preview, toggleMarkdownTask, type EditorHandle } from './Editor';
+import { clearAccountStorage, forgetCachedSession, loadOfflineSession, cacheSession } from './drafts';
+import { headings, noteLink } from './knowledge';
+import { createPdfFile, downloadPdfFile } from './pdf';
 import { useNotebook } from './useNotebook';
-import { exportArchive, importArchive } from './transfer';
+import { exportArchive, exportLocalDrafts, importArchive } from './transfer';
 
 interface InstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -29,6 +33,65 @@ function Modal({ title, children, close }: { title: string; children: ReactNode;
   </dialog>;
 }
 
+function moveButtonFocus(event: ReactKeyboardEvent<HTMLElement>, selector: string) {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>(selector)]
+    .filter((button) => !button.disabled);
+  if (!buttons.length) return;
+  const current = event.target instanceof Element ? event.target.closest<HTMLButtonElement>(selector) : null;
+  const index = current ? buttons.indexOf(current) : -1;
+  const next = event.key === 'Home' ? 0
+    : event.key === 'End' ? buttons.length - 1
+      : event.key === 'ArrowDown' ? Math.min(index + 1, buttons.length - 1)
+        : Math.max(index < 0 ? buttons.length - 1 : index - 1, 0);
+  event.preventDefault();
+  buttons[next].focus();
+}
+
+function nextFrame() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function sourceLineOffset(content: string, line: number) {
+  let offset = 0;
+  for (let index = 0; index < line; index++) {
+    const newline = content.indexOf('\n', offset);
+    if (newline < 0) return content.length;
+    offset = newline + 1;
+  }
+  return offset;
+}
+
+async function waitForPrintReady() {
+  const deadline = Date.now() + 15_000;
+  await nextFrame();
+  await nextFrame();
+  while (Date.now() < deadline) {
+    const root = document.querySelector<HTMLElement>('.print-document[data-printing="true"]');
+    const images = [...(root?.querySelectorAll<HTMLImageElement>('img') ?? [])];
+    const diagramsReady = !root?.querySelector('[data-mermaid-source]');
+    const imagesReady = images.every((image) => image.complete && image.naturalWidth > 0);
+    const fontsReady = !document.fonts || document.fonts.status === 'loaded';
+    if (root && diagramsReady && imagesReady && fontsReady) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('PDF 内容准备超时，请检查笔记中的图片或图表后重试。');
+}
+
+function shouldCreatePdfFile() {
+  return navigator.maxTouchPoints > 0 || window.matchMedia('(max-width: 640px), (pointer: coarse)').matches;
+}
+
+function canSharePdf(file: File) {
+  try {
+    return typeof navigator.share === 'function' &&
+      typeof navigator.canShare === 'function' &&
+      navigator.canShare({ files: [file] });
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const [session, updateSession] = useState<Session | null>(null);
   const [bootError, setBootError] = useState('');
@@ -36,16 +99,31 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
-  const applySession = (value: Session) => { setSession(value); updateSession(value); };
+  const applySession = (value: Session) => {
+    setSession(value);
+    updateSession(value);
+    if (value.user && !value.offline) void cacheSession(value);
+  };
   const boot = () => {
     setBootError('');
-    void api.session().then(applySession).catch((e: unknown) => setBootError(String(e)));
+    void api.session().then(applySession).catch(async (error: unknown) => {
+      try {
+        const cached = await loadOfflineSession();
+        if (cached?.user) applySession(cached);
+        else setBootError(String(error));
+      } catch (cacheError) {
+        setBootError(`${String(error)}\n${String(cacheError)}`);
+      }
+    });
   };
   useEffect(() => {
     setUnauthorizedHandler(() => {
       setPassword('');
       setBootError('登录已过期，请重新登录。');
-      updateSession((current) => current ? { ...current, user: null, csrf: null } : current);
+      updateSession((current) => {
+        if (current?.user) void forgetCachedSession(current.user.id);
+        return current ? { ...current, user: null, csrf: null, expiresAt: null, offline: false } : current;
+      });
     });
     return () => setUnauthorizedHandler(null);
   }, []);
@@ -63,6 +141,34 @@ export default function App() {
     };
   }, []);
   useEffect(boot, []);
+  useEffect(() => {
+    if (!session?.offline) return;
+    let running = false;
+    const reconnect = async () => {
+      if (running || !navigator.onLine) return;
+      running = true;
+      try {
+        const value = await api.session();
+        if (value.user?.id === session.user?.id) {
+          applySession(value);
+        } else {
+          let storageError = '';
+          try { await clearAccountStorage(session.user!.id); }
+          catch (error) { storageError = `\n${String(error)}`; }
+          setPassword('');
+          setBootError(value.user ? storageError.trim() : `登录已过期，请重新登录。${storageError}`);
+          applySession(value);
+        }
+      } catch { /* Keep the cached library available until the server returns. */ }
+      finally { running = false; }
+    };
+    const timer = setInterval(() => void reconnect(), 5_000);
+    window.addEventListener('online', reconnect);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('online', reconnect);
+    };
+  }, [session?.offline, session?.user?.id]);
   if (session?.user) return <AccountWorkspace
     key={session.user.id}
     session={session}
@@ -72,8 +178,13 @@ export default function App() {
       await prompt.prompt();
       await prompt.userChoice;
     } : undefined}
-    logout={() => {
-      setPassword(''); applySession({ ...session, user: null, csrf: null });
+    logout={async () => {
+      let storageError = '';
+      try { await clearAccountStorage(session.user!.id); }
+      catch (error) { storageError = `本机离线数据清理失败：${String(error)}`; }
+      setPassword('');
+      setBootError(storageError);
+      applySession({ ...session, user: null, csrf: null, expiresAt: null, offline: false });
     }}
   />;
   return <main className="login">
@@ -92,7 +203,7 @@ export default function App() {
   </main>;
 }
 
-function AccountWorkspace({ session, installApp, logout }: { session: Session; installApp?(): Promise<void>; logout(): void }) {
+function AccountWorkspace({ session, installApp, logout }: { session: Session; installApp?(): Promise<void>; logout(): Promise<void> }) {
   const [ownsLock, setOwnsLock] = useState<boolean | null>(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -114,7 +225,7 @@ function AccountWorkspace({ session, installApp, logout }: { session: Session; i
   </div></main>;
 }
 
-function Notebook({ session, installApp, logout }: { session: Session; installApp?(): Promise<void>; logout(): void }) {
+function Notebook({ session, installApp, logout }: { session: Session; installApp?(): Promise<void>; logout(): Promise<void> }) {
   const book = useNotebook(session);
   const [layout, setLayout] = useState<'edit' | 'preview'>('edit');
   const [mobileNote, setMobileNote] = useState(false);
@@ -129,6 +240,29 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const noteListWidthRef = useRef(noteListWidth);
   const resizeStart = useRef<{ pointerId: number; x: number; width: number } | null>(null);
   const [settings, setSettings] = useState(false);
+  const [accountSecurity, setAccountSecurity] = useState(false);
+  const [commandPalette, setCommandPalette] = useState(false);
+  const [commandQuery, setCommandQuery] = useState('');
+  const [commandNotes, setCommandNotes] = useState<NoteSummary[]>([]);
+  const [shortcutHelp, setShortcutHelp] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [renderingPdfFile, setRenderingPdfFile] = useState(false);
+  const [pdfProgress, setPdfProgress] = useState('');
+  const [readyPdf, setReadyPdf] = useState<File | null>(null);
+  const [printNote, setPrintNote] = useState<Note | null>(null);
+  const [inspector, setInspector] = useState(false);
+  const [backlinks, setBacklinks] = useState<NoteSummary[]>([]);
+  const [linkPicker, setLinkPicker] = useState(false);
+  const [linkQuery, setLinkQuery] = useState('');
+  const [linkNotes, setLinkNotes] = useState<NoteSummary[]>([]);
+  const [tagManager, setTagManager] = useState(false);
+  const [tagSource, setTagSource] = useState('');
+  const [tagTarget, setTagTarget] = useState('');
+  const [tagAction, setTagAction] = useState<'rename' | 'merge' | 'delete'>('rename');
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkTagOpen, setBulkTagOpen] = useState(false);
+  const [bulkTag, setBulkTag] = useState('');
   const [versionList, setVersionList] = useState<Version[] | null>(null);
   const [versionNoteId, setVersionNoteId] = useState('');
   const [chosenVersion, setChosenVersion] = useState<Version | null>(null);
@@ -141,9 +275,17 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [dark, setDark] = useState(() => localStorage.getItem('easynote-theme') === 'dark');
   const [wideDocument, setWideDocument] = useState(() => localStorage.getItem('easynote-document-width') === 'wide');
   const [tagText, setTagText] = useState('');
+  const editor = useRef<EditorHandle>(null);
+  const editorCursor = useRef(0);
+  const pendingEditorOffset = useRef<number | null>(null);
+  const pendingInsertion = useRef<string | null>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const commandList = useRef<HTMLDivElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
+  const attachmentInput = useRef<HTMLInputElement>(null);
   const importInput = useRef<HTMLInputElement>(null);
   const note = book.note;
+  const outline = useMemo(() => headings(note?.content ?? ''), [note?.content]);
   const updateNoteListWidth = (value: number) => {
     const next = Math.min(440, Math.max(220, Math.round(value)));
     noteListWidthRef.current = next;
@@ -182,11 +324,45 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('easynote-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { setTagText(note?.tags.join(', ') ?? ''); }, [note?.id, JSON.stringify(note?.tags)]);
   useEffect(() => {
+    editorCursor.current = 0;
+    pendingEditorOffset.current = null;
+  }, [note?.id]);
+  useEffect(() => {
+    if (layout !== 'edit' || pendingEditorOffset.current === null) return;
+    const offset = pendingEditorOffset.current;
+    pendingEditorOffset.current = null;
+    const frame = requestAnimationFrame(() => editor.current?.goTo(offset));
+    return () => cancelAnimationFrame(frame);
+  }, [layout, note?.id]);
+  useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(null), 4500);
     return () => clearTimeout(timer);
   }, [notice]);
   const showNotice = (text: string) => setNotice({ id: Date.now(), text });
+  const showShortcutHelp = () => {
+    setCommandPalette(false);
+    setShortcutHelp(true);
+  };
+  const editAt = (offset: number) => {
+    editorCursor.current = offset;
+    if (layout === 'edit') {
+      editor.current?.goTo(offset);
+      return;
+    }
+    pendingEditorOffset.current = offset;
+    setLayout('edit');
+  };
+  const showPreview = () => {
+    if (!note || note.deletedAt) return;
+    editorCursor.current = editor.current?.cursor() ?? editorCursor.current;
+    setLayout('preview');
+  };
+  const toggleLayout = () => {
+    if (!note || note.deletedAt) return;
+    if (layout === 'edit') showPreview();
+    else editAt(Math.min(editorCursor.current, note.content.length));
+  };
   const toggleDocumentWidth = () => setWideDocument((current) => {
     const next = !current;
     localStorage.setItem('easynote-document-width', next ? 'wide' : 'readable');
@@ -200,21 +376,39 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setMobileNote(true);
     setLayout('edit');
   });
-  const insertImages = async (files: File[]) => {
+  const insertFiles = async (files: File[], insertion?: string) => {
     if (!note || uploading) return;
+    if (!book.online || session.offline) { book.setError('附件需要联网上传。'); return; }
     const target = note;
+    const marker = insertion ?? pendingInsertion.current ?? editor.current?.markInsertion();
+    pendingInsertion.current = null;
     setUploading(true);
     try {
       for (const file of files) {
-        const image = await uploadImage(file, session.config.maxImageBytes, session.config.maxImagePixels);
-        const alt = file.name.replace(/[\[\]\\\r\n]/g, '');
-        book.append(target, `![${alt}](${image.url})`);
+        const label = file.name.replace(/[\[\]\\\r\n]/g, '');
+        const stored = file.type.startsWith('image/')
+          ? await uploadImage(file, session.config.maxImageBytes, session.config.maxImagePixels)
+          : await uploadAttachment(file, session.config.maxAttachmentBytes);
+        const markdown = file.type.startsWith('image/') ? `![${label}](${stored.url})` : `[${label}](${stored.url})`;
+        if (!marker || !editor.current?.insertAt(marker, markdown)) book.append(target, markdown);
       }
-      showNotice('图片已插入');
+      const onlyImages = files.every((file) => file.type.startsWith('image/'));
+      showNotice(onlyImages ? '图片已插入' : files.length === 1 ? '附件已插入' : `已插入 ${files.length} 个文件`);
     } catch (e) { book.setError(String(e)); }
-    finally { setUploading(false); if (imageInput.current) imageInput.current.value = ''; }
+    finally {
+      if (marker) editor.current?.releaseInsertion(marker);
+      setUploading(false);
+      if (imageInput.current) imageInput.current.value = '';
+      if (attachmentInput.current) attachmentInput.current.value = '';
+    }
   };
-  const chooseView = (view: string, tag = '') => { book.setView(view); book.setTag(tag); setMobileNote(false); };
+  const chooseView = (view: string, tag = '') => {
+    book.setView(view);
+    book.setTag(tag);
+    setMobileNote(false);
+    setSelectionMode(false);
+    setSelected(new Set());
+  };
   const setNoteFields = (patch: Partial<NoteInput>) => book.edit(patch);
   const syncNow = async () => {
     if (syncing) return;
@@ -227,6 +421,190 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     } finally {
       setSyncing(false);
     }
+  };
+  const openNote = async (id: string) => {
+    await book.select(id);
+    setMobileNote(true);
+    setVersionList(null);
+    setCommandPalette(false);
+    setLinkPicker(false);
+  };
+  const openHistory = () => {
+    if (!note || note.revision === 0) return;
+    void run(async () => {
+      const result = await api.versions(note.id);
+      setVersionNoteId(note.id);
+      setVersionList(result.versions);
+      setChosenVersion(null);
+    });
+  };
+  const exportCurrentNote = async () => {
+    if (!note || printing) return;
+    const snapshot = { ...note, tags: [...note.tags] };
+    const createFile = shouldCreatePdfFile();
+    const originalTitle = document.title;
+    setReadyPdf(null);
+    setPrintNote(snapshot);
+    setRenderingPdfFile(createFile);
+    setPdfProgress('正在准备 PDF');
+    setPrinting(true);
+    try {
+      await waitForPrintReady();
+      if (createFile) {
+        const source = document.querySelector<HTMLElement>('.print-document[data-printing="true"]');
+        if (!source) throw new Error('PDF 内容尚未准备完成。');
+        const file = await createPdfFile(source, snapshot.title);
+        setReadyPdf(file);
+      } else {
+        document.title = (snapshot.title.trim() || '未命名笔记').replace(/[\\/:*?"<>|]+/g, '-');
+        window.print();
+      }
+    } catch (error) {
+      book.setError(String(error));
+    } finally {
+      document.title = originalTitle;
+      setPdfProgress('');
+      setRenderingPdfFile(false);
+      setPrinting(false);
+    }
+  };
+  const saveReadyPdf = async () => {
+    if (!readyPdf) return;
+    if (canSharePdf(readyPdf)) {
+      try {
+        await navigator.share({ files: [readyPdf], title: readyPdf.name });
+        setReadyPdf(null);
+        showNotice('PDF 已交给系统保存');
+        return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+      }
+    }
+    downloadPdfFile(readyPdf);
+    setReadyPdf(null);
+    showNotice('PDF 已下载');
+  };
+  const beginLinkInsertion = () => {
+    pendingInsertion.current = editor.current?.markInsertion() ?? null;
+    setLinkQuery('');
+    setLinkPicker(true);
+  };
+  const insertNoteLink = (target: NoteSummary) => {
+    const marker = pendingInsertion.current;
+    if (marker && editor.current?.insertAt(marker, noteLink(target.id, target.title))) {
+      editor.current.releaseInsertion(marker);
+    } else if (note) {
+      book.append(note, noteLink(target.id, target.title));
+    }
+    pendingInsertion.current = null;
+    setLinkPicker(false);
+  };
+  const downloadPrivateFile = async (id: string, href: string) => {
+    let url = href;
+    if (!book.online || session.offline) {
+      const cached = await book.cachedFile(id);
+      if (!cached) throw new Error('这个附件尚未保存到本机。');
+      url = cached;
+    }
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = '';
+    anchor.click();
+    if (url.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  };
+  useEffect(() => {
+    if (!commandPalette) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void book.searchAll(commandQuery).then((results) => { if (!cancelled) setCommandNotes(results); })
+        .catch((error: unknown) => { if (!cancelled) book.setError(String(error)); });
+    }, 80);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [commandPalette, commandQuery]);
+  useEffect(() => {
+    if (!linkPicker) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void book.searchAll(linkQuery).then((results) => {
+        if (!cancelled) setLinkNotes(results.filter((item) => item.id !== note?.id));
+      }).catch((error: unknown) => { if (!cancelled) book.setError(String(error)); });
+    }, 80);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [linkPicker, linkQuery, note?.id]);
+  useEffect(() => {
+    if (!inspector || !note) { setBacklinks([]); return; }
+    let cancelled = false;
+    void book.backlinks(note.id).then((results) => { if (!cancelled) setBacklinks(results); })
+      .catch((error: unknown) => { if (!cancelled) book.setError(String(error)); });
+    return () => { cancelled = true; };
+  }, [inspector, note?.id, note?.revision, book.offlineLibrary]);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey || event.repeat) return;
+      const modifier = event.metaKey || event.ctrlKey;
+      if (!modifier || document.querySelector('dialog[open]')) return;
+      const key = event.key.toLocaleLowerCase();
+      if (key === 'k') {
+        event.preventDefault();
+        setCommandPalette(true);
+        setCommandQuery('');
+      } else if (key === 's' && (note || book.pending.length)) {
+        event.preventDefault();
+        void syncNow();
+      } else if (key === 'p' && note) {
+        event.preventDefault();
+        void exportCurrentNote();
+      } else if (key === 'e' && note && !note.deletedAt) {
+        event.preventDefault();
+        toggleLayout();
+      } else if (key === 'enter' && note && !note.deletedAt) {
+        event.preventDefault();
+        toggleLayout();
+      } else if (key === '/') {
+        event.preventDefault();
+        showShortcutHelp();
+      }
+    };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  });
+  const toggleSelected = (id: string) => setSelected((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  const finishBulk = (message: string) => {
+    setSelected(new Set());
+    setSelectionMode(false);
+    setBulkTag('');
+    setBulkTagOpen(false);
+    showNotice(message);
+  };
+  const applyBulkArchive = () => void run(async () => {
+    const ids = [...selected];
+    const archived = book.view !== 'archive';
+    const count = await book.bulkUpdate(ids, () => ({ archived, deletedAt: null }));
+    finishBulk(`${archived ? '已归档' : '已取消归档'} ${count} 篇笔记`);
+  });
+  const applyBulkTag = () => void run(async () => {
+    const value = bulkTag.trim();
+    if (!value || value.length > 40) throw new Error('标签必须为 1-40 个字符。');
+    const count = await book.bulkUpdate([...selected], (item) => ({ tags: [...new Set([...item.tags, value])] }));
+    finishBulk(`已为 ${count} 篇笔记添加标签`);
+  });
+  const applyTagManagement = () => void run(async () => {
+    const source = tagSource.trim();
+    const target = tagAction === 'delete' ? null : tagTarget.trim();
+    if (!source || target !== null && (!target || target.length > 40)) throw new Error('请选择来源标签并填写 1-40 个字符的目标标签。');
+    const count = await book.manageTag(source, target);
+    setTagManager(false);
+    setTagSource('');
+    setTagTarget('');
+    showNotice(`已更新 ${count} 篇笔记`);
+  });
+  const goToHeading = (offset: number) => {
+    editAt(offset);
   };
   const transferAction = async <T,>(action: () => Promise<T>, success: string | ((result: T) => string)) => {
     if (book.pending.length || book.busy || uploading) { book.setError('还有未保存的内容，请先完成保存。'); return; }
@@ -242,8 +620,87 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const viewName = book.view === 'trash' ? '回收站' : book.view === 'archive' ? '归档笔记' : '全部笔记';
   const activeView = book.tag ? `${viewName} · #${book.tag}` : viewName;
   const disabled = !!transfer || uploading || book.busy || syncing;
+  const commandMatch = (...labels: string[]) => {
+    const query = commandQuery.trim().toLocaleLowerCase();
+    return !query || labels.some((label) => label.toLocaleLowerCase().includes(query));
+  };
+  const commandActions = [
+    {
+      id: 'new', label: '新建笔记', aliases: ['新建'], icon: <Plus size={16} />, shortcut: '',
+      disabled: !!transfer || book.loading,
+      action: () => { setCommandPalette(false); void createNote(); },
+    },
+    {
+      id: 'save', label: '保存并同步', aliases: ['保存', '同步'], icon: <Save size={16} />, shortcut: 'Cmd/Ctrl+S',
+      disabled: disabled || (!note && !book.pending.length),
+      action: () => { setCommandPalette(false); void syncNow(); },
+    },
+    {
+      id: 'search', label: '搜索笔记', aliases: ['搜索'], icon: <Search size={16} />, shortcut: '',
+      disabled: false,
+      action: () => {
+        book.setQuery(commandQuery);
+        setCommandPalette(false);
+        requestAnimationFrame(() => searchInput.current?.focus());
+      },
+    },
+    {
+      id: 'layout', label: layout === 'edit' ? '切换到预览模式' : '切换到编辑模式',
+      aliases: ['编辑', '预览', '切换'], icon: layout === 'edit' ? <BookOpen size={16} /> : <PenLine size={16} />,
+      shortcut: 'Ctrl+E / Cmd+Enter', disabled: !note || !!note.deletedAt,
+      action: () => { setCommandPalette(false); toggleLayout(); },
+    },
+    {
+      id: 'pin', label: note?.pinned ? '取消置顶' : '置顶笔记', aliases: ['置顶'],
+      icon: <Pin size={16} />, shortcut: '', disabled: !note || !!note.deletedAt || !!transfer,
+      action: () => { setCommandPalette(false); if (note) setNoteFields({ pinned: !note.pinned }); },
+    },
+    {
+      id: 'archive', label: note?.archived ? '取消归档' : '归档笔记', aliases: ['归档'],
+      icon: note?.archived ? <ArchiveRestore size={16} /> : <Archive size={16} />, shortcut: '',
+      disabled: !note || !!note.deletedAt || !!transfer,
+      action: () => { setCommandPalette(false); if (note) setNoteFields({ archived: !note.archived }); },
+    },
+    {
+      id: 'history', label: '查看历史版本', aliases: ['历史', '版本'], icon: <History size={16} />,
+      shortcut: '', disabled: disabled || !note || note.revision === 0,
+      action: () => { setCommandPalette(false); openHistory(); },
+    },
+    {
+      id: 'outline', label: '打开大纲与反向链接', aliases: ['大纲', '反向链接'], icon: <ListTree size={16} />,
+      shortcut: '', disabled: !note,
+      action: () => { setCommandPalette(false); setInspector(true); },
+    },
+    {
+      id: 'link', label: '插入内部链接', aliases: ['链接'], icon: <Link2 size={16} />,
+      shortcut: '', disabled: !note || !!note.deletedAt || !!transfer,
+      action: () => {
+        setCommandPalette(false);
+        setLayout('edit');
+        requestAnimationFrame(beginLinkInsertion);
+      },
+    },
+    {
+      id: 'pdf', label: '导出当前笔记为 PDF', aliases: ['PDF', '打印', '导出'], icon: <Printer size={16} />,
+      shortcut: 'Cmd/Ctrl+P', disabled: !note || printing,
+      action: () => { setCommandPalette(false); void exportCurrentNote(); },
+    },
+    {
+      id: 'settings', label: '打开设置', aliases: ['设置'], icon: <Settings size={16} />,
+      shortcut: '', disabled: false,
+      action: () => { setCommandPalette(false); setSettings(true); },
+    },
+    {
+      id: 'shortcuts', label: '查看快捷键', aliases: ['快捷键', '帮助'], icon: <Keyboard size={16} />,
+      shortcut: 'Cmd/Ctrl+/', disabled: false, action: showShortcutHelp,
+    },
+  ].filter((command) => commandMatch(command.label, ...command.aliases));
+  const focusCommand = (edge: 'first' | 'last' = 'first') => {
+    const buttons = [...(commandList.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
+    buttons[edge === 'first' ? 0 : buttons.length - 1]?.focus();
+  };
   return <div
-    className={`app-shell ${sidebar ? '' : 'sidebar-hidden'} ${mobileNote ? 'mobile-note' : ''} ${resizingList ? 'resizing-list' : ''}`}
+    className={`app-shell ${sidebar ? '' : 'sidebar-hidden'} ${mobileNote ? 'mobile-note' : ''} ${resizingList ? 'resizing-list' : ''} ${inspector ? 'inspector-open' : ''}`}
     style={{ '--note-list-width': `${noteListWidth}px` } as CSSProperties}
   >
     <aside className="sidebar">
@@ -256,7 +713,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         <button className={book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={17} />归档笔记</button>
         <button className={book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={17} />回收站</button>
       </nav>
-      <div className="section-label"><span>标签</span><Tag size={13} /></div>
+      <div className="section-label"><span>标签</span><IconButton label="管理标签" onClick={() => setTagManager(true)}><Tags size={14} /></IconButton></div>
       <nav className="tag-nav" aria-label="标签">{book.tags.map((tag) =>
         <button key={tag} className={book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className="tag-dot" />{tag}</button>)}
       </nav>
@@ -269,24 +726,38 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         <div className="list-heading">
           {!sidebar && <IconButton label="展开侧栏" onClick={() => setSidebar(true)}><MoreHorizontal size={18} /></IconButton>}
           <h1>{activeView}</h1>
+          <IconButton label="快速跳转" onClick={() => { setCommandQuery(''); setCommandPalette(true); }}><Command size={16} /></IconButton>
+          {book.view !== 'trash' && <IconButton label={selectionMode ? '退出批量选择' : '批量选择'} aria-pressed={selectionMode} onClick={() => {
+            setSelectionMode((value) => !value);
+            setSelected(new Set());
+          }}>{selectionMode ? <CheckSquare size={16} /> : <Square size={16} />}</IconButton>}
           <IconButton label={syncing ? '正在刷新' : '同步'} onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
           {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) &&
             <IconButton label="全部永久删除" className="icon-button danger-icon" onClick={() => setConfirmAction('purge-all')} disabled={disabled || book.pending.length > 0}><Trash2 size={17} /></IconButton>}
           <IconButton label="新建笔记" onClick={() => void createNote()} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
         </div>
-        <label className="search-field"><Search size={15} /><input aria-label="搜索笔记" placeholder="搜索笔记" value={book.query} onChange={(e) => book.setQuery(e.target.value)} /></label>
+        {selectionMode && <div className="bulk-toolbar">
+          <span>已选 {selected.size} 篇</span>
+          <button disabled={!selected.size || disabled} onClick={applyBulkArchive}>{book.view === 'archive' ? <ArchiveRestore size={14} /> : <Archive size={14} />}{book.view === 'archive' ? '取消归档' : '归档'}</button>
+          <button disabled={!selected.size || disabled} onClick={() => setBulkTagOpen(true)}><Tag size={14} />加标签</button>
+        </div>}
+        <label className="search-field"><Search size={15} /><input ref={searchInput} aria-label="搜索笔记" placeholder="搜索笔记" value={book.query} onChange={(e) => book.setQuery(e.target.value)} /></label>
         <div className="mobile-filters"><select aria-label="笔记分类" value={book.view} onChange={(e) => chooseView(e.target.value)}><option value="all">全部笔记</option><option value="archive">归档笔记</option><option value="trash">回收站</option></select><IconButton label="设置" onClick={() => setSettings(true)}><Settings size={17} /></IconButton></div>
       </header>
-      <div className="list-scroll">
+      <div className="list-scroll" onKeyDown={(event) => moveButtonFocus(event, '.note-row')}>
         {book.loading ? <div className="empty-state">正在加载…</div> : !book.notes.length ? <div className="empty-state"><FileText size={28} /><span>{book.query ? '没有匹配的笔记' : '暂无笔记'}</span></div> : book.notes.map((item) =>
-          <button className={`note-row ${item.id === note?.id ? 'selected' : ''}`} key={item.id} onClick={() => void book.select(item.id).then(() => { setMobileNote(true); setVersionList(null); })}>
-            <div className="note-row-title"><span>{item.title || '未命名笔记'}</span>{item.pinned && <Pin size={12} />}</div>
+          <button className={`note-row ${item.id === note?.id ? 'selected' : ''} ${selected.has(item.id) ? 'checked' : ''}`} data-note-row key={item.id}
+            aria-pressed={selectionMode ? selected.has(item.id) : undefined}
+            onClick={() => selectionMode ? toggleSelected(item.id) : void openNote(item.id)}>
+            <div className="note-row-title">{selectionMode && (selected.has(item.id) ? <CheckSquare size={14} /> : <Square size={14} />)}<span>{item.title || '未命名笔记'}</span>{item.pinned && <Pin size={12} />}</div>
             <div className="note-excerpt">{item.excerpt.replace(/!\[[^\]]*\]\([^)]*\)/g, '[图片]').replace(/[#*`]/g, '') || '空白笔记'}</div>
             <div className="note-row-meta"><time>{new Date(item.updatedAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}</time>{item.tags[0] && <span>#{item.tags[0]}</span>}{book.pending.some((n) => n.id === item.id) && <span className="local-dot" title="本机草稿" />}</div>
           </button>)}
         {book.nextOffset !== null && <button className="load-more" onClick={() => void run(book.loadMore)}>加载更多<ChevronDown size={14} /></button>}
       </div>
-      <footer className="list-footer">{book.notes.length} 篇{book.nextOffset !== null ? '+' : ''}<span>EasyNote 0.1</span></footer>
+      <footer className="list-footer">{book.notes.length} 篇{book.nextOffset !== null ? '+' : ''}
+        <span>{book.online && !session.offline ? 'EasyNote 0.1' : <><WifiOff size={11} />离线</>}</span>
+      </footer>
     </section>
     <div
       className="note-list-resizer"
@@ -311,14 +782,17 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     <main className="workspace">
       <header className="workspace-toolbar">
         <IconButton label="返回笔记列表" className="icon-button mobile-back" onClick={() => setMobileNote(false)}><ArrowLeft size={18} /></IconButton>
-        <span className={`save-status ${book.pending.length ? 'pending' : ''}`}><span className="status-dot" />{uploading ? '上传图片中' : syncing ? '正在同步' : note ? book.status : '笔记空间'}</span>
+        <span className={`save-status ${book.pending.length ? 'pending' : ''}`}><span className="status-dot" />{uploading ? '上传文件中' : syncing ? '正在同步' : note ? book.status : '笔记空间'}</span>
         <div className="toolbar-right">
-          {note && <><div className="segmented" aria-label="显示模式"><button title="编辑" aria-label="编辑模式" aria-pressed={layout === 'edit'} onClick={() => setLayout('edit')}><PenLine size={16} /></button><button title="预览" aria-label="预览模式" aria-pressed={layout === 'preview'} onClick={() => setLayout('preview')}><BookOpen size={16} /></button></div>
+          {note && <><div className="segmented" aria-label="显示模式"><button title="编辑" aria-label="编辑模式" aria-pressed={layout === 'edit'} onClick={() => editAt(Math.min(editorCursor.current, note.content.length))}><PenLine size={16} /></button><button title="预览" aria-label="预览模式" aria-pressed={layout === 'preview'} onClick={showPreview}><BookOpen size={16} /></button></div>
+            <IconButton label="插入内部链接" disabled={!!note.deletedAt || !!transfer} onClick={beginLinkInsertion}><Link2 size={17} /></IconButton>
+            <IconButton label="大纲与反向链接" aria-pressed={inspector} onClick={() => setInspector((value) => !value)}><ListTree size={17} /></IconButton>
             <IconButton label={wideDocument ? '使用阅读宽度' : '使用宽屏'} className="icon-button document-width-toggle" aria-pressed={wideDocument} onClick={toggleDocumentWidth}>{wideDocument ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</IconButton>
             <IconButton label={syncing ? '正在同步' : '立即同步'} disabled={disabled} onClick={() => void syncNow()}>{syncing ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}</IconButton>
             <IconButton label={note.pinned ? '取消置顶' : '置顶'} disabled={!!note.deletedAt || !!transfer} onClick={() => setNoteFields({ pinned: !note.pinned })}><Pin size={17} fill={note.pinned ? 'currentColor' : 'none'} /></IconButton>
             <IconButton label={note.archived ? '取消归档' : '归档'} disabled={!!note.deletedAt || !!transfer} onClick={() => setNoteFields({ archived: !note.archived })}>{note.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</IconButton>
-            <IconButton label="历史版本" disabled={disabled || note.revision === 0} onClick={() => void run(async () => { const result = await api.versions(note.id); setVersionNoteId(note.id); setVersionList(result.versions); setChosenVersion(null); })}><History size={17} /></IconButton>
+            <IconButton label={pdfProgress || '导出当前笔记为 PDF'} className="icon-button print-action" disabled={printing} onClick={() => void exportCurrentNote()}>{printing ? <LoaderCircle className="spin" size={17} /> : <Printer size={17} />}</IconButton>
+            <IconButton label="历史版本" disabled={disabled || note.revision === 0} onClick={openHistory}><History size={17} /></IconButton>
             {!note.deletedAt ? <IconButton label="移入回收站" disabled={disabled} onClick={() => setConfirmAction('trash')}><Trash2 size={17} /></IconButton> :
               <IconButton label="恢复笔记" disabled={disabled} onClick={() => setNoteFields({ deletedAt: null })}><RotateCcw size={17} /></IconButton>}
           </>}
@@ -327,13 +801,32 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       {book.error && <div className="error-strip" role="alert"><details><summary>操作未完成</summary><pre>{book.error}</pre></details><button onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? '正在重试…' : '重试'}</button><IconButton label="关闭错误" onClick={() => book.setError('')}><X size={15} /></IconButton></div>}
       {note ? <>
         {note.deletedAt && <div className="trash-banner"><span>已移入回收站</span><button onClick={() => setConfirmAction('purge')} disabled={disabled || book.pending.some((n) => n.id === note.id)}>永久删除</button></div>}
-        <div className="document-scroll">
-          <div className={`document ${wideDocument ? 'wide' : ''}`}>
-            <input className="note-title" aria-label="笔记标题" placeholder="未命名笔记" maxLength={256} value={note.title} readOnly={!!note.deletedAt || !!transfer} onChange={(e) => setNoteFields({ title: e.target.value })} />
-            <div className="document-meta"><time>{new Date(note.createdAt).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}</time><span>修订 {note.revision}</span></div>
-            {layout === 'preview' || note.deletedAt || transfer ? <Preview content={note.content} onImage={setLightbox} dark={dark} /> :
-              <Editor key={note.id} value={note.content} onChange={(content) => setNoteFields({ content })} onImages={(files) => void insertImages(files)} />}
+        <div className="workspace-body">
+          <div className="document-scroll">
+            <div className={`document ${wideDocument ? 'wide' : ''}`}>
+              <input className="note-title" aria-label="笔记标题" placeholder="未命名笔记" maxLength={256} value={note.title} readOnly={!!note.deletedAt || !!transfer} onChange={(e) => setNoteFields({ title: e.target.value })} />
+              <div className="document-meta"><time>{new Date(note.createdAt).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}</time><span>修订 {note.revision}</span></div>
+              {layout === 'preview' || note.deletedAt || transfer
+                ? <Preview content={note.content} onImage={setLightbox} onNote={(id) => void openNote(id)}
+                    onFile={(id, href) => void run(() => downloadPrivateFile(id, href))}
+                    onTask={!note.deletedAt && !transfer ? (index, checked) =>
+                      setNoteFields({ content: toggleMarkdownTask(note.content, index, checked) }) : undefined}
+                    resolveFile={book.offlineLibrary ? book.cachedFile : undefined} dark={dark}
+                    onEditLine={!note.deletedAt && !transfer ? (line) => editAt(sourceLineOffset(note.content, line)) : undefined} />
+                : <Editor ref={editor} key={note.id} value={note.content} onChange={(content) => setNoteFields({ content })}
+                    onImages={(files, insertion) => void insertFiles(files, insertion)}
+                    onTogglePreview={toggleLayout} onShowShortcuts={showShortcutHelp} />}
+            </div>
           </div>
+          {inspector && <aside className="knowledge-panel" aria-label="笔记导航">
+            <header><span>大纲与链接</span><IconButton label="关闭笔记导航" onClick={() => setInspector(false)}><X size={15} /></IconButton></header>
+            <section><h3>大纲</h3>{outline.length ? <nav>{outline.map((heading, index) =>
+              <button key={`${heading.offset}-${index}`} style={{ paddingLeft: `${8 + Math.max(0, heading.level - 1) * 10}px` }} onClick={() => goToHeading(heading.offset)}>{heading.text}</button>)}</nav>
+              : <div className="panel-empty">没有标题</div>}</section>
+            <section><h3>反向链接</h3>{backlinks.length ? <nav>{backlinks.map((item) =>
+              <button key={item.id} onClick={() => void openNote(item.id)}><Link2 size={13} />{item.title || '未命名笔记'}</button>)}</nav>
+              : <div className="panel-empty">没有反向链接</div>}</section>
+          </aside>}
         </div>
         <footer className="document-footer">
           <label className="tags-input"><Tag size={15} /><input aria-label="笔记标签" placeholder="标签" value={tagText} disabled={!!note.deletedAt || !!transfer} onChange={(e) => setTagText(e.target.value)} onBlur={() => {
@@ -342,17 +835,37 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
             if (JSON.stringify(tags) !== JSON.stringify(note.tags)) setNoteFields({ tags });
           }} /></label>
           <span className="word-count">{note.content.length.toLocaleString()} 字符</span>
-          <IconButton label="插入图片" disabled={uploading || !!note.deletedAt || !!transfer} onClick={() => imageInput.current?.click()}><ImagePlus size={19} /></IconButton>
-          <input hidden ref={imageInput} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => void insertImages(Array.from(e.target.files ?? []))} />
+          <IconButton label={pdfProgress || '导出当前笔记为 PDF'} className="icon-button mobile-pdf-action" disabled={printing}
+            onClick={() => void exportCurrentNote()}>{printing ? <LoaderCircle className="spin" size={17} /> : <Printer size={17} />}</IconButton>
+          <IconButton label="插入附件" disabled={uploading || !!note.deletedAt || !!transfer || !book.online} onClick={() => {
+            pendingInsertion.current = editor.current?.markInsertion() ?? null;
+            attachmentInput.current?.click();
+          }}><Paperclip size={18} /></IconButton>
+          <IconButton label="插入图片" disabled={uploading || !!note.deletedAt || !!transfer || !book.online} onClick={() => {
+            pendingInsertion.current = editor.current?.markInsertion() ?? null;
+            imageInput.current?.click();
+          }}><ImagePlus size={19} /></IconButton>
+          <input hidden ref={attachmentInput} type="file" accept=".pdf,.md,.txt,.csv,.json,application/pdf,text/plain,text/markdown,text/csv,application/json" multiple onChange={(e) => void insertFiles(Array.from(e.target.files ?? []))} />
+          <input hidden ref={imageInput} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => void insertFiles(Array.from(e.target.files ?? []))} />
         </footer>
       </> : <div className="workspace-empty"><PenLine size={36} /><h2>你的笔记</h2><button className="primary" disabled={book.loading || !!transfer} onClick={() => void createNote()}><Plus size={16} />新建笔记</button></div>}
     </main>
     {notice && <div className="toast" role="status"><Check size={16} />{notice.text}</div>}
     {settings && <Modal title="设置" close={() => { if (!transfer) setSettings(false); }}>
       <div className="setting-row"><span>深色外观</span><button role="switch" aria-checked={dark} aria-label="深色外观" className={`switch ${dark ? 'on' : ''}`} onClick={() => setDark(!dark)}>{dark ? <Moon size={14} /> : <Sun size={14} />}</button></div>
+      <div className="setting-row"><span>离线笔记库{book.offlineLibrary ? ` · ${book.offlineCount} 篇` : ''}</span><button role="switch" aria-checked={book.offlineLibrary} aria-label="离线笔记库" className={`switch ${book.offlineLibrary ? 'on' : ''}`} disabled={disabled || session.offline} onClick={() => void run(() => book.configureOffline(!book.offlineLibrary))}>{book.offlineLibrary ? <Check size={14} /> : <WifiOff size={14} />}</button></div>
       {installApp && <div className="setting-row"><span>应用</span><button disabled={disabled} onClick={() => void run(installApp)}><Download size={16} />安装 EasyNote</button></div>}
-      <div className="setting-row"><span>数据</span><div className="button-group"><button disabled={!!transfer} onClick={() => void transferAction(() => exportArchive(setTransfer), '备份已下载')}><Download size={16} />导出 ZIP</button><button disabled={!!transfer} onClick={() => importInput.current?.click()}><Upload size={16} />导入</button></div></div>
-      <AiAccess disabled={disabled} reportError={book.setError} notify={showNotice} />
+      <div className="setting-row"><span>数据</span><div className="button-group">
+        <button disabled={!!transfer || !book.online} onClick={() => void transferAction(() => exportArchive(setTransfer), '备份已下载')}><Download size={16} />导出 ZIP</button>
+        <button disabled={!!transfer || !book.online} onClick={() => importInput.current?.click()}><Upload size={16} />导入</button>
+        <button disabled={!!transfer || !book.pending.length} onClick={() => {
+          setTransfer('正在准备草稿…');
+          void exportLocalDrafts(session.user!.id, setTransfer).then((count) => showNotice(`已导出 ${count} 篇本机草稿`))
+            .catch((error: unknown) => book.setError(String(error))).finally(() => setTransfer(''));
+        }}><Download size={16} />导出草稿</button>
+      </div></div>
+      <div className="setting-row"><span>账户安全</span><button disabled={disabled || session.offline} onClick={() => { setSettings(false); setAccountSecurity(true); }}><ShieldCheck size={16} />管理</button></div>
+      <AiAccess disabled={disabled || !book.online || !!session.offline} reportError={book.setError} notify={showNotice} />
       <input hidden ref={importInput} type="file" accept=".zip,.md,.txt" onChange={(e) => {
         const file = e.target.files?.[0];
         if (file) void transferAction(() => importArchive(file, session.config, setTransfer), ({ imported, skipped }) =>
@@ -367,12 +880,12 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   notes/
     示例笔记.md
     未命名.md
-  images/
-    <image-id>`}</pre>
+  files/
+    <file-id>-附件名`}</pre>
         <p><code>manifest.json</code> 示例：</p>
         <pre>{`{
   "format": "easynote",
-  "version": 1,
+  "version": 2,
   "notes": [
     {
       "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -384,15 +897,76 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       "deletedAt": null
     }
   ],
-  "images": []
+  "files": []
 }`}</pre>
         <p>笔记文件优先使用标题命名，重名时自动编号；ZIP 根据清单恢复原标题。单独导入 Markdown 或 TXT 时，正文首个非空行作为标题。正文完全一致或完全空白的重复笔记会自动跳过。</p>
       </details>
       {transfer && <div className="transfer-progress" role="status">{transfer}</div>}
       <div className="setting-row"><span>{session.user!.username}</span><button disabled={disabled} onClick={() => void run(async () => {
         if (book.pending.length) throw new Error('本机还有未上传草稿，请先完成保存。');
-        await api.logout(); logout();
+        if (book.online && !session.offline) await api.logout();
+        await logout();
       })}><LogOut size={16} />退出登录</button></div>
+    </Modal>}
+    {accountSecurity && <Modal title="账户安全" close={() => setAccountSecurity(false)}>
+      <AccountSecurity disabled={disabled || !!book.pending.length || !book.online || !!session.offline} notify={showNotice} reportError={book.setError} logout={logout} />
+    </Modal>}
+    {commandPalette && <Modal title="快速跳转" close={() => setCommandPalette(false)}>
+      <label className="command-search"><Search size={16} /><input autoFocus aria-label="快速跳转搜索" value={commandQuery}
+        onChange={(event) => setCommandQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            focusCommand(event.key === 'ArrowDown' ? 'first' : 'last');
+          } else if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            focusCommand();
+            commandList.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.click();
+          }
+        }} /></label>
+      <div ref={commandList} className="command-list" onKeyDown={(event) => moveButtonFocus(event, 'button')}>
+        {commandActions.map((command) => <button key={command.id} disabled={command.disabled} onClick={command.action}>
+          {command.icon}<span>{command.label}</span>{command.shortcut && <kbd>{command.shortcut}</kbd>}
+        </button>)}
+        {commandNotes.map((item) => <button key={item.id} onClick={() => void openNote(item.id)}><FileText size={16} /><span>{item.title || '未命名笔记'}</span></button>)}
+      </div>
+    </Modal>}
+    {shortcutHelp && <Modal title="快捷键" close={() => setShortcutHelp(false)}>
+      <div className="shortcut-list">
+        <div><span>打开快速跳转</span><kbd>Cmd/Ctrl+K</kbd></div>
+        <div><span>保存并同步</span><kbd>Cmd/Ctrl+S</kbd></div>
+        <div><span>编辑 / 预览</span><kbd>Ctrl+E / Cmd+Enter</kbd></div>
+        <div><span>导出当前笔记为 PDF</span><kbd>Cmd/Ctrl+P</kbd></div>
+        <div><span>粗体</span><kbd>Cmd/Ctrl+B</kbd></div>
+        <div><span>斜体</span><kbd>Cmd/Ctrl+I</kbd></div>
+        <div><span>快捷键帮助</span><kbd>Cmd/Ctrl+/</kbd></div>
+        <div><span>关闭弹窗</span><kbd>Esc</kbd></div>
+        <div><span>命令或笔记列表导航</span><kbd>↑ / ↓</kbd></div>
+      </div>
+    </Modal>}
+    {linkPicker && <Modal title="插入内部链接" close={() => {
+      if (pendingInsertion.current) editor.current?.releaseInsertion(pendingInsertion.current);
+      pendingInsertion.current = null;
+      setLinkPicker(false);
+    }}>
+      <label className="command-search"><Search size={16} /><input autoFocus aria-label="搜索链接目标" value={linkQuery} onChange={(event) => setLinkQuery(event.target.value)} /></label>
+      <div className="command-list">{linkNotes.map((item) =>
+        <button key={item.id} onClick={() => insertNoteLink(item)}><Link2 size={16} /><span>{item.title || '未命名笔记'}</span></button>)}</div>
+    </Modal>}
+    {tagManager && <Modal title="管理标签" close={() => setTagManager(false)}>
+      <div className="form-grid">
+        <label>来源标签<input list="known-tags" value={tagSource} onChange={(event) => setTagSource(event.target.value)} /></label>
+        <datalist id="known-tags">{book.tags.map((value) => <option value={value} key={value} />)}</datalist>
+        <label>操作<select value={tagAction} onChange={(event) => setTagAction(event.target.value as typeof tagAction)}>
+          <option value="rename">重命名</option><option value="merge">合并</option><option value="delete">删除</option>
+        </select></label>
+        {tagAction !== 'delete' && <label>目标标签<input maxLength={40} value={tagTarget} onChange={(event) => setTagTarget(event.target.value)} /></label>}
+      </div>
+      <div className="dialog-actions"><button onClick={() => setTagManager(false)}>取消</button><button className={tagAction === 'delete' ? 'danger' : 'primary'} disabled={disabled || !tagSource.trim()} onClick={applyTagManagement}>应用</button></div>
+    </Modal>}
+    {bulkTagOpen && <Modal title="批量添加标签" close={() => setBulkTagOpen(false)}>
+      <label className="single-field">标签<input autoFocus maxLength={40} value={bulkTag} onChange={(event) => setBulkTag(event.target.value)} /></label>
+      <div className="dialog-actions"><button onClick={() => setBulkTagOpen(false)}>取消</button><button className="primary" disabled={!bulkTag.trim() || disabled} onClick={applyBulkTag}>添加</button></div>
     </Modal>}
     {book.conflict && <Modal title="检测到版本冲突" close={() => book.setConflict(null)}>
       <div className="conflict-summary"><strong>{book.conflict.local.title || '未命名笔记'}</strong><span>本机修订 {book.conflict.local.revision} / 云端修订 {book.conflict.remote?.revision ?? '不可用'}</span></div>
@@ -400,8 +974,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     </Modal>}
     {versionList && versionNoteId === note?.id && <Modal title="历史版本" close={() => { setVersionList(null); setChosenVersion(null); }}>
       <div className="version-list">{versionList.map((version) => <button key={version.revision} className={chosenVersion?.revision === version.revision ? 'selected' : ''} onClick={() => setChosenVersion(version)}><span>修订 {version.revision} · {version.actorType === 'ai' ? `AI：${version.actorName}` : version.actorName}</span><time>{new Date(version.savedAt).toLocaleString('zh-CN')}</time></button>)}</div>
-      {chosenVersion && <><div className="version-preview"><h3>{chosenVersion.title}</h3><Preview content={chosenVersion.content} onImage={setLightbox} dark={dark} /></div><div className="dialog-actions"><button className="primary" disabled={disabled || !!note?.deletedAt} onClick={() => {
-        setNoteFields({ title: chosenVersion.title, content: chosenVersion.content, tags: chosenVersion.tags, pinned: chosenVersion.pinned, archived: chosenVersion.archived });
+      {chosenVersion && <><div className="version-preview"><h3>{chosenVersion.title}</h3><Preview content={chosenVersion.content} onImage={setLightbox} onFile={(id, href) => void run(() => downloadPrivateFile(id, href))} resolveFile={book.offlineLibrary ? book.cachedFile : undefined} dark={dark} /></div><div className="dialog-actions"><button className="primary" disabled={disabled || !!note?.deletedAt} onClick={() => {
+        setNoteFields({ title: chosenVersion.title, content: chosenVersion.content, tags: chosenVersion.tags, archived: chosenVersion.archived });
         setVersionList(null); setChosenVersion(null); setLayout('edit');
       }}><RotateCcw size={15} />恢复此版本</button></div></>}
     </Modal>}
@@ -416,6 +990,30 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         setConfirmAction(null);
       })}>{confirmAction === 'purge-all' ? '全部永久删除' : confirmAction === 'purge' ? '永久删除' : '移入回收站'}</button></div>
     </Modal>}
+    {readyPdf && <Modal title="PDF 已生成" close={() => setReadyPdf(null)}>
+      <div className="pdf-ready">
+        <FileText size={22} />
+        <div><strong>{readyPdf.name}</strong><span>{(readyPdf.size / 1024 / 1024).toFixed(1)} MB</span></div>
+      </div>
+      <div className="dialog-actions">
+        <button onClick={() => setReadyPdf(null)}>取消</button>
+        <button className="primary" onClick={() => void saveReadyPdf()}>
+          {canSharePdf(readyPdf) ? <Share2 size={16} /> : <Download size={16} />}
+          {canSharePdf(readyPdf) ? '保存或分享' : '下载 PDF'}
+        </button>
+      </div>
+    </Modal>}
     {lightbox && <Modal title="图片" close={() => setLightbox('')}><img className="lightbox-image" src={lightbox} alt="笔记图片" /></Modal>}
+    {printNote && <section className={`print-document ${renderingPdfFile ? 'pdf-rendering' : ''}`} data-printing={printing ? 'true' : 'false'} aria-hidden="true">
+      <header>
+        <h1>{printNote.title || '未命名笔记'}</h1>
+        <div className="print-meta">
+          <time>更新于 {new Date(printNote.updatedAt).toLocaleString('zh-CN')}</time>
+          {!!printNote.tags.length && <span>{printNote.tags.map((tag) => `#${tag}`).join(' ')}</span>}
+        </div>
+      </header>
+      <Preview content={printNote.content} onImage={() => undefined}
+        resolveFile={book.offlineLibrary ? book.cachedFile : undefined} dark={false} eagerImages />
+    </section>}
   </div>;
 }

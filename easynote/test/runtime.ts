@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { passwordVerifier } from '../src/worker/auth';
@@ -8,6 +8,24 @@ export const testPassword = 'Test-only-EasyNote-938!';
 export const testToken = 'a'.repeat(64);
 export const testCsrf = 'b'.repeat(64);
 export const testUserId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+function migrationStatements(schema: string): string[] {
+  const statements: string[] = [];
+  let current = '';
+  let trigger = false;
+  for (const line of schema.split('\n')) {
+    current += `${line}\n`;
+    const trimmed = line.trim();
+    if (!trigger && /^CREATE TRIGGER\b/i.test(current.trimStart())) trigger = true;
+    if (trigger ? /^END;$/.test(trimmed) : trimmed.endsWith(';')) {
+      statements.push(current.trim());
+      current = '';
+      trigger = false;
+    }
+  }
+  if (current.trim()) throw new Error('Migration contains an unterminated SQL statement.');
+  return statements;
+}
 
 export async function createRuntime(port?: number) {
   const config = JSON.parse(await readFile(new URL('../wrangler.json', import.meta.url), 'utf8'));
@@ -36,10 +54,14 @@ export async function createRuntime(port?: number) {
     },
   }));
   const db = await runtime.getD1Database('DB');
-  const schema = await readFile(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8');
-  await db.batch(schema.split(';').map((sql) => sql.trim()).filter(Boolean).map((sql) => db.prepare(sql)));
+  const migrationsDirectory = new URL('../migrations/', import.meta.url);
+  const migrations = (await readdir(migrationsDirectory)).filter((name) => name.endsWith('.sql')).sort();
+  for (const name of migrations) {
+    const schema = await readFile(new URL(name, migrationsDirectory), 'utf8');
+    await db.batch(migrationStatements(schema).map((sql) => db.prepare(sql)));
+  }
   await db.batch([
-    'DELETE FROM image_refs', 'DELETE FROM note_versions', 'DELETE FROM notes',
+    'DELETE FROM image_refs', 'DELETE FROM note_versions', 'DELETE FROM note_changes', 'DELETE FROM notes',
     'DELETE FROM sessions', 'DELETE FROM integration_tokens', 'DELETE FROM login_attempts', 'DELETE FROM images',
     'DELETE FROM purged_notes', 'DELETE FROM users',
   ].map((sql) => db.prepare(sql)));

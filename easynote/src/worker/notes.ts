@@ -1,4 +1,4 @@
-import { idPattern, imageIds, noteInput, sameNoteInput, type Note, type NoteInput, type Version } from '../shared/types';
+import { idPattern, noteInput, sameNoteInput, sameVersionedInput, storedFileIds, type Note, type NoteInput, type SyncChange, type Version } from '../shared/types';
 import { ApiError, clientConfig, digest, json, numberSetting, readJson, type Env } from './core';
 import type { Identity } from './auth';
 
@@ -73,11 +73,13 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   if (current && (create || current.revision !== data.revision)) {
     throw new ApiError(409, 'The note changed on another device.', { current: toNote(current) });
   }
-  if (current && sameNoteInput(noteInput(toNote(current)), input)) {
+  const currentInput = current ? noteInput(toNote(current)) : null;
+  if (current && currentInput && sameNoteInput(currentInput, input)) {
     return json({ note: toNote(current), unchanged: true });
   }
-  const ids = imageIds(input.content);
-  if (ids.length > 80) throw new ApiError(400, 'A note can reference at most 80 images.');
+  const versionedChange = !currentInput || !sameVersionedInput(currentInput, input);
+  const ids = storedFileIds(input.content);
+  if (ids.length > 80) throw new ApiError(400, 'A note can reference at most 80 stored files.');
   const placeholders = ids.map(() => '?').join(',');
   const readyCondition = ids.length
     ? `(SELECT COUNT(*) FROM images WHERE user_id=? AND status='ready' AND id IN (${placeholders}))=?`
@@ -107,11 +109,15 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   }
   const guard = 'EXISTS(SELECT 1 FROM notes WHERE id=? AND user_id=? AND revision=? AND mutation_id=?)';
   const guardBinds = [id, user.id, revision, mutation];
-  statements.push(env.DB.prepare(`INSERT OR IGNORE INTO note_versions
-    (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived,actor_type,actor_name)
-    SELECT id,revision,title,content,tags,pinned,deleted_at,updated_at,archived,?,? FROM notes
-    WHERE id=? AND user_id=? AND revision=? AND mutation_id=?`)
-    .bind(user.actorType, user.actorName, ...guardBinds));
+  if (versionedChange) {
+    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO note_versions
+      (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived,actor_type,actor_name)
+      SELECT id,revision,title,content,tags,pinned,deleted_at,updated_at,archived,?,? FROM notes
+      WHERE id=? AND user_id=? AND revision=? AND mutation_id=?`)
+      .bind(user.actorType, user.actorName, ...guardBinds));
+  }
+  statements.push(env.DB.prepare(`INSERT INTO note_changes(user_id,note_id,changed_at)
+    SELECT ?,?,? WHERE ${guard}`).bind(user.id, id, time, ...guardBinds));
   for (const imageId of ids) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO image_refs SELECT ?,?,? WHERE ${guard}`)
       .bind(id, imageId, revision, ...guardBinds));
@@ -119,10 +125,15 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
       .bind(time, imageId, user.id, ...guardBinds));
   }
   const keep = numberSetting(env, 'VERSIONS_KEPT', 1, 100);
-  statements.push(env.DB.prepare(`DELETE FROM note_versions WHERE note_id=? AND revision<=? AND ${guard}`)
-    .bind(id, revision - keep, ...guardBinds));
-  statements.push(env.DB.prepare(`DELETE FROM image_refs WHERE note_id=? AND revision<=? AND ${guard}`)
-    .bind(id, revision - keep, ...guardBinds));
+  statements.push(env.DB.prepare(`DELETE FROM note_versions WHERE note_id=? AND revision NOT IN
+    (SELECT revision FROM note_versions WHERE note_id=? ORDER BY revision DESC LIMIT ?) AND ${guard}`)
+    .bind(id, id, keep, ...guardBinds));
+  statements.push(env.DB.prepare(`DELETE FROM image_refs WHERE note_id=? AND revision<>? AND revision NOT IN
+    (SELECT revision FROM note_versions WHERE note_id=?) AND ${guard}`)
+    .bind(id, revision, id, ...guardBinds));
+  statements.push(env.DB.prepare(`DELETE FROM note_changes WHERE user_id=? AND note_id=? AND sequence<
+    (SELECT MAX(sequence) FROM note_changes WHERE user_id=? AND note_id=?) AND ${guard}`)
+    .bind(user.id, id, user.id, id, ...guardBinds));
   const result = await env.DB.batch(statements);
   const saved = await loadNote(env, user.id, id);
   if (!result[0].meta.changes) {
@@ -138,6 +149,28 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
 
 export async function noteRoutes(request: Request, env: Env, user: Identity, path: string): Promise<Response | null> {
   const url = new URL(request.url);
+  if (path === '/api/sync' && request.method === 'GET') {
+    const after = Number(url.searchParams.get('after') ?? 0);
+    const limit = Number(url.searchParams.get('limit') ?? 100);
+    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+      throw new ApiError(400, 'Invalid sync cursor or limit.');
+    }
+    const result = await env.DB.prepare(`SELECT c.sequence,c.note_id AS change_note_id,n.*
+      FROM note_changes c LEFT JOIN notes n ON n.id=c.note_id AND n.user_id=c.user_id
+      WHERE c.user_id=? AND c.sequence>? ORDER BY c.sequence ASC LIMIT ?`)
+      .bind(user.id, after, limit + 1).all<NoteRow & { sequence: number; change_note_id: string }>();
+    const rows = result.results.slice(0, limit);
+    const changes: SyncChange[] = rows.map((row) => ({
+      sequence: row.sequence,
+      noteId: row.change_note_id,
+      note: row.id ? toNote(row) : null,
+    }));
+    return json({
+      changes,
+      cursor: changes.at(-1)?.sequence ?? after,
+      hasMore: result.results.length > limit,
+    });
+  }
   if (path === '/api/notes' && request.method === 'GET') {
     const q = (url.searchParams.get('q') ?? '').slice(0, 200);
     const view = url.searchParams.get('view') ?? 'all';
@@ -187,9 +220,13 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM notes WHERE user_id=? AND deleted_at IS NOT NULL')
       .bind(user.id).first<{ count: number }>();
     await env.DB.batch([
+      env.DB.prepare(`INSERT INTO note_changes(user_id,note_id,changed_at)
+        SELECT user_id,id,? FROM notes WHERE user_id=? AND deleted_at IS NOT NULL`).bind(time, user.id),
       env.DB.prepare(`INSERT OR IGNORE INTO purged_notes
         SELECT id,user_id,? FROM notes WHERE user_id=? AND deleted_at IS NOT NULL`).bind(time, user.id),
       env.DB.prepare('DELETE FROM notes WHERE user_id=? AND deleted_at IS NOT NULL').bind(user.id),
+      env.DB.prepare(`DELETE FROM note_changes WHERE user_id=? AND sequence NOT IN
+        (SELECT MAX(sequence) FROM note_changes WHERE user_id=? GROUP BY note_id)`).bind(user.id, user.id),
     ]);
     return json({ deleted: count?.count ?? 0 });
   }
@@ -197,12 +234,25 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     const row = await loadBlank(env, user.id);
     return json({ note: row ? toNote(row) : null });
   }
-  const match = /^\/api\/notes\/([^/]+)(?:\/(versions))?$/.exec(path);
+  const match = /^\/api\/notes\/([^/]+)(?:\/(versions|backlinks))?$/.exec(path);
   if (!match) return null;
   const id = match[1];
   if (!idPattern.test(id)) throw new ApiError(404, 'Note not found.');
   if (match[2] && request.method === 'GET') {
     if (!await loadNote(env, user.id, id)) throw new ApiError(404, 'Note not found.');
+    if (match[2] === 'backlinks') {
+      const escaped = id.replace(/[\\%_]/g, '\\$&');
+      const rows = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,archived,
+        deleted_at,created_at,updated_at,revision FROM notes
+        WHERE user_id=? AND deleted_at IS NULL AND content LIKE ? ESCAPE '\\'
+        ORDER BY updated_at DESC,id ASC LIMIT 200`).bind(user.id, `%[[${escaped}|%`).all<NoteRow>();
+      return json({
+        notes: rows.results.map((row) => {
+          const { content, ...note } = toNote(row);
+          return { ...note, excerpt: content };
+        }),
+      });
+    }
     const rows = await env.DB.prepare('SELECT * FROM note_versions WHERE note_id=? ORDER BY revision DESC')
       .bind(id).all<NoteRow & { saved_at: number; actor_type: 'user' | 'ai'; actor_name: string }>();
     const versions: Version[] = rows.results.map((row) => ({
@@ -212,7 +262,7 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     }));
     return json({
       versions: versions.filter((version, index) =>
-        index === 0 || !sameNoteInput(version, versions[index - 1])),
+        index === 0 || !sameVersionedInput(version, versions[index - 1])),
     });
   }
   if (match[2]) return null;
@@ -226,13 +276,19 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     const data = await readJson(request);
     if (!Number.isSafeInteger(data.revision)) throw new ApiError(400, 'Revision required.');
     const results = await env.DB.batch([
+      env.DB.prepare(`INSERT INTO note_changes(user_id,note_id,changed_at)
+        SELECT user_id,id,? FROM notes WHERE id=? AND user_id=? AND deleted_at IS NOT NULL AND revision=?`)
+        .bind(Date.now(), id, user.id, data.revision),
       env.DB.prepare(`INSERT OR IGNORE INTO purged_notes SELECT id,user_id,? FROM notes
         WHERE id=? AND user_id=? AND deleted_at IS NOT NULL AND revision=?`)
         .bind(Date.now(), id, user.id, data.revision),
       env.DB.prepare(`DELETE FROM notes WHERE id=? AND user_id=? AND deleted_at IS NOT NULL AND revision=?
         AND EXISTS(SELECT 1 FROM purged_notes WHERE id=?)`).bind(id, user.id, data.revision, id),
+      env.DB.prepare(`DELETE FROM note_changes WHERE user_id=? AND note_id=? AND sequence<
+        (SELECT MAX(sequence) FROM note_changes WHERE user_id=? AND note_id=?)`)
+        .bind(user.id, id, user.id, id),
     ]);
-    if (!results[1].meta.changes) throw new ApiError(409, 'Only an unchanged note in trash can be permanently deleted.');
+    if (!results[2].meta.changes) throw new ApiError(409, 'Only an unchanged note in trash can be permanently deleted.');
     return json({ ok: true });
   }
   return null;
