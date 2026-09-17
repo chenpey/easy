@@ -136,10 +136,15 @@ h1, h2, h3, p { margin-top: 0; }
   transform: translate(-50%, -2px);
   transition: opacity .1s ease, transform .1s ease;
 }
-.icon-button[data-tooltip]:hover::after,
 .icon-button[data-tooltip]:focus-visible::after {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+@media (hover: hover) and (min-width: 641px) {
+  .icon-button[data-tooltip]:hover::after {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 @media (prefers-reduced-motion: no-preference) {
   .spin { animation: spin .8s linear infinite; }
@@ -158,6 +163,7 @@ h1, h2, h3, p { margin-top: 0; }
 .brand .icon-button { margin-left: auto; }
 .app-shell {
   display: grid;
+  overflow: clip;
   grid-template-columns: 212px var(--note-list-width, 300px) 5px minmax(0, 1fr);
   height: 100dvh;
   min-height: 420px;
@@ -896,6 +902,7 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
   .knowledge-panel { width: 210px; min-width: 210px; }
 }
 @media(max-width: 640px) {
+  .icon-button[data-tooltip]::after { display: none; }
   .app-shell, .sidebar-hidden { display: block; min-height: 0; }
   .note-list-resizer { display: none; }
   .note-list { height: 100dvh; border: 0; }

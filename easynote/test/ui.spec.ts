@@ -49,6 +49,7 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
     share_target: {
       action: '/?share-target=1',
       method: 'GET',
+      enctype: 'application/x-www-form-urlencoded',
       params: { title: 'title', text: 'text', url: 'url' },
     },
   });
@@ -324,7 +325,7 @@ test('restoring a content version preserves the current pin state', async ({ pag
   await page.goto('/');
   await page.getByRole('button').filter({ hasText: title }).click();
   await expect(page.getByRole('button', { name: '取消置顶' })).toBeVisible();
-  await page.getByRole('button', { name: '历史版本' }).click();
+  await page.getByRole('button', { name: '历史版本', exact: true }).click();
   const history = page.getByRole('dialog');
   await expect(history.getByText('修订 3', { exact: false })).toBeHidden();
   await history.getByRole('button').filter({ hasText: '修订 1' }).click();
@@ -943,9 +944,8 @@ test('an expired session returns to login without a page reload', async ({ page 
     contentType: 'application/json',
     body: JSON.stringify({ error: { message: 'Please sign in.' } }),
   }));
-  const sync = page.getByRole('button', { name: '同步', exact: true });
-  await expect(sync).toBeEnabled();
-  await sync.click();
+  const sync = page.locator('.note-list').getByRole('button', { name: '同步并更新历史版本', exact: true });
+  await sync.evaluate((button) => (button as HTMLButtonElement).click());
   await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible();
   await expect(page.getByText('登录已过期，请重新登录。', { exact: true })).toBeVisible();
 });

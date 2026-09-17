@@ -1,6 +1,6 @@
 # EasyNote
 
-当前版本：`0.1.1`
+当前版本：`0.1.3`
 
 一个面向个人或小团队的自托管 Markdown 笔记应用。React + TypeScript 前端，pdfmake 生成 PDF、PDF.js 分页预览，Cloudflare Worker API，D1 保存账号与笔记，私有 R2 保存图片与附件。
 

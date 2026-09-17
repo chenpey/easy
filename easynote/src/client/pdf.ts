@@ -196,16 +196,10 @@ async function exportHtml(source: HTMLElement, options: PdfExportOptions): Promi
   return clone.innerHTML;
 }
 
-function getPdfBlob(definition: TDocumentDefinitions, fonts: TFontDictionary): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    void import('pdfmake/build/pdfmake').then((pdfMake) => {
-      try {
-        pdfMake.createPdf(definition, undefined, fonts).getBlob(resolve);
-      } catch (error) {
-        reject(error);
-      }
-    }, reject);
-  });
+async function getPdfBlob(definition: TDocumentDefinitions, fonts: TFontDictionary): Promise<Blob> {
+  const pdfMake = (await import('pdfmake/build/pdfmake')).default;
+  pdfMake.addFonts(fonts);
+  return pdfMake.createPdf(definition).getBlob();
 }
 
 function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
