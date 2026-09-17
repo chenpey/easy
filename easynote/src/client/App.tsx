@@ -838,7 +838,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       action: () => { setCommandPalette(false); void createNote(); },
     },
     {
-      id: 'save', label: '保存并同步', aliases: ['保存', '同步'], icon: <Save size={16} />, shortcut: 'Cmd/Ctrl+S',
+      id: 'save', label: '同步并更新历史版本', aliases: ['保存', '同步', '保存并同步'], icon: <Save size={16} />, shortcut: 'Cmd/Ctrl+S',
       disabled: disabled || (!note && !book.pending.length),
       action: () => { setCommandPalette(false); void syncNow(); },
     },
@@ -949,7 +949,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
             setSelectionMode((value) => !value);
             setSelected(new Set());
           }}>{selectionMode ? <CheckSquare size={16} /> : <Square size={16} />}</IconButton>}
-          <IconButton label={syncing ? '正在刷新' : '同步'} onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
+          <IconButton label={syncing ? '正在同步并更新历史版本' : '同步并更新历史版本'} onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
           {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) &&
             <IconButton label="全部永久删除" className="icon-button danger-icon" onClick={() => setConfirmAction('purge-all')} disabled={disabled || book.pending.length > 0}><Trash2 size={17} /></IconButton>}
           <IconButton label="新建笔记" onClick={() => void createNote()} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
@@ -1006,7 +1006,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
             <IconButton label="插入内部链接" className="icon-button toolbar-link-action" disabled={!!note.deletedAt || !!transfer} onClick={beginLinkInsertion}><Link2 size={17} /></IconButton>
             <IconButton label="大纲与反向链接" className="icon-button toolbar-outline-action" aria-pressed={inspector} onClick={() => setInspector((value) => !value)}><ListTree size={17} /></IconButton>
             <IconButton label={wideDocument ? '使用阅读宽度' : '使用宽屏'} className="icon-button document-width-toggle" aria-pressed={wideDocument} onClick={toggleDocumentWidth}>{wideDocument ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</IconButton>
-            <IconButton label={syncing ? '正在同步' : '立即同步'} disabled={disabled} onClick={() => void syncNow()}>{syncing ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}</IconButton>
+            <IconButton label={syncing ? '正在同步并更新历史版本' : '同步并更新历史版本'} disabled={disabled} onClick={() => void syncNow()}>{syncing ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}</IconButton>
             <IconButton label={note.pinned ? '取消置顶' : '置顶'} disabled={!!note.deletedAt || !!transfer} onClick={() => setNoteFields({ pinned: !note.pinned })}><Pin size={17} fill={note.pinned ? 'currentColor' : 'none'} /></IconButton>
             <IconButton label={note.archived ? '取消归档' : '归档'} disabled={!!note.deletedAt || !!transfer} onClick={() => setNoteFields({ archived: !note.archived })}>{note.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</IconButton>
             <IconButton label="只读分享" className="icon-button toolbar-share-action" disabled={disabled || note.revision === 0 || !!note.deletedAt || book.pending.some((item) => item.id === note.id)}
@@ -1074,6 +1074,20 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       </> : <div className="workspace-empty"><PenLine size={36} /><h2>你的笔记</h2><button className="primary" disabled={book.loading || !!transfer} onClick={() => void createNote()}><Plus size={16} />新建笔记</button></div>}
     </main>
     {notice && <div className="toast" role="status"><Check size={16} />{notice.text}</div>}
+    <input hidden ref={importInput} type="file" accept=".zip,.md,.markdown,.txt" multiple onChange={(e) => {
+      const files = Array.from(e.target.files ?? []);
+      if (files.length) void transferAction(() =>
+        importExternalFiles(files, session.config, setTransfer, book.findDuplicates), ({ imported, skipped }) =>
+        imported ? `已导入 ${imported} 篇${skipped ? `，跳过 ${skipped} 篇重复笔记` : '笔记'}` : `未导入：${skipped} 篇笔记已存在`);
+      e.target.value = '';
+    }} />
+    <input hidden ref={importFolderInput} type="file" multiple {...{ webkitdirectory: '' }} onChange={(e) => {
+      const files = Array.from(e.target.files ?? []);
+      if (files.length) void transferAction(() =>
+        importExternalFiles(files, session.config, setTransfer, book.findDuplicates), ({ imported, skipped }) =>
+        imported ? `已导入 ${imported} 篇${skipped ? `，跳过 ${skipped} 篇重复笔记` : '笔记'}` : `未导入：${skipped} 篇笔记已存在`);
+      e.target.value = '';
+    }} />
     {settings && <Modal title="设置" close={() => { if (!transfer) setSettings(false); }}>
       <div className="setting-row"><span>深色外观</span><button role="switch" aria-checked={dark} aria-label="深色外观" className={`switch ${dark ? 'on' : ''}`} onClick={() => setDark(!dark)}>{dark ? <Moon size={14} /> : <Sun size={14} />}</button></div>
       <div className="setting-row"><span>离线笔记库{book.offlineLibrary ? ` · ${book.offlineCount} 篇` : ''}</span><button role="switch" aria-checked={book.offlineLibrary} aria-label="离线笔记库" className={`switch ${book.offlineLibrary ? 'on' : ''}`} disabled={disabled || session.offline} onClick={() => void run(() => book.configureOffline(!book.offlineLibrary))}>{book.offlineLibrary ? <Check size={14} /> : <WifiOff size={14} />}</button></div>
@@ -1092,20 +1106,6 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       {session.user!.role === 'admin' && <div className="setting-row"><span>用户与注册</span><button disabled={disabled || session.offline}
         onClick={() => { setSettings(false); setUserManagement(true); }}><Users size={16} />管理用户</button></div>}
       <AiAccess disabled={disabled || !book.online || !!session.offline} reportError={book.setError} notify={showNotice} />
-      <input hidden ref={importInput} type="file" accept=".zip,.md,.markdown,.txt" multiple onChange={(e) => {
-        const files = Array.from(e.target.files ?? []);
-        if (files.length) void transferAction(() =>
-          importExternalFiles(files, session.config, setTransfer, book.findDuplicates), ({ imported, skipped }) =>
-          imported ? `已导入 ${imported} 篇${skipped ? `，跳过 ${skipped} 篇重复笔记` : '笔记'}` : `未导入：${skipped} 篇笔记已存在`);
-        e.target.value = '';
-      }} />
-      <input hidden ref={importFolderInput} type="file" multiple {...{ webkitdirectory: '' }} onChange={(e) => {
-        const files = Array.from(e.target.files ?? []);
-        if (files.length) void transferAction(() =>
-          importExternalFiles(files, session.config, setTransfer, book.findDuplicates), ({ imported, skipped }) =>
-          imported ? `已导入 ${imported} 篇${skipped ? `，跳过 ${skipped} 篇重复笔记` : '笔记'}` : `未导入：${skipped} 篇笔记已存在`);
-        e.target.value = '';
-      }} />
       <details className="import-guide">
         <summary>查看导入格式示例</summary>
         <p>请选择 EasyNote 导出的完整 ZIP，不要解压后逐个选择笔记文件。</p>
@@ -1189,7 +1189,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     {shortcutHelp && <Modal title="快捷键" close={() => setShortcutHelp(false)}>
       <div className="shortcut-list">
         <div><span>打开快速跳转</span><kbd>Cmd/Ctrl+K</kbd></div>
-        <div><span>保存并同步</span><kbd>Cmd/Ctrl+S</kbd></div>
+        <div><span>同步并更新历史版本</span><kbd>Cmd/Ctrl+S</kbd></div>
         <div><span>编辑 / 预览</span><kbd>Ctrl+E / Cmd+Enter</kbd></div>
         <div><span>导出当前笔记为 PDF</span><kbd>Cmd/Ctrl+P</kbd></div>
         <div><span>粗体</span><kbd>Cmd/Ctrl+B</kbd></div>

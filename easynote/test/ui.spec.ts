@@ -194,7 +194,7 @@ test('create, autosave, reload, edit Markdown and preview safely', async ({ page
   const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
   const automaticHistory = await (await page.request.get(`/api/notes/${listed.notes[0].id}/versions`)).json();
   expect(automaticHistory.versions).toHaveLength(0);
-  await page.getByRole('button', { name: '立即同步', exact: true }).click();
+  await page.getByRole('main').getByRole('button', { name: '同步并更新历史版本', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('已保存并记录历史版本');
   const history = await (await page.request.get(`/api/notes/${listed.notes[0].id}/versions`)).json();
   expect(history.versions).toHaveLength(1);
@@ -528,7 +528,7 @@ test('unsaved local draft survives refresh and syncs only after explicit retry',
   await page.reload();
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('网络失败之后的本地草稿');
   await expect(page.getByText('待处理草稿', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '立即同步', exact: true }).click();
+  await page.getByRole('main').getByRole('button', { name: '同步并更新历史版本', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('已保存并记录历史版本');
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   const history = await (await page.request.get(`/api/notes/${listed.notes[0].id}/versions`)).json();
@@ -862,13 +862,13 @@ test('a stalled save times out and remains retryable without reloading', async (
     }) as typeof fetch;
   });
   await page.getByRole('textbox', { name: '笔记正文' }).fill('等待超时的本地草稿');
-  await page.getByRole('button', { name: '立即同步', exact: true }).click();
+  await page.getByRole('main').getByRole('button', { name: '同步并更新历史版本', exact: true }).click();
   await expect.poll(() => page.evaluate(() =>
     (window as typeof window & { stalledPuts: number }).stalledPuts)).toBe(1);
   await page.clock.runFor(31_000);
   await expect(page.getByRole('alert')).toContainText('Request timed out after 30 seconds.');
   await expect(page.getByText('待处理草稿', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '立即同步', exact: true })).toBeEnabled();
+  await expect(page.getByRole('main').getByRole('button', { name: '同步并更新历史版本', exact: true })).toBeEnabled();
 });
 
 test('polling still refreshes the selected note after loading more than 50 notes', async ({ page }) => {
