@@ -7,12 +7,16 @@ import {
   deploymentConfig,
   inspectDeployment,
   provisionDeployment,
+  resolvePublicHostname,
   selectAccount,
+  selectDeploymentDomain,
+  validateCustomHostname,
   validateWorkersSubdomain,
 } from '../scripts/cloudflare.mjs';
 
 const accountId = 'a'.repeat(32);
 const databaseId = '12345678-1234-4234-8234-123456789abc';
+const zoneId = 'z'.repeat(32);
 const template = JSON.parse(await readFile(new URL('../wrangler.json', import.meta.url)));
 let server;
 let api;
@@ -24,6 +28,10 @@ let settings;
 let workersSubdomain;
 let publicBucket;
 let failR2;
+let zones;
+let routeRecords;
+let domainRecords;
+let routeFailure;
 
 before(async () => {
   server = createServer(async (request, response) => {
@@ -41,6 +49,14 @@ before(async () => {
     };
 
     if (url.pathname === '/accounts') return reply(accounts);
+    if (url.pathname === '/zones') return reply(zones);
+    if (url.pathname.endsWith('/workers/routes')) {
+      return routeFailure ? reply('Missing Workers Routes Read permission', 403) : reply(routeRecords);
+    }
+    if (url.pathname.endsWith('/workers/domains')) {
+      const hostname = url.searchParams.get('hostname');
+      return reply(hostname ? domainRecords.filter((domain) => domain.hostname === hostname) : domainRecords);
+    }
     if (url.pathname.endsWith('/workers/subdomain')) {
       if (request.method === 'PUT') {
         workersSubdomain = body.subdomain;
@@ -89,6 +105,10 @@ beforeEach(() => {
   workersSubdomain = 'personal-notes';
   publicBucket = false;
   failR2 = false;
+  zones = [{ id: zoneId, name: 'example.test', status: 'active' }];
+  routeRecords = [];
+  domainRecords = [];
+  routeFailure = false;
 });
 
 test('account discovery selects one account and requires an explicit choice for multiple accounts', async () => {
@@ -98,6 +118,15 @@ test('account discovery selects one account and requires an explicit choice for 
   accounts.push({ id: 'b'.repeat(32), name: 'Team' });
   assert.equal(await selectAccount(api, '', async () => '2', () => {}), 'b'.repeat(32));
   await assert.rejects(selectAccount(api, '', async () => 'invalid', () => {}), /Invalid Cloudflare account selection/);
+});
+
+test('custom domain input normalizes values and supports switching back to workers.dev', async () => {
+  assert.equal(await selectDeploymentDomain(null, async () => 'APP.Example.test'), 'app.example.test');
+  const existing = { routes: [{ pattern: 'share.example.test', custom_domain: true }] };
+  assert.equal(await selectDeploymentDomain(existing, async () => ''), 'share.example.test');
+  assert.equal(await selectDeploymentDomain(existing, async () => 'workers.dev'), '');
+  assert.equal(validateCustomHostname('APP.Example.test'), 'app.example.test');
+  assert.throws(() => validateCustomHostname('https://app.example.test'), /Invalid custom hostname/);
 });
 
 test('first deployment creates D1, private R2 and a missing workers.dev subdomain', async () => {
@@ -127,6 +156,29 @@ test('first deployment creates D1, private R2 and a missing workers.dev subdomai
       ['PUT', `/accounts/${accountId}/workers/subdomain`],
     ],
   );
+});
+
+test('custom domain validates its active zone, route access and existing domain ownership', async () => {
+  const config = deploymentConfig(template, null, accountId, 'easynote-test', 'share.example.test');
+  assert.equal(config.workers_dev, false);
+  assert.deepEqual(config.routes, [{ pattern: 'share.example.test', custom_domain: true }]);
+  const inspection = await inspectDeployment(api, config, null);
+  assert.equal(inspection.url, 'https://share.example.test');
+  assert.ok(requests.some((request) => request.path === '/zones'));
+  assert.ok(requests.some((request) => request.path === `/zones/${zoneId}/workers/routes`));
+  assert.ok(requests.some((request) => request.path === `/accounts/${accountId}/workers/domains`));
+  const saves = [];
+  assert.equal(
+    await provisionDeployment(api, config, inspection, '', async (value) => saves.push(structuredClone(value))),
+    'https://share.example.test',
+  );
+  assert.equal(saves[0].d1_databases[0].database_id, databaseId);
+
+  routeFailure = true;
+  await assert.rejects(inspectDeployment(api, config, null), /Missing Workers Routes Read permission/);
+  routeFailure = false;
+  domainRecords = [{ hostname: 'share.example.test', service: 'another-worker' }];
+  await assert.rejects(inspectDeployment(api, config, null), /already attached to Worker another-worker/);
 });
 
 test('existing dedicated resources are adopted once and reused without writes later', async () => {
@@ -206,4 +258,22 @@ test('workers.dev subdomains and API errors fail closed with actionable details'
     inspectDeployment(api, config, null),
     /Enable R2 at https:\/\/dash\.cloudflare\.com[\s\S]*HTTP 403[\s\S]*R2 subscription is required/,
   );
+});
+
+test('public DNS verification uses 1.1.1.1 without relying on the system resolver', async () => {
+  let requested;
+  const addresses = await resolvePublicHostname('share.example.test', async (url, options) => {
+    requested = { url, options };
+    return new Response(JSON.stringify({
+      Status: 0,
+      Answer: [
+        { name: 'share.example.test', type: 1, data: '192.0.2.10' },
+        { name: 'share.example.test', type: 28, data: '2001:db8::10' },
+      ],
+    }));
+  });
+  assert.equal(requested.url.hostname, '1.1.1.1');
+  assert.equal(requested.url.searchParams.get('name'), 'share.example.test');
+  assert.equal(requested.options.headers.Accept, 'application/dns-json');
+  assert.deepEqual(addresses, ['192.0.2.10']);
 });

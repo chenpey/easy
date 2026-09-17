@@ -59,9 +59,29 @@ globalThis.fetch = async (input, init = {}) => {
   const url = new URL(input);
   const method = init.method || 'GET';
   const body = init.body ? JSON.parse(init.body) : undefined;
+  if (url.hostname === '1.1.1.1') {
+    return new Response(JSON.stringify({
+      Status: 0,
+      Answer: [{ name: url.searchParams.get('name'), type: 1, data: '192.0.2.10' }],
+    }), {headers: {'Content-Type': 'application/dns-json'}});
+  }
+  if (url.hostname === 'share.example.test') return new Response('ok', {status: 200});
   appendFileSync(root + '/cloudflare-calls.jsonl', JSON.stringify({method, path:url.pathname, body}) + '\\n');
   if (init.headers?.Authorization !== 'Bearer ' + ${JSON.stringify(apiToken)}) return response('Invalid token', 403);
   if (url.pathname === '/client/v4/accounts') return response([{id:accountId, name:'Personal'}]);
+  if (url.pathname === '/client/v4/zones') {
+    if (process.env.FAKE_ROUTE_FAILURE === '1') return response('Missing Zone Read permission', 403);
+    return response([{id:'${'z'.repeat(32)}', name:'example.test', status:'active'}]);
+  }
+  if (url.pathname.endsWith('/workers/routes')) {
+    if (process.env.FAKE_ROUTE_FAILURE === '1') return response('Missing Workers Routes Read permission', 403);
+    return response([]);
+  }
+  if (url.pathname.endsWith('/workers/domains')) {
+    return response(process.env.FAKE_DOMAIN_CONFLICT === '1'
+      ? [{hostname:'share.example.test', service:'another-worker'}]
+      : []);
+  }
   if (url.pathname.endsWith('/workers/subdomain')) {
     if (method === 'PUT') {
       workersSubdomain = body.subdomain;
@@ -351,6 +371,7 @@ test('deployment cancellation performs only read checks and does not write a new
   const result = await terminal(f, 'deploy.sh', [], [
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
     ['Worker name [easynote]: ', 'easynote-test'],
+    ['Custom domain (blank for workers.dev): ', ''],
     ['Type deploy easynote to create/update resources and apply migrations: ', 'cancel'],
   ]);
   assert.match(result.output, /Deployment cancelled/);
@@ -369,6 +390,7 @@ test('deployment reuses resource IDs, refreshes template settings and preserves 
   await writeFile(`${f.root}/wrangler.deploy.json`, JSON.stringify(original));
   const result = await terminal(f, 'deploy.sh', [], [
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
+    ['Custom domain [workers.dev] (Enter keeps it; type a hostname or workers.dev): ', ''],
     ['Type deploy easynote to create/update resources and apply migrations: ', 'deploy easynote'],
   ], { FAKE_REMOTE_WORKER: '1', FAKE_EXISTING_RESOURCES: '1' });
   assert.match(result.output, /Remote owner verifier already exists/);
@@ -395,6 +417,7 @@ test('new deployments create D1 and private R2 before initializing a missing own
   const result = await terminal(f, 'deploy.sh', [], [
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
     ['Worker name [easynote]: ', 'easynote-test'],
+    ['Custom domain (blank for workers.dev): ', ''],
     ['workers.dev account subdomain [easynote-test]: ', 'personal-notes'],
     ['Type deploy easynote to create/update resources and apply migrations: ', 'deploy easynote'],
     ...setupSteps,
@@ -416,6 +439,28 @@ test('new deployments create D1 and private R2 before initializing a missing own
   assert.equal(saved.d1_databases[0].database_id, databaseId);
   assert.equal(saved.r2_buckets[0].bucket_name, 'easynote-images');
   assert.equal(await readFile(`${f.root}/.dev.vars`, 'utf8'), localConfig);
+});
+
+test('new deployments bind a custom domain and verify its public DNS and HTTPS access', async () => {
+  const f = await fixture();
+  await dependencies(f);
+  const result = await terminal(f, 'deploy.sh', [], [
+    ['Cloudflare API token (hidden, used only for this run): ', apiToken],
+    ['Worker name [easynote]: ', 'easynote-test'],
+    ['Custom domain (blank for workers.dev): ', 'share.example.test'],
+    ['Type deploy easynote to create/update resources and apply migrations: ', 'deploy easynote'],
+    ...setupSteps,
+  ]);
+  assert.match(result.output, /https:\/\/share\.example\.test/);
+  assert.match(result.output, /Public DNS active via 1\.1\.1\.1/);
+  assert.match(result.output, /Local HTTPS access passed \(HTTP 200\)/);
+  const cloudCalls = await cloudflareCalls(f);
+  assert.ok(cloudCalls.some((call) => call.method === 'GET' && call.path === '/client/v4/zones'));
+  assert.ok(cloudCalls.some((call) => call.method === 'GET' && call.path.endsWith('/workers/routes')));
+  assert.ok(cloudCalls.some((call) => call.method === 'GET' && call.path.endsWith('/workers/domains')));
+  const saved = JSON.parse(await readFile(`${f.root}/wrangler.deploy.json`, 'utf8'));
+  assert.equal(saved.workers_dev, false);
+  assert.deepEqual(saved.routes, [{pattern: 'share.example.test', custom_domain: true}]);
 });
 
 test('credential environment aliases are rejected and build failure stops deployment before requesting a token', async () => {

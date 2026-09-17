@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="920" viewBox="0 0 1500 920" role="img" aria-labelledby="title desc">
   <title id="title">EasyNote Cloudflare 资源自动创建示意图</title>
-  <desc id="desc">首次启用 R2 后，部署脚本使用一个 API Token 自动准备 D1、私有 R2 和 workers.dev。</desc>
+  <desc id="desc">首次启用 R2 后，部署脚本使用一个 API Token 自动准备 D1、私有 R2 和 workers.dev 或 Custom Domain。</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%">
       <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#18324d" flood-opacity=".12"/>
@@ -12,7 +12,7 @@
   </defs>
   <rect width="1500" height="920" fill="#f5f7fb"/>
   <text x="70" y="72" class="title">EasyNote Cloudflare 资源自动创建</text>
-  <text x="70" y="112" class="small muted">隐藏输入一个部署 Token；脚本自动发现账号并准备专属 D1、私有 R2 和 workers.dev。</text>
+  <text x="70" y="112" class="small muted">隐藏输入一个部署 Token；脚本自动发现账号并准备专属 D1、私有 R2 和公开入口。</text>
 
   <rect x="70" y="155" width="1360" height="198" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="120" cy="211" r="25" fill="#1769e0"/><text x="112" y="220" class="heading white">1</text>
@@ -31,9 +31,9 @@
   <rect x="70" y="625" width="1360" height="196" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="120" cy="681" r="25" fill="#087f5b"/><text x="112" y="690" class="heading white">3</text>
   <text x="170" y="677" class="heading">自动检查 workers.dev 并部署</text>
-  <text x="170" y="724" class="body">账号尚无子域名时，脚本询问名称后通过 Cloudflare API 初始化。</text>
-  <text x="170" y="766" class="body">最终地址：<tspan class="mono">https://&lt;worker-name&gt;.&lt;account-subdomain&gt;.workers.dev</tspan></text>
-  <text x="170" y="800" class="small muted">Custom Domain 可在部署成功后从 Worker 的 Domains 页面绑定。</text>
+  <text x="170" y="724" class="body">输入自定义域名时，Wrangler 自动绑定 Custom Domain 并创建 DNS 与证书。</text>
+  <text x="170" y="766" class="body">workers.dev 地址：<tspan class="mono">https://&lt;worker-name&gt;.&lt;account-subdomain&gt;.workers.dev</tspan></text>
+  <text x="170" y="800" class="small muted">部署后通过 1.1.1.1 DoH 和 HTTPS 检查公开入口。</text>
 
   <rect x="70" y="850" width="1360" height="44" rx="10" fill="#eef5ff" stroke="#b9d4ff"/>
   <text x="98" y="880" class="small blue">Token 仅在当前进程中使用；资源标识写入权限为 0600 的本地部署配置。</text>

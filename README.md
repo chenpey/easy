@@ -20,7 +20,7 @@ Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专
 
 技术栈：React、TypeScript、CodeMirror、pdfmake、PDF.js、Cloudflare Workers、D1、R2。
 
-本地使用进入目录运行 `bash dev.sh`；生产部署运行 `bash deploy.sh`，通过一个交互式 Cloudflare API Token 自动发现账号并创建或复用 Worker、D1、私有 R2 和公开入口。远程部署和维护使用一个限定到目标账号的 Cloudflare 自定义 API Token，由脚本在每次运行时通过终端隐藏读取，生命周期限定在当前进程。配置文件保存资源标识。1000 篇以内的个人笔记通常可落在 Workers、D1 和 R2 免费额度内，详细假设与权限图见子项目文档。
+本地使用进入目录运行 `bash dev.sh`；生产部署运行 `bash deploy.sh`，通过一个交互式 Cloudflare API Token 自动发现账号并创建或复用 Worker、D1、私有 R2 和公开入口，公开入口支持 `workers.dev` 或自动绑定自定义域名。远程部署和维护使用一个限定到目标账号的 Cloudflare 自定义 API Token，由脚本在每次运行时通过终端隐藏读取，生命周期限定在当前进程。配置文件保存资源标识。1000 篇以内的个人笔记通常可落在 Workers、D1 和 R2 免费额度内，详细假设与权限图见子项目文档。
 
 详细说明见 [EasyNote README](easynote/README.md)。
 

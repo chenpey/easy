@@ -295,9 +295,18 @@ Paid 总费用可按下式估算：
 
 ![EasyNote Cloudflare D1、R2 与 workers.dev 资源准备](docs/img/cloudflare/cloudflare-resources.svg)
 
-部署脚本会根据 Token 自动发现账号、创建或复用专属 `easynote-db` 和私有 `easynote-images`，并取得 D1 UUID。账号尚无 `workers.dev` 子域名时，脚本询问名称后通过 API 初始化。自定义域名可在部署完成后从 Worker 的 Domains 页面绑定。
+部署脚本会根据 Token 自动发现账号、创建或复用专属 `easynote-db` 和私有 `easynote-images`，并取得 D1 UUID。
 
-### 2. 创建自定义 API Token
+### 2. 选择公开入口
+
+部署时在 `Custom domain` 提示中选择公开入口：
+
+- 留空使用 `workers.dev`。账号尚无子域名时，脚本会询问名称并通过 API 初始化。
+- 输入完整主机名，例如 `notes.example.com`，使用 Worker Custom Domain。
+
+Custom Domain 要求根域名已在同一 Cloudflare 账号中变为 **Active**，且主机名可由 Cloudflare 接管。脚本会在部署前检查 Zone、Worker Routes 和已有 Custom Domain；Wrangler 随后检查 DNS 冲突，自动绑定 Custom Domain、创建 DNS 记录并申请证书，部署完成后脚本再检查公网 DNS 和 HTTPS。
+
+### 3. 创建自定义 API Token
 
 打开 [My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens/)，选择 **Create Token → Create Custom Token**。
 
@@ -309,8 +318,12 @@ Paid 总费用可按下式估算：
 | Account | Workers Scripts | Edit | 创建或更新 Worker、静态资源、Cron 和 `INITIAL_OWNER` Secret |
 | Account | D1 | Edit | 检查或创建专用数据库并执行 migrations |
 | Account | Workers R2 Storage | Edit | 检查或创建专用私有 bucket |
+| Zone | Zone | Read | 查找 Custom Domain 所属的 Active Zone |
+| Zone | Workers Routes | Read | 让 Wrangler 检查目标主机名的 Route 冲突 |
 
 在 **Account Resources** 选择 `Include → Specific account → 目标账号`。只有一个可访问账号时脚本自动选择；Token 覆盖多个账号时要求从列表中明确选择。
+
+只有使用 Custom Domain 时才需要最后两项 Zone 权限；使用 `workers.dev` 时可以省略。使用 Custom Domain 时，还要在 **Zone Resources** 选择 `Include → Specific zone → 目标根域名`。
 
 Cloudflare 新版 Developer Platform 角色界面中，首次创建 Worker 需要 Workers 产品级 **Admin**；Worker 已存在时可缩小为该 Worker 的 **Editor**。D1 与 R2 仍只授予目标产品和资源所需的编辑权限。
 
@@ -318,16 +331,17 @@ Cloudflare 新版 Developer Platform 角色界面中，首次创建 Worker 需�
 
 Token secret 只显示一次，应存入密码管理器。部署、远程备份、恢复和远程密码重置均通过终端隐藏输入同一个 Token，Token 生命周期限定在本次运行。
 
-### 3. 执行部署
+### 4. 执行部署
 
 ```bash
 bash deploy.sh
 ```
 
-脚本自动准备依赖、检查并构建，然后隐藏输入一次 API Token。首次部署时自动发现账号、询问 Worker 名、检查同名资源和 `workers.dev`；确认变更后创建缺少的 D1、私有 R2 bucket 和账号级子域名，再执行 migrations、部署 Worker，并检查 `INITIAL_OWNER`：存在则保留，缺少才交互式初始化。
+脚本自动准备依赖、检查并构建，然后隐藏输入一次 API Token。首次部署时自动发现账号、询问 Worker 名和公开入口，检查同名资源、Active Zone、Routes 与 Custom Domain；确认变更后创建缺少的 D1、私有 R2 bucket 和账号级子域名，再执行 migrations、部署 Worker，并检查 `INITIAL_OWNER`：存在则保留，缺少才交互式初始化。
 
 - 后续部署自动复用已保存的 Worker、Account、D1 和 R2，并校验远端绑定一致。
 - 首次发现同名 D1 或 R2 时，必须明确确认它们专用于当前 EasyNote；已有同名 Worker 不会被接管。
+- 输入自定义域名时，Wrangler 自动绑定 Worker Custom Domain、创建 DNS 记录和证书；脚本会在部署后检查公网 DNS 与 HTTPS。
 - R2 bucket 创建后保持私有；发现 `r2.dev` 或 bucket 自定义域名已启用时停止部署。
 - `wrangler.deploy.json` 使用 `0600` 权限保存目标资源标识和公开应用配置。
 - 应用参数在 `wrangler.json` 维护。复用部署时重新从模板生成生产配置，仅继承已保存的账号和资源标识。
@@ -335,7 +349,7 @@ bash deploy.sh
 - 更新部署会应用 D1 migrations，并保留已有初始账号验证器和账号密码。
 - D1 创建成功后立即保存 UUID；Token 权限不足或后续步骤失败时，修正原因后可复用已创建资源继续部署。
 
-官方参考：[Wrangler API Token 环境变量](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)、[Workers 权限](https://developers.cloudflare.com/workers/authorization/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[创建 D1 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/create/)、[创建 R2 bucket API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/create/)、[workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)。
+官方参考：[Wrangler API Token 环境变量](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)、[Workers 权限](https://developers.cloudflare.com/workers/authorization/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[创建 D1 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/create/)、[创建 R2 bucket API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/create/)、[workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)、[List Routes API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)。
 
 ## 关键行为
 

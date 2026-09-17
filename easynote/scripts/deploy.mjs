@@ -8,7 +8,9 @@ import {
   deploymentConfig,
   inspectDeployment,
   provisionDeployment,
+  resolvePublicHostname,
   selectAccount,
+  selectDeploymentDomain,
   validateWorkersSubdomain,
 } from './cloudflare.mjs';
 
@@ -117,6 +119,32 @@ async function withProgress(label, action) {
   }
 }
 
+async function verifyDeploymentAccess(url) {
+  const hostname = new URL(url).hostname;
+  let addresses;
+  try {
+    addresses = await resolvePublicHostname(hostname);
+  } catch (error) {
+    console.warn(`Public DNS verification through 1.1.1.1 failed:\n${error.message}`);
+    return;
+  }
+  if (!addresses.length) {
+    console.warn(`Public DNS for ${hostname} is not visible through 1.1.1.1 yet. Wait for propagation before retrying.`);
+    return;
+  }
+  console.log(`Public DNS active via 1.1.1.1: ${addresses.join(', ')}`);
+  try {
+    const response = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(10000),
+    });
+    console.log(`Local HTTPS access passed (HTTP ${response.status}).`);
+  } catch (error) {
+    console.warn(`Public DNS is active, but this machine cannot access ${url}: ${error.message}`);
+    console.warn('If the browser shows ERR_NAME_NOT_RESOLVED, restart its DNS cache and the local proxy/DNS service.');
+  }
+}
+
 async function main() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error('An interactive terminal is required. Piped credentials are not supported.');
@@ -143,18 +171,20 @@ async function main() {
   if (!token) throw new Error('A Cloudflare API Token is required.');
   const api = createCloudflareClient(token);
   const accountId = await selectAccount(api, existing?.account_id, ask);
-  if (!config) {
-    const workerName = (await ask(`Worker name [${template.name}]: `)).trim() || template.name;
-    config = deploymentConfig(template, null, accountId, workerName);
-  }
+  const workerName = existing?.name || (await ask(`Worker name [${template.name}]: `)).trim() || template.name;
+  const domain = await selectDeploymentDomain(existing, ask);
+  config = deploymentConfig(template, existing, accountId, workerName, domain);
 
   console.log('Checking the deployment target and private storage...');
   const inspection = await inspectDeployment(api, config, existing);
   let requestedSubdomain = inspection.workersSubdomain;
-  if (!requestedSubdomain) {
+  if (!config.routes?.length && !requestedSubdomain) {
     const answer = await ask(`workers.dev account subdomain [${config.name}]: `);
     requestedSubdomain = validateWorkersSubdomain(answer || config.name);
   }
+  const url = config.routes?.length
+    ? `https://${config.routes[0].pattern}`
+    : `https://${config.name}.${requestedSubdomain}.workers.dev`;
 
   if (inspection.adoptingDatabase || inspection.adoptingBucket) {
     const resources = [
@@ -172,15 +202,15 @@ async function main() {
     account: accountId,
     database: `${database.database_name} (${inspection.foundDatabase ? 'reuse' : 'create'})`,
     bucket: `${bucket.bucket_name} (${inspection.foundBucket ? 'reuse' : 'create, private'})`,
-    url: `https://${config.name}.${requestedSubdomain}.workers.dev`,
+    url,
   }, null, 2));
 
   if (await ask('Type deploy easynote to create/update resources and apply migrations: ') !== 'deploy easynote') {
     throw new Error('Deployment cancelled.');
   }
 
-  const url = await withProgress(
-    'Preparing Cloudflare D1, R2 and workers.dev resources',
+  const deployedUrl = await withProgress(
+    'Preparing Cloudflare D1, R2 and public entrypoint',
     () => provisionDeployment(api, config, inspection, requestedSubdomain, saveConfig),
   );
   await saveConfig(config);
@@ -193,7 +223,8 @@ async function main() {
     () => runWrangler(['deploy', '--config', 'wrangler.deploy.json'], token, accountId),
   );
   await withProgress('Checking the initial owner', () => runSetup(token, accountId));
-  console.log(`\nDeployment complete: ${url}`);
+  await withProgress('Verifying public DNS and HTTPS access', () => verifyDeploymentAccess(deployedUrl));
+  console.log(`\nDeployment complete: ${deployedUrl}`);
   console.log('The Cloudflare API Token and owner password were not saved.');
 }
 

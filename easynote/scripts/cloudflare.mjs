@@ -58,6 +58,36 @@ export function createCloudflareClient(token, {
   };
 }
 
+export async function resolvePublicHostname(hostname, fetcher = fetch) {
+  const query = new URL('https://1.1.1.1/dns-query');
+  query.searchParams.set('name', hostname);
+  query.searchParams.set('type', 'A');
+  let response;
+  let raw;
+  try {
+    response = await fetcher(query, {
+      headers: { Accept: 'application/dns-json' },
+      signal: AbortSignal.timeout(10000),
+      redirect: 'error',
+    });
+    raw = await response.text();
+  } catch (error) {
+    throw new Error(`GET ${query}\nNetwork error: ${error.message}`, { cause: error });
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    // The complete response is included in the error below.
+  }
+  if (!response.ok || data?.Status !== 0) {
+    throw new Error(`GET ${query}\nHTTP ${response.status}\n${raw}`);
+  }
+  return (data.Answer || [])
+    .filter((answer) => answer.type === 1)
+    .map((answer) => answer.data);
+}
+
 export async function selectAccount(api, savedAccountId, ask, log = console.log) {
   if (savedAccountId) return savedAccountId;
   let accounts;
@@ -81,11 +111,33 @@ export async function selectAccount(api, savedAccountId, ask, log = console.log)
   return selected.id;
 }
 
-export function deploymentConfig(template, existing, accountId, workerName) {
+export async function selectDeploymentDomain(existing, ask) {
+  const saved = existing?.routes?.[0]?.pattern || '';
+  if (!existing) {
+    return (await ask('Custom domain (blank for workers.dev): ')).trim().toLowerCase();
+  }
+  const current = saved || 'workers.dev';
+  const answer = (await ask(
+    `Custom domain [${current}] (Enter keeps it; type a hostname or workers.dev): `,
+  )).trim().toLowerCase();
+  if (!answer) return saved;
+  return answer === 'workers.dev' ? '' : answer;
+}
+
+export function validateCustomHostname(value) {
+  const hostname = value.trim().toLowerCase();
+  if (hostname && !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(hostname)) {
+    throw new Error('Invalid custom hostname.');
+  }
+  return hostname;
+}
+
+export function deploymentConfig(template, existing, accountId, workerName, domain = '') {
   if (!/^[a-f0-9]{32}$/i.test(accountId || '')) throw new Error('Invalid Cloudflare account ID.');
   if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(workerName || '')) {
     throw new Error('Worker name must be 3-63 lowercase letters, digits or hyphens.');
   }
+  const hostname = validateCustomHostname(domain);
   const templateDatabase = template.d1_databases?.find((entry) => entry.binding === 'DB');
   const templateBucket = template.r2_buckets?.find((entry) => entry.binding === 'IMAGES');
   if (!templateDatabase?.database_name || !templateBucket?.bucket_name) {
@@ -93,6 +145,7 @@ export function deploymentConfig(template, existing, accountId, workerName) {
   }
 
   let databaseId = EMPTY_DATABASE;
+  let databaseName = templateDatabase.database_name;
   let bucketName = templateBucket.bucket_name;
   if (existing) {
     const savedDatabase = existing.d1_databases?.find((entry) => entry.binding === 'DB');
@@ -108,6 +161,9 @@ export function deploymentConfig(template, existing, accountId, workerName) {
       throw new Error('Invalid R2 bucket name in wrangler.deploy.json.');
     }
     databaseId = savedDatabase.database_id;
+    if (typeof savedDatabase.database_name === 'string' && savedDatabase.database_name) {
+      databaseName = savedDatabase.database_name;
+    }
     bucketName = savedBucket.bucket_name;
   }
 
@@ -115,10 +171,14 @@ export function deploymentConfig(template, existing, accountId, workerName) {
   Object.assign(config, {
     name: workerName,
     account_id: accountId,
-    workers_dev: true,
+    workers_dev: !hostname,
     preview_urls: false,
   });
-  config.d1_databases.find((entry) => entry.binding === 'DB').database_id = databaseId;
+  delete config.routes;
+  if (hostname) config.routes = [{ pattern: hostname, custom_domain: true }];
+  const database = config.d1_databases.find((entry) => entry.binding === 'DB');
+  database.database_name = databaseName;
+  database.database_id = databaseId;
   config.r2_buckets.find((entry) => entry.binding === 'IMAGES').bucket_name = bucketName;
   if (config.vars?.ALLOW_LOCAL_HTTP !== 'false') {
     throw new Error('Production ALLOW_LOCAL_HTTP must be false.');
@@ -195,11 +255,34 @@ export async function inspectDeployment(api, config, existing) {
   }
   if (foundBucket) await assertBucketPrivate(api, bucketPath);
 
-  const subdomain = await api.request('GET', `${prefix}/workers/subdomain`, undefined, { allowMissing: true });
+  let workersSubdomain = '';
+  let url;
+  if (config.routes?.length) {
+    const hostname = config.routes[0].pattern;
+    const zones = await api.list('/zones', { 'account.id': config.account_id });
+    const zone = zones.find((item) => item.status === 'active' &&
+      (hostname === item.name || hostname.endsWith(`.${item.name}`)));
+    if (!zone) throw new Error(`No active accessible zone for ${hostname}.`);
+    await api.list(`/zones/${zone.id}/workers/routes`);
+    const domains = await api.list(`${prefix}/workers/domains`, { hostname });
+    const conflictingDomain = domains.find((domain) =>
+      domain.hostname === hostname && domain.service !== config.name);
+    if (conflictingDomain) {
+      throw new Error(
+        `Custom domain ${hostname} is already attached to Worker ${conflictingDomain.service}.`,
+      );
+    }
+    url = `https://${hostname}`;
+  } else {
+    const subdomain = await api.request('GET', `${prefix}/workers/subdomain`, undefined, { allowMissing: true });
+    workersSubdomain = subdomain?.subdomain || '';
+    if (workersSubdomain) url = `https://${config.name}.${workersSubdomain}.workers.dev`;
+  }
   return {
     foundDatabase,
     foundBucket,
-    workersSubdomain: subdomain?.subdomain || '',
+    workersSubdomain,
+    url,
     adoptingDatabase: !!foundDatabase && database.database_id === EMPTY_DATABASE,
     adoptingBucket: !!foundBucket && !existing,
   };
@@ -238,6 +321,8 @@ export async function provisionDeployment(api, config, inspection, requestedSubd
       throw error;
     }
   }
+
+  if (config.routes?.length) return `https://${config.routes[0].pattern}`;
 
   let workersSubdomain = inspection.workersSubdomain;
   if (!workersSubdomain) {

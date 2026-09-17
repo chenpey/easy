@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200" role="img" aria-labelledby="title desc">
   <title id="title">EasyNote Cloudflare API Token 配置示意图</title>
-  <desc id="desc">创建 EasyNote 部署专用的 User API Token，配置 Workers、D1、R2 权限并限制到目标账号。</desc>
+  <desc id="desc">创建 EasyNote 部署专用的 User API Token，配置 Workers、D1、R2 和 Custom Domain 所需的 Zone 权限并限制到目标资源。</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%">
       <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#18324d" flood-opacity=".12"/>
@@ -10,7 +10,7 @@
       .title{font-size:40px;font-weight:750}.heading{font-size:29px;font-weight:720}.body{font-size:24px}.small{font-size:20px}.tiny{font-size:18px}.muted{fill:#687387}.white{fill:#fff}.orange{fill:#d96500}.blue{fill:#1769e0}.green{fill:#087f5b}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     </style>
   </defs>
-  <rect width="1600" height="1080" fill="#f5f7fb"/>
+  <rect width="1600" height="1200" fill="#f5f7fb"/>
   <text x="70" y="70" class="title">EasyNote 部署 Token：创建位置、权限和资源范围</text>
   <text x="70" y="108" class="small muted">部署凭据使用 User API Token；Account ID 和资源 UUID 由脚本自动发现并保存。</text>
 
@@ -20,10 +20,10 @@
   <text x="162" y="238" class="body mono">My Profile → API Tokens → Create Token → Create Custom Token</text>
   <text x="162" y="270" class="small muted">Token name 示例：easynote-deploy。Token secret 只显示一次，应存入密码管理器。</text>
 
-  <rect x="70" y="315" width="1460" height="414" rx="18" fill="#fff" filter="url(#shadow)"/>
+  <rect x="70" y="315" width="1460" height="530" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="369" r="24" fill="#f48120"/><text x="107" y="378" class="heading white">2</text>
-  <text x="162" y="365" class="heading">Permissions：添加 4 项账号权限</text>
-  <rect x="130" y="405" width="1340" height="260" rx="12" fill="#fafbfc" stroke="#d7dee8"/>
+  <text x="162" y="365" class="heading">Permissions：添加 4 项账号权限，Custom Domain 另加 2 项 Zone 权限</text>
+  <rect x="130" y="405" width="1340" height="370" rx="12" fill="#fafbfc" stroke="#d7dee8"/>
   <text x="170" y="446" class="small muted">Scope</text><text x="410" y="446" class="small muted">Permission</text><text x="970" y="446" class="small muted">Level</text><text x="1120" y="446" class="small muted">用途</text>
   <line x1="155" y1="462" x2="1445" y2="462" stroke="#d7dee8"/>
   <g class="body">
@@ -31,18 +31,20 @@
     <text x="170" y="548">Account</text><text x="410" y="548">Workers Scripts</text><text x="970" y="548" class="orange">Edit</text><text x="1120" y="548" class="green">部署 Worker / 子域名</text>
     <text x="170" y="596">Account</text><text x="410" y="596">D1</text><text x="970" y="596" class="orange">Edit</text><text x="1120" y="596" class="green">创建数据库 / 迁移</text>
     <text x="170" y="644">Account</text><text x="410" y="644">Workers R2 Storage</text><text x="970" y="644" class="orange">Edit</text><text x="1120" y="644" class="green">创建并检查私有桶</text>
+    <text x="170" y="692">Zone</text><text x="410" y="692">Zone</text><text x="970" y="692" class="orange">Read</text><text x="1120" y="692" class="green">查找 Active Zone</text>
+    <text x="170" y="740">Zone</text><text x="410" y="740">Workers Routes</text><text x="970" y="740" class="orange">Read</text><text x="1120" y="740" class="green">检查 Route 冲突</text>
   </g>
-  <text x="150" y="693" class="small muted">新权限界面：首次创建 Worker 使用 Workers 产品级 Admin。</text>
-  <text x="150" y="720" class="small muted">已有 Worker 可使用该 Worker 的 Editor；Custom Domain 在 Worker Domains 页面绑定。</text>
+  <text x="150" y="810" class="small muted">新权限界面：首次创建 Worker 使用 Workers 产品级 Admin。</text>
+  <text x="150" y="837" class="small muted">已有 Worker 可使用该 Worker 的 Editor；只有 Custom Domain 才需要 Zone 权限。</text>
 
-  <rect x="70" y="757" width="1460" height="202" rx="18" fill="#fff" filter="url(#shadow)"/>
-  <circle cx="115" cy="811" r="24" fill="#f48120"/><text x="107" y="820" class="heading white">3</text>
-  <text x="162" y="807" class="heading">Resources：限制到 EasyNote 所在账号</text>
-  <text x="162" y="856" class="body">Account Resources：<tspan class="mono">Include → Specific account → 目标账号</tspan></text>
-  <text x="162" y="902" class="small muted">脚本列出 Token 可访问账号；只有一个时自动选择，多个时要求明确选择。</text>
-  <text x="162" y="936" class="small muted">D1 与 R2 归属同一目标账号，并作为 EasyNote 专属资源。</text>
+  <rect x="70" y="875" width="1460" height="202" rx="18" fill="#fff" filter="url(#shadow)"/>
+  <circle cx="115" cy="929" r="24" fill="#f48120"/><text x="107" y="938" class="heading white">3</text>
+  <text x="162" y="925" class="heading">Resources：限制到 EasyNote 所在账号</text>
+  <text x="162" y="974" class="body">Account Resources：<tspan class="mono">Include → Specific account → 目标账号</tspan></text>
+  <text x="162" y="1020" class="small muted">脚本列出 Token 可访问账号；只有一个时自动选择，多个时要求明确选择。</text>
+  <text x="162" y="1054" class="small muted">Custom Domain 还需在 Zone Resources 选择目标根域名。</text>
 
-  <rect x="70" y="987" width="1460" height="64" rx="14" fill="#f0faf6" stroke="#9bd3be"/>
-  <text x="105" y="1017" class="body green" font-weight="700">部署时通过终端隐藏输入，Token 生命周期限定在本次运行。</text>
-  <text x="105" y="1043" class="tiny muted">wrangler.deploy.json 仅保存 Account ID、Worker 名和 D1 / R2 资源标识。</text>
+  <rect x="70" y="1105" width="1460" height="64" rx="14" fill="#f0faf6" stroke="#9bd3be"/>
+  <text x="105" y="1135" class="body green" font-weight="700">部署时通过终端隐藏输入，Token 生命周期限定在本次运行。</text>
+  <text x="105" y="1161" class="tiny muted">wrangler.deploy.json 仅保存 Account ID、Worker 名和 D1 / R2 资源标识。</text>
 </svg>
