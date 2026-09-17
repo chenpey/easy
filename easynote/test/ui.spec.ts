@@ -16,6 +16,24 @@ async function newNote(page: Page, title: string, content = '') {
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
 }
 
+test('does not render the login form while the initial session is loading', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let delayed = true;
+  await page.route('**/api/session', async (route) => {
+    if (!delayed) { await route.continue(); return; }
+    delayed = false;
+    await gate;
+    await route.continue();
+  });
+  const navigation = page.goto('/');
+  await expect(page.getByRole('status')).toContainText('正在连接');
+  await expect(page.getByRole('textbox', { name: '用户名' })).toBeHidden();
+  release();
+  await navigation;
+  await expect(page.getByRole('main').getByRole('button', { name: '新建笔记', exact: true })).toBeVisible();
+});
+
 test('PWA metadata, install action, app-shell cache and API exclusion work', async ({ page, context }) => {
   await page.goto('/');
   const manifestLink = page.locator('link[rel="manifest"]');

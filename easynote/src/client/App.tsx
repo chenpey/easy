@@ -152,6 +152,7 @@ export default function App() {
 
 function PrivateApp() {
   const [session, updateSession] = useState<Session | null>(null);
+  const [booting, setBooting] = useState(true);
   const [bootError, setBootError] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -167,6 +168,7 @@ function PrivateApp() {
     if (value.user && !value.offline) void cacheSession(value);
   };
   const boot = () => {
+    setBooting(true);
     setBootError('');
     void api.session().then(applySession).catch(async (error: unknown) => {
       try {
@@ -176,7 +178,7 @@ function PrivateApp() {
       } catch (cacheError) {
         setBootError(`${String(error)}\n${String(cacheError)}`);
       }
-    });
+    }).finally(() => setBooting(false));
   };
   useEffect(() => {
     setUnauthorizedHandler(() => {
@@ -231,6 +233,13 @@ function PrivateApp() {
       window.removeEventListener('online', reconnect);
     };
   }, [session?.offline, session?.user?.id]);
+  if (booting && !session) return <main className="login">
+    <div className="login-form" role="status" aria-live="polite">
+      <div className="brand login-brand"><BrandIcon size={32} /><h1>EasyNote</h1></div>
+      <div className="login-heading">正在连接</div>
+      <LoaderCircle className="spin" size={22} aria-label="正在连接" />
+    </div>
+  </main>;
   if (session?.user) return <AccountWorkspace
     key={session.user.id}
     session={session}
@@ -275,7 +284,7 @@ function PrivateApp() {
     }}>
       <div className="brand login-brand"><BrandIcon size={32} /><h1>EasyNote</h1></div>
       <div className="login-heading">{authMode === 'register' ? '创建账户' : authMode === 'reset' ? '恢复账户' :
-        session ? session.configured ? '登录笔记' : '等待初始化' : '正在连接'}</div>
+        session ? session.configured ? '登录笔记' : '等待初始化' : '登录笔记'}</div>
       {issuedRecoveryCode && <div className="recovery-result" role="status">
         <strong>保存恢复代码</strong>
         <code>{issuedRecoveryCode}</code>
