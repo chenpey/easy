@@ -237,6 +237,7 @@ export function useNotebook(session: Session) {
         createVersion && !draft,
       );
       if (!alive.current) return true;
+      if (offlineLibraryRef.current) mirror.current.set(saved.id, saved);
       const latest = drafts.current.get(id);
       if (latest?.operationId === operationId) {
         drafts.current.delete(id);
@@ -249,7 +250,7 @@ export function useNotebook(session: Session) {
         await persist(id, updated);
       }
       if (offlineLibraryRef.current) {
-        mirror.current.set(saved.id, saved);
+        renderMirror();
         await cacheMirroredNote(userId, saved);
       }
       contentSaved = true;
@@ -497,6 +498,7 @@ export function useNotebook(session: Session) {
   const bulkUpdate = async (ids: string[], transform: (value: Note) => Partial<NoteInput>): Promise<number> => {
     const wanted = new Set(ids);
     const targets = (await allAvailableNotes()).filter((item) => wanted.has(item.id));
+    if (targets.length !== wanted.size) throw new Error('部分笔记已不可用，请刷新列表后重试。');
     let updated = 0;
     for (const target of targets) {
       const latest = drafts.current.get(target.id)?.note ?? target;
@@ -515,7 +517,8 @@ export function useNotebook(session: Session) {
       updated++;
     }
     notify();
-    await refreshRef.current();
+    if (offlineLibraryRef.current) renderMirror();
+    else await refreshRef.current();
     return updated;
   };
 

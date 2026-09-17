@@ -773,6 +773,52 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   await expect(page.getByRole('textbox', { name: '搜索笔记' })).toBeVisible();
 });
 
+test('single and batch deletion persist and appear in trash', async ({ page }) => {
+  const marker = randomUUID().slice(0, 6);
+  const titles = [`单篇删除-${marker}`, `批量删除一-${marker}`, `批量删除二-${marker}`];
+  for (const title of titles) {
+    const response = await page.request.post(`${origin}/api/notes/${randomUUID()}`, {
+      headers,
+      data: {
+        title, content: `${title}正文`, tags: [], pinned: false, archived: false,
+        deletedAt: null, revision: 0, operationId: randomUUID(),
+      },
+    });
+    expect(response.status()).toBe(201);
+  }
+
+  await page.goto('/');
+  await page.getByRole('button').filter({ hasText: titles[0] }).click();
+  await page.getByRole('button', { name: '移入回收站', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '移入回收站', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已移入回收站');
+
+  await page.getByRole('button', { name: '全部笔记', exact: true }).click();
+  await page.getByRole('button', { name: '批量选择' }).click();
+  await page.getByRole('button').filter({ hasText: titles[1] }).click();
+  await page.getByRole('button').filter({ hasText: titles[2] }).click();
+  await page.locator('.bulk-toolbar').getByRole('button', { name: '删除', exact: true }).click();
+  const confirmation = page.getByRole('dialog');
+  await expect(confirmation.getByRole('heading', { name: '将 2 篇笔记移入回收站？' })).toBeVisible();
+  await confirmation.getByRole('button', { name: '删除', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已将 2 篇笔记移入回收站');
+
+  await page.getByRole('button', { name: '回收站', exact: true }).click();
+  for (const title of titles) await expect(page.getByRole('button').filter({ hasText: title })).toBeVisible();
+  await page.reload();
+  await page.getByRole('button', { name: '回收站', exact: true }).click();
+  for (const title of titles) await expect(page.getByRole('button').filter({ hasText: title })).toBeVisible();
+  const trash = await (await page.request.get(`/api/notes?view=trash&q=${encodeURIComponent(marker)}`)).json();
+  expect(trash.notes.map((item: { title: string }) => item.title).sort()).toEqual([...titles].sort());
+  for (const item of trash.notes as Array<{ id: string; revision: number }>) {
+    const purged = await page.request.delete(`${origin}/api/notes/${item.id}`, {
+      headers,
+      data: { revision: item.revision },
+    });
+    expect(purged.status()).toBe(200);
+  }
+});
+
 test('all notes in trash can be permanently deleted after confirmation', async ({ page }) => {
   await page.goto('/');
   const ids = [randomUUID(), randomUUID()];

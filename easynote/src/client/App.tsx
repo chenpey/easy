@@ -384,7 +384,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [versionList, setVersionList] = useState<Version[] | null>(null);
   const [versionNoteId, setVersionNoteId] = useState('');
   const [chosenVersion, setChosenVersion] = useState<Version | null>(null);
-  const [confirmAction, setConfirmAction] = useState<'trash' | 'purge' | 'purge-all' | null>(null);
+  const [confirmAction, setConfirmAction] = useState<'trash' | 'bulk-trash' | 'purge' | 'purge-all' | null>(null);
   const [lightbox, setLightbox] = useState('');
   const [uploading, setUploading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -787,6 +787,14 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     const count = await book.bulkUpdate([...selected], (item) => ({ tags: [...new Set([...item.tags, value])] }));
     finishBulk(`已为 ${count} 篇笔记添加标签`);
   });
+  const moveToTrash = (ids: string[]) => {
+    const deletedAt = Date.now();
+    return book.bulkUpdate(ids, () => ({ deletedAt, archived: false }));
+  };
+  const applyBulkTrash = async () => {
+    const count = await moveToTrash([...selected]);
+    finishBulk(`已将 ${count} 篇笔记移入回收站`);
+  };
   const applyTagManagement = () => void run(async () => {
     const source = tagSource.trim();
     const target = tagAction === 'delete' ? null : tagTarget.trim();
@@ -945,6 +953,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <span>已选 {selected.size} 篇</span>
           <button disabled={!selected.size || disabled} onClick={applyBulkArchive}>{book.view === 'archive' ? <ArchiveRestore size={14} /> : <Archive size={14} />}{book.view === 'archive' ? '取消归档' : '归档'}</button>
           <button disabled={!selected.size || disabled} onClick={() => setBulkTagOpen(true)}><Tag size={14} />加标签</button>
+          <button className="danger" disabled={!selected.size || disabled} onClick={() => setConfirmAction('bulk-trash')}><Trash2 size={14} />删除</button>
         </div>}
         <label className="search-field"><Search size={15} /><input ref={searchInput} aria-label="搜索笔记" placeholder="搜索笔记" value={book.query} onChange={(e) => book.setQuery(e.target.value)} /></label>
         <div className="mobile-filters">
@@ -1229,16 +1238,24 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         <RotateCcw size={15} />恢复此版本
       </button></div></>}
     </Modal>}
-    {confirmAction && <Modal title={confirmAction === 'purge-all' ? '永久删除全部笔记？' : confirmAction === 'purge' ? '永久删除这篇笔记？' : '移入回收站？'} close={() => setConfirmAction(null)}>
-      <div className="confirm-title">{confirmAction === 'purge-all' ? '将永久删除回收站中的全部笔记，此操作无法撤销。' : note?.title || '未命名笔记'}</div>
+    {confirmAction && <Modal title={confirmAction === 'purge-all' ? '永久删除全部笔记？' : confirmAction === 'purge' ? '永久删除这篇笔记？' :
+      confirmAction === 'bulk-trash' ? `将 ${selected.size} 篇笔记移入回收站？` : '移入回收站？'} close={() => setConfirmAction(null)}>
+      <div className="confirm-title">{confirmAction === 'purge-all' ? '将永久删除回收站中的全部笔记，此操作无法撤销。' :
+        confirmAction === 'bulk-trash' ? `选中的 ${selected.size} 篇笔记将移入回收站，可稍后恢复。` : note?.title || '未命名笔记'}</div>
       <div className="dialog-actions"><button onClick={() => setConfirmAction(null)}>取消</button><button className={confirmAction === 'trash' ? 'primary' : 'danger'} onClick={() => void run(async () => {
         if (confirmAction === 'purge-all') {
           const deleted = await book.purgeTrash();
           showNotice(`已永久删除 ${deleted} 篇笔记`);
         } else if (confirmAction === 'purge') await book.purge();
-        else setNoteFields({ deletedAt: Date.now(), archived: false });
+        else if (confirmAction === 'bulk-trash') await applyBulkTrash();
+        else {
+          if (!note) throw new Error('当前笔记不可用，请刷新后重试。');
+          await moveToTrash([note.id]);
+          showNotice('已移入回收站');
+        }
         setConfirmAction(null);
-      })}>{confirmAction === 'purge-all' ? '全部永久删除' : confirmAction === 'purge' ? '永久删除' : '移入回收站'}</button></div>
+      })}>{confirmAction === 'purge-all' ? '全部永久删除' : confirmAction === 'purge' ? '永久删除' :
+        confirmAction === 'bulk-trash' ? '删除' : '移入回收站'}</button></div>
     </Modal>}
     {pdfExport && <Modal title="导出为 PDF" className="pdf-export-dialog" close={closePdfExport}>
       <div className="pdf-export-layout">
