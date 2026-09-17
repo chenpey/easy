@@ -92,10 +92,35 @@ test('MCP searches, reads and writes through the EasyNote API', async () => {
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_create_note'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_update_note'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_search_notes'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_list_recent'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_read_note'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_read_notes'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_connection_status'));
     assert.ok(!tools.tools.some((tool) => tool.name.includes('sync') || tool.name.includes('purge')));
+
+    const recentResult = await client.callTool({
+      name: 'easynote_list_recent',
+      arguments: { limit: 2, tag: 'Atlas' },
+    });
+    const recent = recentResult.structuredContent as {
+      count: number;
+      notes: Array<{
+        id: string;
+        tags: string[];
+        updatedAt: number;
+        excerpt: string;
+        uri: string;
+        content?: string;
+        matches?: unknown[];
+      }>;
+    };
+    assert.equal(recent.count, 2);
+    assert.ok(recent.notes.every((note) => note.tags.includes('Atlas')));
+    assert.ok(recent.notes.every((note) => note.excerpt && note.uri === `easynote://notes/${note.id}.md`));
+    assert.ok(recent.notes.every((note) => note.content === undefined && note.matches === undefined));
+    assert.ok(recent.notes[0].updatedAt > recent.notes[1].updatedAt ||
+      recent.notes[0].updatedAt === recent.notes[1].updatedAt &&
+      recent.notes[0].id.localeCompare(recent.notes[1].id) < 0);
 
     const evaluationSearch = await client.callTool({
       name: 'easynote_search_notes',
@@ -193,6 +218,7 @@ test('read-only MCP credentials do not expose write tools', async () => {
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name), [
       'easynote_search_notes',
+      'easynote_list_recent',
       'easynote_read_note',
       'easynote_read_notes',
       'easynote_connection_status',

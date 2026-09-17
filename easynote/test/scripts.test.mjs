@@ -15,6 +15,8 @@ const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 const owner = { username: 'test-owner', verifier: { salt: 'a'.repeat(64), proof: 'b'.repeat(64) } };
 const localConfig = `INITIAL_OWNER='${JSON.stringify(owner)}'\nALLOW_LOCAL_HTTP="true"\nCUSTOM_SETTING="keep me"\n`;
 const databaseId = '12345678-1234-4234-8234-123456789abc';
+const accountId = 'a'.repeat(32);
+const apiToken = 'test-only-cloudflare-api-token';
 const secret = 'Only-for-script-tests-39!';
 
 after(async () => {
@@ -44,7 +46,8 @@ const isEntry = process.argv[1].endsWith('/wrangler.js');
 const tool = isEntry ? 'wrangler' : process.argv[2];
 const args = process.argv.slice(isEntry ? 2 : 3);
 appendFileSync(root + '/calls.jsonl', JSON.stringify({ tool, args, cwd: process.cwd(),
-  logPath: process.env.WRANGLER_LOG_PATH, registryPath: process.env.WRANGLER_REGISTRY_PATH }) + '\\n');
+  logPath: process.env.WRANGLER_LOG_PATH, registryPath: process.env.WRANGLER_REGISTRY_PATH,
+  hasApiToken: !!process.env.CLOUDFLARE_API_TOKEN, accountId: process.env.CLOUDFLARE_ACCOUNT_ID }) + '\\n');
 if (process.env.FAKE_FAIL === tool + ':' + args[0]) process.exit(19);
 if (tool === 'npm' && args[0] === 'ci') {
   mkdirSync(root + '/node_modules/.bin', {recursive:true});
@@ -261,6 +264,7 @@ test('deployment cancellation makes no cloud calls and does not write a new reso
   const f = await fixture();
   await dependencies(f);
   const result = await terminal(f, 'deploy.sh', [], [
+    ['Cloudflare account ID: ', accountId],
     ['Existing D1 database UUID (create easynote-db in Cloudflare first): ', databaseId],
     ['Existing R2 bucket name: ', 'easynote-test-images'],
     ['Worker name [easynote]: ', 'easynote-test'],
@@ -275,13 +279,14 @@ test('deployment reuses resource IDs, refreshes template settings and preserves 
   const f = await fixture();
   await dependencies(f);
   const config = JSON.parse(await readFile(`${f.root}/wrangler.json`, 'utf8'));
-  const original = { ...config, name: 'easynote-saved', account_id: 'a'.repeat(32), vars: { ...config.vars, AUTOSAVE_MS: '2000' } };
+  const original = { ...config, name: 'easynote-saved', account_id: accountId, vars: { ...config.vars, AUTOSAVE_MS: '2000' } };
   original.d1_databases[0].database_id = databaseId;
   original.r2_buckets[0].bucket_name = 'easynote-saved-images';
   await writeFile(`${f.root}/wrangler.deploy.json`, JSON.stringify(original));
   const result = await terminal(f, 'deploy.sh', [], [
     ['Reuse these deployment resources? [Y/n]: ', ''],
     ['Type deploy easynote to apply migrations and deploy: ', 'deploy easynote'],
+    ['Cloudflare API token (hidden, used only for this run): ', apiToken],
   ]);
   assert.match(result.output, /Remote owner verifier already exists/);
   assert.match(result.output, /Deployment complete/);
@@ -292,19 +297,24 @@ test('deployment reuses resource IDs, refreshes template settings and preserves 
   assert.equal(saved.vars.AUTOSAVE_MS, config.vars.AUTOSAVE_MS);
   assert.equal(saved.vars.ALLOW_LOCAL_HTTP, 'false');
   assert.equal(saved.d1_databases[0].database_id, databaseId);
-  assert.deepEqual((await calls(f)).filter((c) => c.tool === 'wrangler').map((c) => c.args.slice(0, 2)), [
-    ['login'], ['d1', 'migrations'], ['deploy', '--config'], ['secret', 'list'],
+  const wranglerCalls = (await calls(f)).filter((c) => c.tool === 'wrangler');
+  assert.deepEqual(wranglerCalls.map((c) => c.args.slice(0, 2)), [
+    ['d1', 'info'], ['r2', 'bucket'], ['d1', 'migrations'], ['deploy', '--config'], ['secret', 'list'],
   ]);
+  assert.ok(wranglerCalls.every((call) => call.hasApiToken && call.accountId === accountId));
+  assert.ok(!result.output.includes(apiToken));
 });
 
 test('new deployments initialize only a missing owner secret, never storing plaintext credentials', async () => {
   const f = await fixture();
   await dependencies(f);
   const result = await terminal(f, 'deploy.sh', [], [
+    ['Cloudflare account ID: ', accountId],
     ['Existing D1 database UUID (create easynote-db in Cloudflare first): ', databaseId],
     ['Existing R2 bucket name: ', 'easynote-test-images'],
     ['Worker name [easynote]: ', 'easynote-test'],
     ['Type deploy easynote to apply migrations and deploy: ', 'deploy easynote'],
+    ['Cloudflare API token (hidden, used only for this run): ', apiToken],
     ...setupSteps,
   ], { FAKE_SECRETS: '[]' });
   assert.match(result.output, /Owner verifier installed/);
@@ -312,10 +322,13 @@ test('new deployments initialize only a missing owner secret, never storing plai
   const installed = await readFile(`${f.root}/installed-owner.json`, 'utf8');
   assert.equal(JSON.parse(installed).username, 'test-owner');
   assert.ok(!installed.includes(secret));
+  assert.ok(!result.output.includes(apiToken));
+  assert.ok((await calls(f)).filter((c) => c.tool === 'wrangler')
+    .every((call) => call.hasApiToken && call.accountId === accountId));
   assert.equal(await readFile(`${f.root}/.dev.vars`, 'utf8'), localConfig);
 });
 
-test('credential environment aliases are rejected and build failure stops deployment before login', async () => {
+test('credential environment aliases are rejected and build failure stops deployment before requesting a token', async () => {
   const f = await fixture();
   await dependencies(f);
   for (const key of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY']) {

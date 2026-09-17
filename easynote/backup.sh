@@ -14,4 +14,10 @@ require_runtime
 ensure_dependencies
 read -r -p 'Type backup easynote to export D1 and R2: ' confirmation
 [[ "$confirmation" == "backup easynote" ]] || fail "Backup cancelled."
-node scripts/maintenance.mjs backup "$@"
+if [[ " $* " == *" --remote "* ]]; then
+  prompt_cloudflare_token
+  CLOUDFLARE_API_TOKEN="$cloudflare_api_token" EASYNOTE_INTERACTIVE_CLOUDFLARE=1 \
+    node scripts/maintenance.mjs backup "$@"
+else
+  node scripts/maintenance.mjs backup "$@"
+fi

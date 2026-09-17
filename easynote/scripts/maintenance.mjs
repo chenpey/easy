@@ -55,6 +55,14 @@ function parseOptions(args) {
   return options;
 }
 
+function requireRemoteAuthorization(options) {
+  if (options.mode !== 'remote') return;
+  if (!process.env.CLOUDFLARE_API_TOKEN || process.env.EASYNOTE_INTERACTIVE_CLOUDFLARE !== '1' ||
+      ['CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY'].some((key) => process.env[key])) {
+    fail('Remote maintenance must be launched through its shell command with an interactively entered API Token.');
+  }
+}
+
 function runWrangler(args, capture = false) {
   const result = spawnSync(process.execPath, [wrangler, ...args], {
     cwd: root,
@@ -475,6 +483,7 @@ async function main() {
     return;
   }
   const options = parseOptions(args);
+  requireRemoteAuthorization(options);
   if (command === 'backup') return createBackup(options);
   if (command === 'verify') {
     if (!options.backup) fail('Backup directory is required.');

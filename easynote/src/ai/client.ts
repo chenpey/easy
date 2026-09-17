@@ -119,6 +119,7 @@ export class EasyNoteClient {
       ...input,
       revision,
       operationId,
+      createVersion: true,
     });
   }
 

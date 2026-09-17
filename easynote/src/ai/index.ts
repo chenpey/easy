@@ -38,6 +38,11 @@ const noteSearchMatchSchema = z.object({
   snippet: z.string(),
 });
 
+const recentNoteSchema = noteMetadataSchema.extend({
+  excerpt: z.string(),
+  uri: z.string(),
+});
+
 const readNoteSchema = z.object({
   note: noteMetadataSchema,
   content: z.string(),
@@ -99,16 +104,43 @@ async function save(
   return noteResult(result.note, operationId);
 }
 
-async function recentNotes(client: EasyNoteClient, view: 'all' | 'archive'): Promise<IntegrationNoteSummary[]> {
+async function recentNotes(
+  client: EasyNoteClient,
+  view: 'all' | 'archive',
+  limit = 50,
+  tag = '',
+): Promise<IntegrationNoteSummary[]> {
   const notes: IntegrationNoteSummary[] = [];
   let offset = 0;
-  while (notes.length < 50) {
-    const page = await client.search({ view, sort: 'updated', limit: Math.min(20, 50 - notes.length), offset });
+  while (notes.length < limit) {
+    const page = await client.search({
+      view,
+      tag,
+      sort: 'updated',
+      limit: Math.min(20, limit - notes.length),
+      offset,
+    });
     notes.push(...page.notes);
     if (page.nextOffset === null) break;
     offset = page.nextOffset;
   }
   return notes;
+}
+
+function recentNote(note: IntegrationNoteSummary) {
+  return {
+    id: note.id,
+    title: note.title,
+    tags: note.tags,
+    pinned: note.pinned,
+    archived: note.archived,
+    deletedAt: note.deletedAt,
+    createdAt: note.createdAt,
+    updatedAt: note.updatedAt,
+    revision: note.revision,
+    excerpt: note.excerpt,
+    uri: note.uri,
+  };
 }
 
 function resourceMarkdown(note: Note): string {
@@ -157,6 +189,37 @@ async function createMcpServer(client: EasyNoteClient): Promise<McpServer> {
         hasMore: page.nextOffset !== null,
         nextOffset: page.nextOffset,
       };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return toolError(error);
+    }
+  });
+
+  server.registerTool('easynote_list_recent', {
+    title: 'List Recent EasyNote Notes',
+    description: 'List recently updated active or archived EasyNote notes as metadata, short excerpts and Resource URIs, optionally filtered by one exact tag.',
+    inputSchema: z.object({
+      limit: z.number().int().min(1).max(50).default(20),
+      view: z.enum(['all', 'archive']).default('all').describe('all means active, non-archived notes; archive means archived notes.'),
+      tag: z.string().max(40).default('').describe('Optional exact tag filter.'),
+    }).strict(),
+    outputSchema: z.object({
+      notes: z.array(recentNoteSchema),
+      count: z.number(),
+    }),
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ limit, view, tag }) => {
+    try {
+      const notes = (await recentNotes(client, view, limit, tag)).map(recentNote);
+      const result = { notes, count: notes.length };
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         structuredContent: result,

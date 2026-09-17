@@ -222,6 +222,12 @@ test('password reset refuses non-interactive execution before changing data', ()
   assert.match(result.stderr, /interactive terminal/i);
 });
 
+test('remote maintenance rejects credentials not supplied by an interactive wrapper', () => {
+  const result = run(['backup', '--remote', '--config', 'wrangler.json']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /interactively entered API Token/);
+});
+
 test('interactive password recovery hides the secret and revokes sessions and tokens', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'easynote-password-reset-'));
   const password = 'Recovered-Test-Password-741!';

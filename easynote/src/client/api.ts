@@ -103,8 +103,10 @@ export const api = {
   duplicate: (title: string, content: string) =>
     request<{ duplicate: boolean; noteId: string | null }>('/api/notes/duplicate', 'POST', { title, content }),
   note: (id: string, signal?: AbortSignal) => request<{ note: Note }>(`/api/notes/${id}`, 'GET', undefined, signal),
-  save: (id: string, input: NoteInput, revision: number, operationId: string) =>
-    request<{ note: Note }>(`/api/notes/${id}`, revision === 0 ? 'POST' : 'PUT', { ...input, revision, operationId }),
+  save: (id: string, input: NoteInput, revision: number, operationId: string, createVersion = false) =>
+    request<{ note: Note; unchanged?: boolean }>(`/api/notes/${id}`, revision === 0 ? 'POST' : 'PUT', {
+      ...input, revision, operationId, createVersion,
+    }),
   purge: (note: Note) => request(`/api/notes/${note.id}`, 'DELETE', { revision: note.revision }),
   purgeTrash: () => request<{ deleted: number }>('/api/notes/trash', 'DELETE', {}),
   versions: (id: string) => request<{ versions: Version[] }>(`/api/notes/${id}/versions`),

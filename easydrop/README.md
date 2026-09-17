@@ -1,8 +1,8 @@
 # EasyDrop
 
-EasyDrop 是一个基于 Cloudflare Workers 的文本与文件分享工具，使用用户名和密码登录、D1 数据库和私有 R2 对象存储。部署后，电脑、手机和平板可以访问同一个 HTTPS 地址交换内容，不需要在个人电脑上持续运行服务，也不要求设备处于同一局域网。
+EasyDrop 是一个基于 Cloudflare Workers 的文本与文件分享工具，使用用户名和密码登录、D1 数据库和私有 R2 对象存储。部署后，电脑、手机和平板可通过同一个 HTTPS 地址跨网络交换内容。
 
-适合个人跨设备传递文本和文件，或让多个用户在同一站点使用相互隔离的个人空间。管理员可以控制注册并管理用户账号，但不能查看其他用户的内容。
+适合个人跨设备传递文本和文件，也支持多个用户在同一站点使用相互隔离的个人空间。管理员负责注册和账号管理，内容访问始终按用户隔离。
 
 ## 目录
 
@@ -16,7 +16,7 @@ EasyDrop 是一个基于 Cloudflare Workers 的文本与文件分享工具，使
 - [接口说明](#接口说明)
 - [项目结构与命令](#项目结构与命令)
 - [常见问题](#常见问题)
-- [使用边界](#使用边界)
+- [适用范围](#适用范围)
 - [验证](#验证)
 
 ## 已实现功能
@@ -179,9 +179,9 @@ D1 表的用途：
 
 ## 费用与用量估算
 
-价格核对日期：**2026-09-13**。本项目默认可以直接使用 Workers Free、D1 Free 和 R2 Standard 免费额度，**没有固定月费**。三项服务都未超出免费额度时，云端费用为 **$0/月**。
+价格核对日期：**2026-09-17**。本项目默认使用 Workers Free、D1 Free 和 R2 Standard 免费额度，额度内云端费用为 **$0/月**。
 
-`$5/月` 仅是主动升级到 **Workers Paid** 后的账户最低月费，不是部署 Worker、创建 D1 或启用 R2 的前置费用。Workers Free 或 D1 Free 超过硬限制时会拒绝请求，不会自动升级或扣取 `$5`。R2 Standard 有独立的月度免费额度，超出后只按 R2 超额用量计费，不要求同时购买 Workers Paid。
+主动升级到 **Workers Paid** 后，账户最低费用为 `$5/月`。Workers Free 与 D1 Free 在额度内运行，达到硬限制后等待额度重置或套餐升级；R2 Standard 使用独立月度免费额度并按超额用量计费。
 
 ### 免费额度
 
@@ -276,13 +276,13 @@ npm run setup
 npm run dev
 ```
 
-`setup` 强制在终端交互式输入初始管理员用户名和密码，密码隐藏输入且没有默认值。`.dev.vars` 只保存初始管理员用户名和不可逆密码验证器，不保存明文密码；不要提交或分享该文件。
+`setup` 在终端交互式读取初始管理员用户名和密码，密码保持隐藏。`.dev.vars` 保存初始管理员用户名和不可逆密码验证器，并按敏感文件管理。
 
-`dev` 使用本地 D1/R2，不访问线上数据；数据保存在 `.wrangler/`。默认地址 `http://127.0.0.1:8787`；端口被占用可用 `npm run dev -- --port 8788`。
+`dev` 使用 `.wrangler/` 中的本地 D1/R2 数据。默认地址为 `http://127.0.0.1:8787`；可通过 `npm run dev -- --port 8788` 指定其他端口。
 
-依赖安装使用 `package-lock.json`，并在 `package.json` 的 `allowScripts` 中按精确版本允许 esbuild、workerd 和可选的 fsevents 安装脚本。`npm ci` 出现新的未授权脚本警告时，应先核对锁文件中的来源和版本，不要使用全局放行。
+依赖安装使用 `package-lock.json`，并在 `package.json` 的 `allowScripts` 中按精确版本允许 esbuild、workerd 和可选的 fsevents 安装脚本。出现新的安装脚本提示时，先核对锁文件中的来源和版本，再更新精确授权。
 
-仅 `ALLOW_LOCAL_HTTP=true` 且主机为 loopback 时允许 HTTP，本地使用独立的开发 Cookie。线上必须 HTTPS。
+本地 loopback 使用 `ALLOW_LOCAL_HTTP=true` 和独立开发 Cookie；生产环境使用 HTTPS。
 
 临时体验也可以运行：
 
@@ -294,29 +294,29 @@ npm run preview
 
 ## 部署
 
-部署前只需要在 Cloudflare Dashboard 完成 R2、公开入口和 API Token 三项准备。D1 数据库、R2 bucket、Worker、迁移和绑定都由 `deploy.sh` 自动创建，不要提前手工创建同名资源。
+部署前在 Cloudflare Dashboard 完成 R2 启用、公开入口和 API Token 三项准备。`deploy.sh` 负责创建 D1、R2 bucket、Worker、迁移和绑定。
 
 ### 1. 选择公开入口
 
-只选择一种入口：
+选择一种公开入口：
 
 | 入口 | 需要准备 | 部署后的地址 |
 | --- | --- | --- |
-| `workers.dev` | 初始化账号级 `workers.dev` 子域名；不需要自己的域名 | `https://<worker-name>.<account-subdomain>.workers.dev` |
+| `workers.dev` | 初始化账号级 `workers.dev` 子域名 | `https://<worker-name>.<account-subdomain>.workers.dev` |
 | Custom Domain | 一个已在同一 Cloudflare 账号内变为 **Active** 的 Zone，以及其中未被占用的主机名 | 例如 `https://share.example.com` |
 
-Custom Domain 模式不要求初始化 `workers.dev`。部署脚本会关闭该 Worker 的 `workers.dev` 和 Preview URL，只保留自定义域名入口。
+Custom Domain 模式直接使用指定域名，部署脚本会将该域名设为 Worker 的唯一公开入口。
 
 ### 2. 启用 R2
 
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)，进入准备部署的目标账号。
 2. 打开 **Storage & databases → R2 → Overview**，也可以直接打开 [R2 Overview](https://dash.cloudflare.com/?to=/:account/r2/overview)。
 3. 首次使用时，按页面提示选择 **Add R2 subscription**、**Get started** 或 **Continue**，完成 R2 启用流程。按钮名称可能随账号和地区变化。
-4. 返回 R2 Overview，确认能看到 **Create bucket** 按钮即可停止。不要手工创建 bucket，脚本会创建 `<worker-name>-files` 并检查它没有 `r2.dev` 或 R2 Custom Domain 公共入口。
+4. 返回 R2 Overview，确认显示 **Create bucket** 按钮。部署脚本将创建 `<worker-name>-files`，并验证 bucket 保持私有。
 
 ![Cloudflare R2 启用路径脱敏示意图](docs/img/cloudflare/cloudflare-r2-enable.svg)
 
-R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。R2 Standard 仍先使用每月 10 GB-month、100 万 A 类操作和 1,000 万 B 类操作的免费额度；Cloudflare 可能要求绑定付款方式，最终以当前账号页面为准。
+R2 的“subscription”用于启用 R2 产品，Workers 套餐仍独立选择。R2 Standard 提供每月 10 GB-month、100 万 A 类操作和 1,000 万 B 类操作的免费额度；付款方式要求以当前账号页面为准。
 
 ### 3. 准备访问域名
 
@@ -325,7 +325,7 @@ R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。
 1. 进入目标账号的 **Workers & Pages** 页面。
 2. 找到 **Your subdomain**。首次使用时按页面提示设置；已经存在时可点击旁边的 **Change** 查看或修改。
 3. 输入账号级子域名并保存，例如 `my-account`，最终后缀为 `my-account.workers.dev`。
-4. 不需要在控制台创建 Worker。部署脚本会创建 Worker，并输出完整访问地址。
+4. 运行部署脚本创建 Worker，并获取完整访问地址。
 
 ![Cloudflare workers.dev 初始化路径脱敏示意图](docs/img/cloudflare/cloudflare-workers-dev.svg)
 
@@ -334,15 +334,15 @@ R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。
 #### 3.2 使用 Custom Domain
 
 1. 确认根域名已经添加到同一 Cloudflare 账号，Zone 状态为 **Active**。
-2. 准备一个未被占用的主机名，例如 `share.example.com`。该主机名不能已有 CNAME，也不要提前创建同名 DNS 记录。
+2. 准备一个空闲主机名，例如 `share.example.com`，交由部署脚本创建对应 DNS 记录。
 3. 每次部署都会显示当前公开入口。在 `Custom domain` 提示处输入完整主机名，或在已有部署中按回车保留当前值；脚本通过 Wrangler 创建 Worker Custom Domain，Cloudflare 自动创建对应 DNS 记录和边缘证书。
 
 ### 4. 创建 API Token
 
-推荐创建 **User API Token**：
+部署全程使用一个 **User API Token**：
 
 1. 打开 [My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens/)。
-2. 选择 **Create Token → Create Custom Token**，不要使用 Global API Key，也不要在 R2 页面创建 S3 Access Key。
+2. 选择 **Create Token → Create Custom Token**。
 3. Token name 可填写 `easydrop-deploy`。
 4. 在 **Permissions** 中逐行添加下表权限。Dashboard 通常显示 `Edit`，API 文档可能显示同义的 `Write`。
 
@@ -350,7 +350,7 @@ R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。
 
 | Scope | Permission | Level | 用途 |
 | --- | --- | --- | --- |
-| Account | Account Settings | Read | 自动发现可访问账号；可省略，省略后部署脚本要求手工输入 Account ID |
+| Account | Account Settings | Read | 自动发现可访问账号；手工输入 Account ID 时为可选项 |
 | Account | Workers Scripts | Edit | 创建/更新 Worker、静态资源和 `INITIAL_ADMIN` Secret |
 | Account | D1 | Edit | 创建数据库、执行迁移和配置绑定 |
 | Account | Workers R2 Storage | Edit | 检查/创建私有 bucket 及其公开访问状态 |
@@ -362,16 +362,16 @@ R2 的“subscription”表示启用 R2 产品，不等于购买 Workers Paid。
 | Zone | Zone | Read | 查找并确认主机名所属的 Active Zone |
 | Zone | Workers Routes | Read | 允许 Wrangler 在绑定域名前读取现有 Worker Routes 并检查冲突 |
 
-Worker Custom Domain 的绑定由基础权限中的 **Account → Workers Scripts → Edit** 覆盖，Cloudflare API 对应权限名为 `Workers Scripts Write`。当前锁定的 Wrangler 在绑定前还会读取 `/zones/<zone-id>/workers/routes` 检查冲突，因此需要 **Zone → Workers Routes → Read**，但不需要 `Edit`。Dashboard 中不存在 **Account → Workers Custom Domains** 权限；也不要改选 **Custom Hostnames**，那是 Cloudflare for SaaS 的另一项功能。
+Worker Custom Domain 绑定使用 **Account → Workers Scripts → Edit**，Cloudflare API 对应权限名为 `Workers Scripts Write`。当前锁定的 Wrangler 还会读取 `/zones/<zone-id>/workers/routes` 检查冲突，因此为目标 Zone 配置 **Workers Routes → Read** 即可。
 
-5. 在 **Account Resources** 选择 **Include → Specific account → 目标账号**，不要选择全部账号。
-6. 使用 Custom Domain 时，在 **Zone Resources** 选择 **Include → Specific zone → 目标根域名**；使用 `workers.dev` 时不需要 Zone 资源范围。
+5. 在 **Account Resources** 选择 **Include → Specific account → 目标账号**。
+6. 使用 Custom Domain 时，在 **Zone Resources** 选择 **Include → Specific zone → 目标根域名**。
 7. 可选设置客户端 IP 限制和 Token 到期时间。确认部署机器出口 IP 稳定且后续还能在 Token 过期前重新创建。
 8. 选择 **Continue to summary**，逐项核对后点击 **Create Token**。Token secret 只显示一次，应立即存入密码管理器。
 
 ![EasyDrop Cloudflare API Token 最小权限与资源范围](docs/img/cloudflare/cloudflare-api-token.svg)
 
-部署脚本只接受终端交互式隐藏输入，不从环境变量读取 Token，也不会保存 Token。不要把 Token 写入 README、截图、Shell 历史、`.env`、Issue 或聊天记录。
+部署脚本通过终端隐藏读取 Token，并仅在本次运行期间交给部署子进程。Token 应保存在密码管理器中。
 
 R2、Workers、D1 均受各自套餐限额约束。默认可先使用 Workers Free、D1 Free 和 R2 免费额度，额度内为 `$0/月`；首次上线后检查登录和分片校验的 CPU 时间及各产品用量，仅在实际触及限制时再决定是否升级。
 
@@ -384,34 +384,34 @@ cd easydrop
 bash deploy.sh
 ```
 
-一个命令完成依赖安装、资源检查、建库建桶、迁移、构建和发布，不需要 `wrangler login` 或手工创建 D1/R2。
+一个命令完成依赖安装、资源检查、建库建桶、迁移、构建和发布。
 
-首次运行：隐藏输入 Token，自动发现账号（多账号时再选择），输入 Worker 名称和可选自定义域名，设置初始管理员用户名和密码，最后输入 Worker 名称确认资源变更和待执行的 D1 migrations。数据库和存储桶名称由 Worker 名称生成，不必手动填写；确认后 Wrangler 不再重复询问 `(Y/n)`。
+首次运行：隐藏输入 Token，自动发现并选择账号，输入 Worker 名称和可选自定义域名，设置初始管理员用户名和密码，最后输入 Worker 名称确认资源变更和待执行的 D1 migrations。数据库和存储桶名称由 Worker 名称生成。
 
 以 Worker 名称 `my-share` 为例，默认创建 D1 数据库 `my-share` 和 R2 存储桶 `my-share-files`。Worker 名称要求 3～50 位小写字母、数字或连字符，以字母开头，以字母或数字结尾。
 
 后续运行：输入 Token 后重新确认公开入口。按回车保留当前域名，输入新主机名可修改，输入 `workers.dev` 可取消 Custom Domain 并切回账号子域名；其他资源、用户和有效会话继续复用。用户与密码在登录后的“用户管理”中维护。
 
-部署脚本只负责安装和更新交互时选定的 Worker，不包含旧名称识别、跨名称资源迁移或旧 Worker 删除逻辑。
+部署脚本负责安装和更新交互时选定的 Worker；资源更名和迁移按独立运维流程处理。
 
-- 拒绝非交互式输入和预先设置的 Cloudflare Token/API Key 环境变量。
-- Token 仅在本次进程中使用，通过子进程环境交给 Wrangler，不写文件、不放命令行参数。初始管理员信息以用户名和不可逆密码验证器写入 Worker Secret `INITIAL_ADMIN`，首次成功登录时创建 D1 用户。
-- 自动创建 D1、专用 R2、应用迁移和部署静态资源。首次发现已有同名存储时必须确认仅供此应用使用，不能与其他应用共用；已确认的部署不反复询问。
+- 部署在交互式终端中运行，Cloudflare API Token 通过隐藏输入读取。
+- Token 仅在本次进程中使用，通过子进程环境交给 Wrangler。初始管理员信息以用户名和不可逆密码验证器写入 Worker Secret `INITIAL_ADMIN`，首次成功登录时创建 D1 用户。
+- 自动创建专属 D1、私有 R2、应用迁移和静态资源。首次发现已有同名存储时会要求确认资源归属，后续部署复用已确认资源。
 - 构建、资源准备、D1 迁移、Worker 上传与域名配置、Secret 安装、部署后访问验证均显示独立阶段；单个阶段超过 15 秒时持续输出已等待时间。
 - 部署结束时通过 `1.1.1.1` DoH 检查公网 A 记录，再使用本机网络访问站点。公网解析正常但本机访问失败时只给出代理/DNS 缓存警告，不把已经完成的云端部署误报为失败。
-- 无本地部署记录时拒绝覆盖同名 Worker；有记录时核对远端 D1/R2 绑定，防止误覆盖其他项目。
-- 检查 R2 的 `r2.dev` 和桶自定义域名都未开启公开访问；发现开启则停止，不擅自更改已有权限。
-- 配置自定义域名时，关闭 `workers.dev` 和预览域名入口；不配置时使用 Wrangler 输出的 `workers.dev` URL。自定义域名需要属于此 Cloudflare 账户内可用的 Zone。
-- 部署目标原子保存到忽略的 `wrangler.deploy.json`，不包含密码或 Token。保留它以便后续部署复用同一 D1/R2；行为参数和迁移目录始终从 `wrangler.json` 读取。
+- 首次部署要求 Worker 名称为空闲；后续部署核对远端 D1/R2 绑定后更新已有 Worker。
+- 部署检查 R2 私有访问状态，并在发现公开入口时停止。
+- 配置自定义域名时，将其设为唯一公开入口；其 Zone 归属于当前 Cloudflare 账号。其他部署使用 Wrangler 输出的 `workers.dev` URL。
+- 部署目标原子保存到忽略的 `wrangler.deploy.json`，用于后续复用同一 D1/R2；行为参数和迁移目录始终从 `wrangler.json` 读取。
 - 部署成功后自动删除可重建的 `node_modules/`、`dist/` 和本次 Wrangler 日志；部署失败时保留这些内容用于快速重试和排查。`wrangler.deploy.json`、`.dev.vars` 以及 `.wrangler/` 中可能存在的本地开发数据不会被删除。
-- 出错立即停止，Cloudflare API 错误包含 HTTP 方法、路径、状态和完整响应正文。已成功创建的资源不会自动删除，修复原因后再运行脚本。
-- 初次上传 Worker 时缺少初始管理员配置会返回 503，安装 Secret 后才开放服务；无管理员配置不会退化成公开访问。
-- 普通部署不重写 `INITIAL_ADMIN` Secret。用户创建后以 D1 中的账户和密码验证器为准。
+- 出错立即停止，Cloudflare API 错误包含 HTTP 方法、路径、状态和完整响应正文。修复原因后可复用已创建资源继续部署。
+- 初次上传 Worker 后保持锁定状态，安装 `INITIAL_ADMIN` Secret 后开放服务。
+- 后续部署保留 `INITIAL_ADMIN` Secret，用户创建后以 D1 中的账户和密码验证器为准。
 - `0007_accounts_and_tenants.sql` 按本次全新数据模型重建内容表，并要求执行时 `items` 为空；如果意外存在旧分享数据，迁移会直接失败，不会静默删除。
 
-如果首次安装 Secret 失败，修复 Token 权限后重新运行 `bash deploy.sh`。不要通过 Cloudflare 控制台开启 R2 公共访问，也不要添加绕过 Worker 的缓存规则。
+首次安装 Secret 失败时，修复 Token 权限后重新运行 `bash deploy.sh`。R2 保持私有，缓存规则保持所有业务请求经过 Worker。
 
-每次部署都会重新确认公开入口，但不会重新选择账户、D1 或 R2。不要通过删除 `wrangler.deploy.json` 尝试切换目标，否则无法正常识别原有 Worker 与存储绑定。
+每次部署都会重新确认公开入口，并从 `wrangler.deploy.json` 复用账户、D1 和 R2。切换目标时先完成备份和资源迁移，再更新部署配置。
 
 ## 配置
 
@@ -481,7 +481,7 @@ bash deploy.sh
 
 ## 接口说明
 
-所有接口与页面同源。下表中的“写校验”表示需要会话 Cookie、同源 `Origin` 和 `X-CSRF-Token`。浏览器前端会自动完成这些步骤，脚本调用不能把 Cloudflare API Token 当成应用登录凭据。
+所有接口与页面同源。下表中的“写校验”表示需要会话 Cookie、同源 `Origin` 和 `X-CSRF-Token`，浏览器前端会自动完成这些步骤。Cloudflare API Token 专用于部署和资源管理，应用接口使用用户会话或临时文件令牌。
 
 | 方法 | 路径 | 权限 | 功能 |
 | --- | --- | --- | --- |
@@ -582,17 +582,17 @@ bash deploy.sh
 
 普通 JSON 接口的前端超时为 30 秒，脚本直接调用 Cloudflare API 的超时为 60 秒。前端错误详情保留响应正文，部署 API 错误包含方法、路径、状态与正文；发布命令由 Wrangler 输出其执行结果。分享错误日志前应自行检查是否包含需要保密的业务内容。
 
-## 使用边界
+## 适用范围
 
-- 每个用户只有一个相互隔离的个人空间；不支持组织/团队租户、成员共享目录、只读角色或逐文件授权。
-- 临时链接支持免登录下载和 1～168 小时有效期，但没有独立分享密码、下载次数限制、访问名单或审计日志。
-- 除受支持位图的历史缩略图外，没有文件在线预览、文件夹管理、重命名、全文搜索、历史内容编辑或回收站。
-- 内置上传支持分片、暂停、断点续传和单文件并发；文件之间仍串行处理，浏览器清除站点数据后需要重新开始或自行保存操作键。
-- 下载支持单段 Range 和由外部下载器发起的并发 Range 请求；内置页面没有下载任务管理或主动多线程下载功能。
-- 没有自动文件过期、总存储配额、病毒扫描、备份导出或旧数据导入功能。
-- 使用定时轮询，不是 WebSocket 实时推送；刷新页面不会恢复未提交文本草稿，上传需要重新选择本地文件后恢复。
-- 云端 Worker 不能直接打开个人电脑上的 Finder、文件管理器或本地应用。
-- 单文件大小、CPU、请求数、D1 查询和 R2 存储均受平台限制和计费规则约束，需要自行监控用量。
+- 每个用户拥有一个相互隔离的个人空间；协作范围为管理员统一维护账号。
+- 临时链接提供 1～168 小时的免登录下载，适合按链接控制单个文件的临时访问。
+- 文件能力聚焦上传、下载和受支持位图的历史缩略图；记录删除为永久操作。
+- 上传支持分片、暂停、断点续传和单文件并发，多个文件按队列处理；恢复上传时重新选择原文件进行匹配。
+- 下载支持单段 Range，第三方下载器可并发发起多个 Range 请求。
+- 文件生命周期由用户主动删除和后台清理管理，容量通过 Cloudflare 用量监控。
+- 跨设备同步使用定时轮询；文本在提交后进入云端历史，文件上传状态通过重新选择原文件恢复。
+- 本地文件通过浏览器下载后由系统文件管理器或应用打开。
+- 单文件大小、CPU、请求数、D1 查询和 R2 存储遵循平台限制和计费规则。
 
 ## 验证
 

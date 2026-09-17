@@ -13,13 +13,13 @@
 - JPEG / PNG / WebP 图片选择、粘贴、拖入；PDF、Markdown、TXT、CSV、JSON 私有附件；文件按光标位置插入。
 - PDF 导出支持真实逐页预览、A4/Letter、横竖方向和缩放；桌面端下载，iOS/Android 使用系统分享。
 - 回收站、恢复、单篇或全部永久删除，以及防止旧设备重建已清除笔记的墓碑记录；永久删除均需二次确认。
-- 修订号并发保护、最后一次操作的幂等重试、冲突副本、有限历史版本和版本恢复。
+- 修订号并发保护、最后一次操作的幂等重试、冲突副本、手动保存历史、AI 写入历史和版本恢复。
 - 可选的完整离线笔记库：IndexedDB 镜像正文、私有文件、全文搜索和待同步草稿，恢复联网后自动提交。
 - 前台轮询与切回页面同步。网络错误停止自动轮询，明确显示错误，由用户重试恢复。
 - 可安装 PWA，提供独立窗口、桌面/主屏幕图标、应用外壳离线缓存、离线冷启动和 Share Target 快速收集；从手机分享的标题、文字和 URL 自动进入“收件箱”。
 - 常用键盘操作、可搜索命令面板、大纲、稳定内部链接和反向链接。
 - 标签重命名、合并、删除，以及笔记批量归档和加标签。
-- AI 读写分离接入：受限令牌、FTS5 相关度搜索、批量读取、MCP Resources 和写入工具；AI 修改进入正常版本历史。
+- AI 读写分离接入：受限令牌、FTS5 相关度搜索、最近笔记、批量读取、MCP Resources 和写入工具；AI 修改进入正常版本历史。
 - 桌面/手机布局、深浅主题、EasyNote ZIP 导出恢复，以及 Obsidian 目录、通用 Markdown/TXT ZIP、`.md` / `.markdown` / `.txt` 导入和本地链接转换。
 - 可撤销、最长 30 天的只读笔记分享链接；分享 Token 只保存哈希，附件访问绑定到分享笔记的当前修订。
 - 定时清理过期会话、分享、登录计数、未引用文件、失败上传和已申请删除的租户数据。
@@ -76,14 +76,14 @@ easynote/
 
 ## 本地运行
 
-需要安装 Node.js 22.12 或以上版本（自带 npm），支持 macOS / Linux 的 Bash。日常不必直接使用 npm，也不需要全局安装 Wrangler。
+需要安装 Node.js 22.12 或以上版本（自带 npm）以及 macOS / Linux 的 Bash。项目脚本统一使用仓库内锁定的依赖和 Wrangler。
 
 ```bash
 cd easynote
 bash dev.sh
 ```
 
-首次启动会自动准备依赖并交互式创建本地管理员，随后构建、应用本地数据库迁移并启动服务。之后仍然运行同一个命令，不会重复询问账号。默认访问 `http://127.0.0.1:8791`，按 `Ctrl+C` 停止。本地使用模拟 D1 / R2，不访问生产存储。
+首次启动会自动准备依赖并交互式创建本地管理员，随后构建、应用本地数据库迁移并启动服务。后续运行同一个命令会复用已有账号配置。默认访问 `http://127.0.0.1:8791`，按 `Ctrl+C` 停止。本地数据保存在模拟 D1 / R2 中。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -91,7 +91,7 @@ bash dev.sh
 | `bash dev.sh` | 一键本地启动，缺少账号配置时自动初始化 |
 | `bash dev.sh --port 8793` | 显式指定其他本地端口 |
 | `bash deploy.sh` | 交互式生产部署 |
-| `bash deploy.sh --check` | 仅本地构建与部署预检，不登录、不修改云资源 |
+| `bash deploy.sh --check` | 本地构建与 Wrangler 部署预检 |
 | `bash reset-password.sh --local` | 交互式选择并重置本地账号，撤销该账号会话和 AI 令牌 |
 | `bash reset-password.sh --remote` | 交互式选择并重置生产账号；重置初始管理员时同步初始化验证器 |
 | `bash backup.sh --remote` | 创建并校验完整 D1/R2 灾备 |
@@ -100,13 +100,26 @@ bash dev.sh
 | `npm run ai:setup` | 交互式配置 MCP 地址和令牌 |
 | `npm run ai:mcp` | 启动本地 MCP stdio 服务 |
 
-三个入口都支持 `--help`，也可从任意目录通过脚本路径执行。端口已占用时会报错，不终止已有进程、不悄悄换端口。
+### 凭据与授权边界
 
-依赖按 `package-lock.json` 使用 `npm ci --include=dev` 安装；首次使用脚本，或依赖清单、锁文件、Node 主版本、系统架构变化时会重新安装，其余启动跳过安装。安装记录保存在 `node_modules` 内，不进 Git。脚本不会自动安装系统 Node.js；缺少环境时会给出明确提示。
+| 命令 | 所需凭据 | 处理方式 |
+| --- | --- | --- |
+| 首次运行 `setup.sh` 或 `dev.sh` | 新的本地管理员密码 | 交互式隐藏输入；仅保存验证器 |
+| `backup.sh --local`、`restore.sh --local`、`deploy.sh --check` | 无 Cloudflare 凭据 | 只操作本地资源；写操作仍要求确认 |
+| `reset-password.sh --local` | 新的本地账号密码 | 交互式选择账号并隐藏输入 |
+| `deploy.sh` | Cloudflare 自定义 API Token | 用户确认部署后才逐次隐藏输入 |
+| `backup.sh --remote`、`restore.sh --remote`、`reset-password.sh --remote` | Cloudflare 自定义 API Token | 每次运行重新隐藏输入 |
+| `npm run ai:setup` | EasyNote AI 集成令牌 | 由已登录用户在应用内创建，与 Cloudflare Token 无关 |
 
-账号初始化、生产部署、密码恢复和灾备写操作必须在交互式终端执行，密码输入隐藏。脚本保存盐和 PBKDF2/HMAC 验证器，不保存明文密码。`.dev.vars` 被 Git 忽略且权限为 `0600`，仍应作为敏感文件保护。已有有效配置直接保留；配置损坏时停止并提示，不自动覆盖。
+远程部署和维护使用一个具备所需权限、限定到目标账号的 Cloudflare 自定义 API Token。脚本在每次远程操作确认后通过终端隐藏读取 Token，其生命周期限定在本次运行。`wrangler.deploy.json` 以 `0600` 权限保存 Account ID、Worker 名和 D1/R2 资源标识。
 
-首次会话请求根据初始化验证器创建管理员；未配置时没有默认密码，也不开放网页抢注。管理员可在“设置 → 用户与注册”创建用户或开启自助注册；自助注册账号默认禁用，必须经过管理员批准。重复执行 setup 不会更改数据库中已有账号的密码。修改初始化文件后应重启开发服务。
+这些脚本入口都支持 `--help`，也可从任意目录通过脚本路径执行。端口已占用时会报错，不终止已有进程、不悄悄换端口。
+
+依赖按 `package-lock.json` 使用 `npm ci --include=dev` 安装；首次使用脚本，或依赖清单、锁文件、Node 主版本、系统架构变化时会重新安装，其余启动复用现有依赖。安装记录保存在 `node_modules` 内。Node.js 由用户预先安装，脚本负责版本检查和提示。
+
+账号初始化、生产部署、密码恢复和灾备写操作均在交互式终端执行，密码与 Token 输入保持隐藏。脚本保存盐和 PBKDF2/HMAC 验证器；`.dev.vars` 使用 `0600` 权限并按敏感文件管理。已有有效配置直接复用，配置异常时停止并提示。
+
+首次会话请求根据初始化验证器创建管理员。管理员可在“设置 → 用户与注册”创建用户或开启审批式自助注册；重复执行 setup 会保留数据库中的已有账号密码。修改初始化文件后重启开发服务即可生效。
 
 `dev.sh` 每次启动都会检查并构建前端；修改前端源码后重启即可。需要热更新时，可在默认 8791 服务启动后另开终端运行 `npm run dev:client`，访问 `http://127.0.0.1:5174`。只有本地命令允许环回 HTTP，生产要求 HTTPS。原来的 `npm run setup`、`npm run dev`、`npm run deploy` 仍可使用，它们只是调用相同脚本。
 
@@ -149,31 +162,183 @@ npm run ai:setup
 
 设置程序会输出可直接加入 AI 客户端的 MCP 配置。完整的 macOS、Windows、Linux 接入步骤、工具清单、安全约束和故障排查见 [`docs/AI_INTEGRATION.md`](docs/AI_INTEGRATION.md)。
 
+## 费用与用量估算
+
+价格核对日期：**2026-09-17**。EasyNote 的计费范围是 Workers、D1 和 R2 Standard。三项都在免费额度内时，Cloudflare 费用为 **$0/月**；升级 Workers Paid 后，账户级最低费用为 **$5/月**。
+
+| 计费项 | Workers Free | Workers Paid / 超额单价 |
+| --- | --- | --- |
+| Worker 动态请求 | 100,000 次/天 | 每月含 1,000 万次，之后 `$0.30/百万次` |
+| Worker CPU | 每次请求 10 ms | 每月含 3,000 万 CPU-ms，之后 `$0.02/百万 CPU-ms` |
+| 静态资源 | 请求和存储免费 | 请求和存储免费 |
+| D1 行读取 | 500 万行/天 | 每月含 250 亿行，之后 `$0.001/百万行` |
+| D1 行写入 | 10 万行/天 | 每月含 5,000 万行，之后 `$1.00/百万行` |
+| D1 存储 | 账户共 5 GB；单库最多 500 MB | 每月含 5 GB，之后 `$0.75/GB-month`；单库最多 10 GB |
+| R2 Standard 存储 | 10 GB-month/月 | `$0.015/GB-month` |
+| R2 Class A 操作 | 100 万次/月 | `$4.50/百万次` |
+| R2 Class B 操作 | 1,000 万次/月 | `$0.36/百万次` |
+| D1/R2 出站流量 | 免费 | 免费 |
+
+这些额度按 Cloudflare 账户汇总。Workers Free 和 D1 Free 的每日额度在 UTC 00:00 重置；达到请求或行读写额度后，服务会等待下次重置或套餐升级。Free 单个 D1 的写入容量上限为 500 MB。R2 Standard 使用独立月度免费额度，超额量按计费单位向上取整。
+
+### EasyNote 如何消耗额度
+
+| 操作 | 主要计费项 |
+| --- | --- |
+| 加载 JS、CSS、图标和字体 | Worker Static Assets，免费且不限请求数 |
+| 登录、轮询、搜索、读写笔记、AI/MCP 调用 | Worker 动态请求 + D1 行读写 |
+| 自动保存 | 更新当前笔记、FTS 和同步记录；不增加历史版本 |
+| 手动保存或 AI 写入 | 在普通写入之外维护 `note_versions` 快照 |
+| 上传图片或附件 | 1 次 R2 Class A 写入，并写入 D1 元数据 |
+| 查看或下载私有文件 | 每个对象通常产生 1 次 R2 Class B 读取 |
+| 远程备份与恢复 | Wrangler 的 D1 查询同样计量；每个 R2 对象通常分别产生读取或写入操作 |
+| 每小时清理任务 | 每天 24 次 Worker 调用，并产生少量 D1 查询及必要的 R2 删除；R2 删除免费 |
+| Markdown 渲染与 PDF 生成 | 在浏览器本地执行 |
+
+### 1000 篇以内的典型情况
+
+正文和历史版本存入 D1，图片与附件存入 R2。D1 的主要估算式为：
+
+```text
+正文原始量 ≈ 笔记数 × 平均 UTF-8 正文大小 × 平均保留内容份数
+```
+
+数据库物理存储包含 `notes` 中的当前正文，以及 `note_versions` 中最多 `VERSIONS_KEPT` 条历史记录。自动保存只更新当前正文，不增加历史；用户点击“立即同步”、按 `Cmd/Ctrl+S` 或 AI 写入时才尝试建立历史快照，相同内容不会重复记录。默认上限为 20，因此一篇笔记最多仍会保存约 21 份正文，但实际份数取决于有内容变化的手动保存和 AI 写入次数。
+
+下面计算 1000 篇笔记的正文原始字节；实际数据库还包含索引和元数据：
+
+| 平均单篇正文 | 0 个历史（1 份） | 5 个历史（6 份） | 10 个历史（11 份） | 20 个历史（21 份） |
+| --- | ---: | ---: | ---: | ---: |
+| 5 KiB | 4.9 MiB | 29.3 MiB | 53.7 MiB | 102.5 MiB |
+| 20 KiB | 19.5 MiB | 117.2 MiB | 214.8 MiB | 410.2 MiB |
+| 50 KiB | 48.8 MiB | 293.0 MiB | 537.1 MiB | 约 1.0 GiB |
+| 100 KiB | 97.7 MiB | 585.9 MiB | 约 1.0 GiB | 约 2.0 GiB |
+| 256 KiB（单篇上限） | 250 MiB | 约 1.5 GiB | 约 2.7 GiB | 约 5.1 GiB |
+
+FTS5 只索引当前正文，但 FTS、普通索引、标题、标签和其他表仍会占空间，不能把 500 MB 全部留给上表的原始正文。平均 20 KiB、保留 5 个历史时原始正文约 117 MiB，通常有较大余量；保留 20 个历史时已约 410 MiB，加入索引后存在超过 Free 单库上限的明显风险。平均 50 KiB、保留 10 个历史时，仅原始正文就已超过 500 MB。
+
+建议个人实例将 `VERSIONS_KEPT` 设为 5～10，并以 D1 控制台显示的实际数据库大小为准。自动保存频率不会增加历史数量；只有内容不同的手动保存和 AI 写入才消耗历史槽位。
+
+### 请求与 D1 行读写
+
+默认 `POLL_SECONDS=30`，页面仅在可见且联网时轮询。普通在线模式下，选中笔记且列表不超过 50 篇时，每轮通常请求笔记列表、标签和当前笔记，共约 3 次动态请求：
+
+| 使用方式 | 轮询次数/天 | 动态请求估算/天 | 动态请求估算/月 |
+| --- | ---: | ---: | ---: |
+| 1 台设备，每天打开 1 小时 | 120 | 360 | 10,800 |
+| 1 台设备，每天打开 8 小时 | 960 | 2,880 | 86,400 |
+| 10 台设备，每天各 8 小时 | 9,600 | 28,800 | 864,000 |
+| 30 台设备，每天各 8 小时 | 28,800 | 86,400 | 2,592,000 |
+
+登录、编辑、搜索、文件和 MCP 请求在表中另行累加。约 30 个持续活跃页面已经接近 Workers Free 每天 100,000 次限制；升级 Paid 后，上述 259.2 万次月请求仍低于每月 1,000 万次包含量。启用离线笔记库后，轮询主要使用增量 `/api/sync`，通常比普通模式请求更少。
+
+常规笔记请求主要等待 D1/R2，不会把等待时间计入 Worker CPU；登录、改密和账号管理包含 PBKDF2，批量导入及大结果序列化也更消耗 CPU。Free 每次仅有 10 ms CPU，若 Workers Metrics 出现 `Exceeded CPU Time Limits`，即使请求数未超额，也需要先优化热点或升级 Paid。
+
+D1 按扫描或写入的行数计量。列表和单篇读取可利用索引，标签查询则遍历当前分类中的笔记及其 JSON 标签。以 1000 篇笔记、平均 2 个标签粗略规划，一台设备每天前台 8 小时可能仅标签刷新就检查约 190 万个标签项；两台约 380 万，三台可能超过 D1 Free 每天 500 万行读取额度。实际计量取决于数据分布和查询计划，以 D1 Metrics 的 `rows_read` 为准。
+
+一次自动保存也不等于只写一行：当前笔记、普通索引、FTS5 触发器、同步记录和文件引用都可能产生行写入；手动保存和 AI 写入还可能新增或裁剪历史。个人使用通常远低于每天 10 万行写入，但批量导入、持续自动化写入或多用户高频编辑应以 D1 Metrics 的 `rows_written` 实测。
+
+### R2 存储与操作
+
+默认 `IMAGE_QUOTA_BYTES=1 GiB` 是每个 EasyNote 用户的应用层配额。单用户用满配额仍低于 R2 每月 10 GB 免费存储；10 个用户各用满 1 GiB 合计约 10.74 GB，已略超十进制 10 GB 免费额度。
+
+| R2 Standard 平均存储量 | 仅存储预计月费 |
+| --- | ---: |
+| 5 GB | `$0` |
+| 10 GB | `$0` |
+| 20 GB | 约 `$0.15` |
+| 50 GB | 约 `$0.60` |
+| 100 GB | 约 `$1.35` |
+
+每个新文件通常产生一次 Class A `PutObject`，每次私有文件读取或远程备份下载通常产生一次 Class B `GetObject`，删除免费。个人或小团队通常很难超过每月 100 万次 A 类和 1,000 万次 B 类免费额度。历史版本不会复制 R2 对象，但仍被历史引用的旧文件不能清理，所以频繁替换附件会增加存储。
+
+### 综合判断
+
+| 场景 | 主要风险 | 预计 Cloudflare 月费 |
+| --- | --- | ---: |
+| 1000 篇、平均 20 KiB、最多 5 个历史、附件不超过 1 GiB、单设备使用 | 各项通常有较大余量 | **$0** |
+| 1000 篇、平均 20 KiB、接近 20 个历史 | D1 原始正文约 410 MiB，索引可能推过 500 MB | **$0 或至少 $5** |
+| 1000 篇、平均 50 KiB、10 个历史 | 原始正文已超过 Free 单库上限 | **至少 $5** |
+| D1 不超限、R2 合计 20 GB | R2 超额 10 GB | **约 $0.15** |
+| D1 不超限、R2 合计 50 GB | R2 超额 40 GB | **约 $0.60** |
+| 40 台设备每天各保持前台 8 小时 | Worker 请求约 115,200 次/天，Free 会拒绝超额请求；D1 读取也可能先超限 | **升级后通常约 $5 起** |
+
+Paid 总费用可按下式估算：
+
+```text
+月费 ≈ $5
+  + max(月动态请求 - 1000 万, 0) / 100 万 × $0.30
+  + max(月 CPU-ms - 3000 万, 0) / 100 万 × $0.02
+  + max(月 D1 行读取 - 250 亿, 0) / 100 万 × $0.001
+  + max(月 D1 行写入 - 5000 万, 0) / 100 万 × $1.00
+  + max(D1 GB-month - 5, 0) × $0.75
+  + max(ceil(R2 GB-month) - 10, 0) × $0.015
+  + max(ceil(R2 Class A / 100 万) - 1, 0) × $4.50
+  + max(ceil(R2 Class B / 100 万) - 10, 0) × $0.36
+```
+
+建议上线后观察 Workers 的 Requests、CPU Time 和 Error 1027，D1 的 `rows_read`、`rows_written` 和数据库大小，以及 R2 的 Storage、Class A、Class B。达到任一免费额度的 70% 时再决定提高 `POLL_SECONDS`、减少长期打开的页面、降低 `VERSIONS_KEPT` 或升级套餐。以上估算不含自购域名、税费、付费 WAF 和外部备份存储。
+
+官方依据：[Workers 定价](https://developers.cloudflare.com/workers/platform/pricing/)、[Static Assets 计费](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)、[D1 定价](https://developers.cloudflare.com/d1/platform/pricing/)、[D1 限制](https://developers.cloudflare.com/d1/platform/limits/)、[R2 定价](https://developers.cloudflare.com/r2/pricing/)。实际费用以账户套餐和当期账单为准。
+
 ## 部署到 Cloudflare
 
-1. 在 Cloudflare 创建独立 D1 数据库，例如 `easynote-db`。
-2. 创建独立且不公开的 R2 桶，例如 `easynote-images`。
-3. 在本项目目录运行：
+### 1. 准备独立资源
+
+在同一个 Cloudflare 账号中：
+
+1. 创建专用 D1 数据库，例如 `easynote-db`，复制 32 位 Account ID 和数据库 UUID。
+2. 启用 R2，并创建专用且不公开的 bucket，例如 `easynote-images`。
+3. 使用 `workers.dev` 时，先在 Workers & Pages 中初始化账号级子域名。
+
+![EasyNote Cloudflare D1、R2 与 workers.dev 资源准备](docs/img/cloudflare/cloudflare-resources.svg)
+
+EasyNote 使用专属 D1 和 R2 资源。R2 保持私有，图片和附件统一经 Worker 鉴权访问。部署脚本使用已准备的云资源；自定义域名在部署完成后从 Worker 的 Domains 页面绑定。
+
+### 2. 创建自定义 API Token
+
+打开 [My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens/)，选择 **Create Token → Create Custom Token**。
+
+旧版 Custom Token 权限选择器使用以下项目：
+
+| Scope | Permission | Level | 用途 |
+| --- | --- | --- | --- |
+| Account | Workers Scripts | Edit | 创建或更新 Worker、静态资源、Cron 和 `INITIAL_OWNER` Secret |
+| Account | D1 | Edit | 校验专用数据库并执行 migrations |
+| Account | Workers R2 Storage | Edit | 校验并绑定专用私有 bucket |
+
+在 **Account Resources** 选择 `Include → Specific account → 目标账号`。部署时显式输入 Account ID；以上账号级权限即可覆盖脚本操作。
+
+Cloudflare 新版 Developer Platform 角色界面中，首次创建 Worker 需要 Workers 产品级 **Admin**；Worker 已存在时可缩小为该 Worker 的 **Editor**。D1 与 R2 仍只授予目标产品和资源所需的编辑权限。
+
+![EasyNote Cloudflare API Token 最小权限与资源范围](docs/img/cloudflare/cloudflare-api-token.svg)
+
+Token secret 只显示一次，应存入密码管理器。部署、远程备份、恢复和远程密码重置均通过终端隐藏输入同一个 Token，Token 生命周期限定在本次运行。
+
+### 3. 执行部署
 
 ```bash
 bash deploy.sh
 ```
 
-脚本自动准备依赖、检查并构建，然后询问数据库 UUID、桶名、Worker 名和执行确认，再通过 Wrangler 交互式浏览器登录。执行远程迁移并部署后，检查远端 `INITIAL_OWNER` 是否存在：存在则保留，缺少才交互式初始化。首次部署在安装验证器前保持不可登录；中途失败可重新执行同一命令，不静默重试。
+脚本自动准备依赖、检查并构建，然后询问 Account ID、D1 UUID、R2 bucket、Worker 名和执行确认。确认后才隐藏输入 Token，先校验 Token 对 D1/R2 的访问，再执行远程迁移、部署 Worker，并检查 `INITIAL_OWNER`：存在则保留，缺少才交互式初始化。
 
-- 后续部署展示已保存的 Worker、D1、R2，确认复用后不必重新输入；修改配置则重新填写。构建检查失败时不会登录或执行云端变更。
-- 不接受环境变量中的 Cloudflare API Token / API Key（包括 `CF_*` 别名），使用当前用户的 Wrangler 浏览器登录流程，不读取 EasyDrop 的项目凭据。
-- 生成的 `wrangler.deploy.json` 被 Git 忽略；不要将模板中的全零 UUID 用于生产。
-- 应用参数在 `wrangler.json` 维护。复用部署时重新从模板生成生产配置，仅继承已保存的资源标识和可选 `account_id`；不把生成文件当作应用参数的编辑入口。
-- 不会自动创建云资源或配置域名。自定义域名可在 Cloudflare 中绑定。
-- 更换 Cloudflare 账号或存储资源前，自己核对资源归属并备份。
-- 更新部署会应用 D1 migrations，不覆盖已有初始账号验证器，也不会重置已有账号密码。
+- 后续部署展示并复用已保存的 Worker、Account、D1、R2；Token 输入位于构建和变更确认之后。
+- `wrangler.deploy.json` 使用 `0600` 权限保存目标资源标识和公开应用配置。
+- 应用参数在 `wrangler.json` 维护。复用部署时重新从模板生成生产配置，仅继承已保存的账号和资源标识。
+- 更换 Cloudflare 账号或存储资源时，先核对资源归属并完成备份，再更新部署配置。
+- 更新部署会应用 D1 migrations，并保留已有初始账号验证器和账号密码。
+- Token 权限不足或中途失败时，修正原因后使用同一资源继续部署。
+
+官方参考：[Wrangler API Token 环境变量](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)、[Workers 权限](https://developers.cloudflare.com/workers/authorization/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[D1](https://developers.cloudflare.com/d1/)、[R2](https://developers.cloudflare.com/r2/)。
 
 ## 关键行为
 
 ### 保存与冲突
 
-每次保存提交 `revision` 和随机 `operationId`。服务端在 D1 事务中校验旧修订号、更新笔记、按内容变化记录新版本并维护文件引用。所有字段均未变化时按保存成功返回，但不递增修订号。单独置顶或取消置顶仍递增技术修订号并参与多端同步，但不生成编辑历史；恢复历史版本也保留当前置顶状态。历史列表会折叠旧版本遗留的连续重复记录。只有写入成功才能显示“已保存到云端”。
+每次保存提交 `revision`、随机 `operationId` 和 `createVersion`。自动保存使用 `createVersion: false`，只更新 `notes` 当前内容和技术 revision；点击“立即同步”或按 `Cmd/Ctrl+S` 使用 `createVersion: true`，即使自动保存已完成，也会为当前 revision 建立快照。AI 写入由服务端强制建立快照。快照内容与最近历史相同时不重复记录，且纯快照不递增 revision。单独置顶或取消置顶仍递增技术 revision 并参与多端同步，但不会因内容相同生成历史。
+
+恢复旧版本前会先显式快照当前内容，再通过普通更新写入所选版本，因此可以从历史中回到恢复前状态；恢复时保留当前置顶状态。历史列表还会折叠旧数据中连续重复的记录。只有写入成功才能显示“已保存到云端”。
 
 “全部笔记”只显示未归档内容，并继续将置顶笔记排在前面；归档笔记仅在“归档笔记”视图中出现。置顶和归档是彼此独立的属性。
 
@@ -189,7 +354,7 @@ bash deploy.sh
 
 | 快捷键 | 操作 |
 | --- | --- |
-| `Cmd/Ctrl+S` | 立即保存并同步 |
+| `Cmd/Ctrl+S` | 立即保存、同步并记录历史版本 |
 | `Ctrl+E` / `Cmd/Ctrl+Enter` | 切换编辑与预览，并保留源码光标位置 |
 | `Cmd/Ctrl+B` / `Cmd/Ctrl+I` | 在编辑器中切换粗体 / 斜体 |
 | `Cmd/Ctrl+P` | 导出当前笔记为 PDF |
@@ -275,7 +440,7 @@ ZIP v2 包含 `manifest.json`、`notes/*.md` 和所引用的 `files/*`。Markdow
 | `MAX_ATTACHMENT_BYTES` | 20971520 | 单个附件 20 MiB |
 | `IMAGE_QUOTA_BYTES` | 1073741824 | 每账号 R2 文件总配额 1 GiB，含待清理文件 |
 | `MAX_NOTES` | 5000 | 每账号笔记上限，含回收站 |
-| `VERSIONS_KEPT` | 20 | 每篇保留版本数，包含当前版本 |
+| `VERSIONS_KEPT` | 20 | 每篇最多保留的手动保存和 AI 写入历史数；当前笔记另存于 `notes` |
 | `IMAGE_GRACE_HOURS` | 168 | 未引用图片最后使用后的宽限期 |
 | `SESSION_DAYS` | 30 | 会话固定有效天数，不做每请求续期 |
 | `AUTOSAVE_MS` | 1000 | 停止输入后的保存延迟 |
@@ -311,9 +476,9 @@ ZIP v2 包含 `manifest.json`、`notes/*.md` 和所引用的 `files/*`。Markdow
 | `GET /api/sync` | 按单调序号增量同步完整笔记和删除记录 |
 | `GET /api/tasks` | 汇总未完成 TODO 及源码位置 |
 | `GET /api/notes` | 列表、搜索、视图、标签筛选，50 条分页 |
-| `POST /api/notes/:id` | 创建笔记，revision 必须为 0 |
+| `POST /api/notes/:id` | 创建笔记，revision 必须为 0；`createVersion` 控制是否记录历史 |
 | `GET /api/notes/:id` | 读取完整正文 |
-| `PUT /api/notes/:id` | 按 revision 更新 |
+| `PUT /api/notes/:id` | 按 revision 更新；`createVersion` 控制是否记录历史 |
 | `DELETE /api/notes/:id` | 永久删除指定 revision 的回收站笔记 |
 | `GET /api/notes/:id/versions` | 历史版本，恢复通过普通更新提交 |
 | `GET /api/notes/:id/backlinks` | 查询未删除笔记中的反向链接 |
@@ -351,12 +516,12 @@ API 测试使用内存 D1 / R2；浏览器测试自动在 `127.0.0.1:8792` 启�
 
 测试覆盖多用户租户隔离、注册审批、恢复与账号删除、任务定位、Share Target、限时分享、Obsidian ZIP、账号改密与全端登出、离线冷启动和回传、AI 令牌、真实 MCP、幂等与并发、搜索、批量标签、双链、删除墓碑、历史、私有文件、灾备校验、移动布局和编辑锁。
 
-## 当前边界
+## 适用范围
 
-- 离线镜像不加密，安全边界与浏览器配置文件和设备账号一致；敏感设备应启用系统磁盘加密。
-- 不内置生成式 AI、多人实时协同编辑、图谱或自动定时远程备份。只读分享针对单篇笔记，不提供公开目录、搜索或可写协作；AI 只能通过用户主动创建的受限令牌和本地 MCP 桥接器访问所属租户。
-- AI 关键词搜索采用 FTS5 trigram 索引和 BM25 排序，并通过参数化 `LIKE` 保证连续子串精确命中；少于 3 个字符时回退到 `LIKE`。目前不包含语义向量检索。
-- 列表使用 offset 分页而非数据库快照；其他设备新增内容可能移动页边界，手动刷新重新获取。
-- 历史版本数量有限；完整灾难恢复依赖显式运行并离线保管的 D1/R2 备份。
-- 不提供端到端加密，Cloudflare 账号管理员可访问存储内容；使用成本取决于实际请求、存储和套餐，不保证永久免费。
-- 尚未实际部署云端；生产前应使用自己的临时实例验证账号配置、备份恢复和 Cloudflare 用量。
+- 离线镜像沿用浏览器配置文件和设备账号的安全边界，敏感设备建议启用系统磁盘加密。
+- 功能聚焦 Markdown 笔记、单篇只读分享和本地 MCP 桥接；AI 通过用户主动创建的受限令牌访问所属租户。
+- AI 检索采用 FTS5 trigram、BM25 和参数化 `LIKE`，覆盖关键词及连续子串；语义向量检索可按实际需求后续扩展。
+- 列表使用 offset 分页，跨设备新增内容后可手动刷新页边界。
+- 历史版本按配置保留，完整灾难恢复通过显式 D1/R2 备份完成。
+- 数据由 Cloudflare 账号内的访问控制保护，账号管理员具备基础设施级访问权限；费用按实际请求、存储和套餐结算。
+- 生产上线前使用独立临时实例验证账号配置、备份恢复和 Cloudflare 用量。

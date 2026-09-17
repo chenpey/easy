@@ -191,9 +191,11 @@ test('create, autosave, reload, edit Markdown and preview safely', async ({ page
   expect(icon.status()).toBe(200);
   expect(icon.headers()['content-type']).toContain('image/svg+xml');
   await newNote(page, title, '# 本周阅读\n\n记录一些值得留下的想法。\n\n- 保持简单\n- 定期整理\n\n<script>alert(1)</script>');
-  await page.getByRole('button', { name: '立即同步', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('已同步，内容为最新');
   const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
+  const automaticHistory = await (await page.request.get(`/api/notes/${listed.notes[0].id}/versions`)).json();
+  expect(automaticHistory.versions).toHaveLength(0);
+  await page.getByRole('button', { name: '立即同步', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已保存并记录历史版本');
   const history = await (await page.request.get(`/api/notes/${listed.notes[0].id}/versions`)).json();
   expect(history.versions).toHaveLength(1);
   await page.reload();
@@ -280,7 +282,7 @@ test('restoring a content version preserves the current pin state', async ({ pag
     headers,
     data: {
       title, content: '旧正文', tags: [], pinned: false, archived: false,
-      deletedAt: null, revision: 0, operationId: randomUUID(),
+      deletedAt: null, revision: 0, operationId: randomUUID(), createVersion: true,
     },
   });
   expect(created.status()).toBe(201);
@@ -288,7 +290,7 @@ test('restoring a content version preserves the current pin state', async ({ pag
     headers,
     data: {
       title, content: '新正文', tags: [], pinned: false, archived: false,
-      deletedAt: null, revision: 1, operationId: randomUUID(),
+      deletedAt: null, revision: 1, operationId: randomUUID(), createVersion: false,
     },
   });
   expect(updated.status()).toBe(200);
@@ -296,7 +298,7 @@ test('restoring a content version preserves the current pin state', async ({ pag
     headers,
     data: {
       title, content: '新正文', tags: [], pinned: true, archived: false,
-      deletedAt: null, revision: 2, operationId: randomUUID(),
+      deletedAt: null, revision: 2, operationId: randomUUID(), createVersion: false,
     },
   });
   expect(pinned.status()).toBe(200);
@@ -313,6 +315,9 @@ test('restoring a content version preserves the current pin state', async ({ pag
     const response = await page.request.get(`${origin}/api/notes/${id}`);
     return (await response.json()).note;
   }).toMatchObject({ content: '旧正文', pinned: true, revision: 4 });
+  const versions = await (await page.request.get(`${origin}/api/notes/${id}/versions`)).json();
+  expect(versions.versions.map((version: { revision: number }) => version.revision)).toEqual([3, 1]);
+  expect(versions.versions[0].content).toBe('新正文');
 });
 
 test('Mermaid flowcharts, mindmaps and sanitized HTML blocks render safely', async ({ page }) => {
@@ -467,9 +472,14 @@ test('new note reopens the existing completely blank note', async ({ page }) => 
 
 test('unsaved local draft survives refresh and syncs only after explicit retry', async ({ page }) => {
   await page.goto('/');
-  await newNote(page, `草稿恢复-${randomUUID().slice(0, 6)}`, '云端版本');
+  const title = `草稿恢复-${randomUUID().slice(0, 6)}`;
+  await newNote(page, title, '云端版本');
+  const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
   await page.route('**/api/notes/*', async (route) => {
-    if (route.request().method() === 'PUT') await route.abort('failed');
+    if (route.request().method() === 'PUT') {
+      await route.fetch();
+      await route.abort('failed');
+    }
     else await route.continue();
   });
   await page.getByRole('textbox', { name: '笔记正文' }).fill('网络失败之后的本地草稿');
@@ -480,8 +490,10 @@ test('unsaved local draft survives refresh and syncs only after explicit retry',
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('网络失败之后的本地草稿');
   await expect(page.getByText('待处理草稿', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '立即同步', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('草稿已保存并同步');
+  await expect(page.getByRole('status')).toHaveText('已保存并记录历史版本');
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  const history = await (await page.request.get(`/api/notes/${listed.notes[0].id}/versions`)).json();
+  expect(history.versions).toHaveLength(1);
 });
 
 test('conflicting remote edits create an explicit local copy', async ({ page }) => {
@@ -935,7 +947,7 @@ test('command palette, cursor-position image insertion and private attachments w
   await expect(palette).toBeHidden();
   await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(title);
   await page.keyboard.press('Meta+s');
-  await expect(page.getByRole('status')).toHaveText('已同步，内容为最新');
+  await expect(page.getByRole('status')).toHaveText('已保存并记录历史版本');
 });
 
 test('editing shortcuts and keyboard navigation work without pointer input', async ({ page }) => {

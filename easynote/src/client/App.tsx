@@ -583,10 +583,12 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const syncNow = async () => {
     if (syncing) return;
     const hadPending = book.pending.length > 0;
+    const checkpointId = note?.id;
     setSyncing(true);
     try {
-      if (await book.retry()) {
-        showNotice(hadPending ? '草稿已保存并同步' : '已同步，内容为最新');
+      if (await book.retry(checkpointId)) {
+        showNotice(checkpointId ? '已保存并记录历史版本' :
+          hadPending ? '草稿已保存并同步' : '已同步，内容为最新');
       }
     } finally {
       setSyncing(false);
@@ -625,6 +627,28 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       setVersionList(result.versions);
       setChosenVersion(null);
     });
+  };
+  const restoreVersion = async () => {
+    if (!note || !chosenVersion || syncing) return;
+    const targetId = note.id;
+    const version = chosenVersion;
+    setSyncing(true);
+    try {
+      if (!await book.retry(targetId)) return;
+      book.edit({
+        title: version.title,
+        content: version.content,
+        tags: version.tags,
+        archived: version.archived,
+      });
+      if (!await book.retry()) return;
+      setVersionList(null);
+      setChosenVersion(null);
+      setLayout('edit');
+      showNotice('已恢复版本，恢复前内容已保留');
+    } finally {
+      setSyncing(false);
+    }
   };
   const exportCurrentNote = () => {
     if (!note || printing) return;
@@ -1203,10 +1227,9 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     </Modal>}
     {versionList && versionNoteId === note?.id && <Modal title="历史版本" close={() => { setVersionList(null); setChosenVersion(null); }}>
       <div className="version-list">{versionList.map((version) => <button key={version.revision} className={chosenVersion?.revision === version.revision ? 'selected' : ''} onClick={() => setChosenVersion(version)}><span>修订 {version.revision} · {version.actorType === 'ai' ? `AI：${version.actorName}` : version.actorName}</span><time>{new Date(version.savedAt).toLocaleString('zh-CN')}</time></button>)}</div>
-      {chosenVersion && <><div className="version-preview"><h3>{chosenVersion.title}</h3><Preview content={chosenVersion.content} onImage={setLightbox} onFile={(id, href) => void run(() => downloadPrivateFile(id, href))} resolveFile={book.offlineLibrary ? book.cachedFile : undefined} dark={dark} /></div><div className="dialog-actions"><button className="primary" disabled={disabled || !!note?.deletedAt} onClick={() => {
-        setNoteFields({ title: chosenVersion.title, content: chosenVersion.content, tags: chosenVersion.tags, archived: chosenVersion.archived });
-        setVersionList(null); setChosenVersion(null); setLayout('edit');
-      }}><RotateCcw size={15} />恢复此版本</button></div></>}
+      {chosenVersion && <><div className="version-preview"><h3>{chosenVersion.title}</h3><Preview content={chosenVersion.content} onImage={setLightbox} onFile={(id, href) => void run(() => downloadPrivateFile(id, href))} resolveFile={book.offlineLibrary ? book.cachedFile : undefined} dark={dark} /></div><div className="dialog-actions"><button className="primary" disabled={disabled || !!note?.deletedAt} onClick={() => void restoreVersion()}>
+        <RotateCcw size={15} />恢复此版本
+      </button></div></>}
     </Modal>}
     {confirmAction && <Modal title={confirmAction === 'purge-all' ? '永久删除全部笔记？' : confirmAction === 'purge' ? '永久删除这篇笔记？' : '移入回收站？'} close={() => setConfirmAction(null)}>
       <div className="confirm-title">{confirmAction === 'purge-all' ? '将永久删除回收站中的全部笔记，此操作无法撤销。' : note?.title || '未命名笔记'}</div>

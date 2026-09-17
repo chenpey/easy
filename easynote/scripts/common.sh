@@ -25,7 +25,13 @@ require_runtime() {
 reject_environment_credentials() {
   [[ -z "${CLOUDFLARE_API_TOKEN:-}" && -z "${CLOUDFLARE_API_KEY:-}" &&
      -z "${CF_API_TOKEN:-}" && -z "${CF_API_KEY:-}" ]] ||
-    fail "Environment credentials are not accepted. Use interactive Wrangler login."
+    fail "Environment credentials are not accepted. This command prompts for an API token interactively."
+}
+
+prompt_cloudflare_token() {
+  IFS= read -r -s -p 'Cloudflare API token (hidden, used only for this run): ' cloudflare_api_token
+  printf '\n'
+  [[ -n "$cloudflare_api_token" ]] || fail "A Cloudflare API token is required."
 }
 
 ensure_dependencies() {

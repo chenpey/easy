@@ -44,8 +44,9 @@ async function main() {
     return;
   }
   if (values.remote) {
-    if (['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY'].some((key) => process.env[key])) {
-      throw new Error('Environment credentials are not accepted. Use interactive Wrangler login.');
+    if (!process.env.CLOUDFLARE_API_TOKEN || process.env.EASYNOTE_INTERACTIVE_CLOUDFLARE !== '1' ||
+        ['CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY'].some((key) => process.env[key])) {
+      throw new Error('Remote initialization must be launched by bash deploy.sh with its interactively entered API Token.');
     }
     if (!values.config) throw new Error('--config is required.');
     await readFile(values.config);

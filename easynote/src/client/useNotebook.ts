@@ -148,7 +148,7 @@ export function useNotebook(session: Session) {
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
-  const saveRef = useRef<(id: string) => Promise<boolean>>(async () => false);
+  const saveRef = useRef<(id: string, refreshAfter?: boolean, createVersion?: boolean) => Promise<boolean>>(async () => false);
   const schedule = (id: string) => {
     const previous = pendingTimers.current.get(id);
     if (previous) clearTimeout(previous);
@@ -158,20 +158,32 @@ export function useNotebook(session: Session) {
     }, session.config.autosaveMs));
   };
 
-  const save = async (id: string, refreshAfter = true): Promise<boolean> => {
+  const save = async (id: string, refreshAfter = true, createVersion = false): Promise<boolean> => {
     if (running.current.has(id)) return false;
     const draft = drafts.current.get(id);
-    if (!draft) return true;
+    const target = draft?.note ?? (current.current?.id === id ? current.current : null);
+    if (!target) return !createVersion;
     if (!navigator.onLine || session.offline) { notify(); return false; }
+    const pendingTimer = pendingTimers.current.get(id);
+    if (pendingTimer) clearTimeout(pendingTimer);
+    pendingTimers.current.delete(id);
     running.current.add(id);
     notify();
     let ok = false;
+    let contentSaved = false;
     try {
-      await persist(id, draft);
-      const { note: saved } = await api.save(id, noteInput(draft.note), draft.note.revision, draft.operationId);
+      if (draft) await persist(id, draft);
+      const operationId = draft?.operationId ?? crypto.randomUUID();
+      const { note: saved } = await api.save(
+        id,
+        noteInput(target),
+        target.revision,
+        operationId,
+        createVersion && !draft,
+      );
       if (!alive.current) return true;
       const latest = drafts.current.get(id);
-      if (latest?.operationId === draft.operationId) {
+      if (latest?.operationId === operationId) {
         drafts.current.delete(id);
         if (current.current?.id === id) show(saved);
         await persist(id, null);
@@ -185,6 +197,10 @@ export function useNotebook(session: Session) {
         mirror.current.set(saved.id, saved);
         await cacheMirroredNote(userId, saved);
       }
+      contentSaved = true;
+      if (createVersion && draft) {
+        await api.save(id, noteInput(saved), saved.revision, crypto.randomUUID(), true);
+      }
       blocked.current.delete(id);
       ok = true;
       if (refreshAfter) await refreshRef.current();
@@ -193,13 +209,13 @@ export function useNotebook(session: Session) {
       if (!(e instanceof ApiError) && offlineLibraryRef.current) setOnline(false);
       blocked.current.add(id);
       if (e instanceof ApiError && [409, 410].includes(e.status)) {
-        setConflict({ local: drafts.current.get(id)?.note ?? draft.note, remote: e.body.error?.current });
+        setConflict({ local: drafts.current.get(id)?.note ?? target, remote: e.body.error?.current });
       }
       setError(String(e));
     } finally {
       running.current.delete(id);
       notify();
-      if (ok && drafts.current.has(id) && alive.current) schedule(id);
+      if ((ok || contentSaved) && drafts.current.has(id) && alive.current) schedule(id);
     }
     return ok;
   };
@@ -284,12 +300,19 @@ export function useNotebook(session: Session) {
     return operation;
   };
 
-  const retry = async (): Promise<boolean> => {
+  const retry = async (checkpointId?: string): Promise<boolean> => {
     setError(''); setConflict(null); pollError.current = '';
     let savedAll = true;
-    for (const id of drafts.current.keys()) {
+    let checkpointSaved = false;
+    for (const id of [...drafts.current.keys()]) {
       blocked.current.delete(id);
-      if (!await saveRef.current(id)) { savedAll = false; break; }
+      const createVersion = id === checkpointId;
+      if (!await saveRef.current(id, false, createVersion)) { savedAll = false; break; }
+      if (createVersion) checkpointSaved = true;
+    }
+    if (savedAll && checkpointId && !checkpointSaved) {
+      blocked.current.delete(checkpointId);
+      savedAll = await saveRef.current(checkpointId, false, true);
     }
     try {
       await refreshRef.current();

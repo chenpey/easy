@@ -14,7 +14,9 @@ require_runtime
 ensure_dependencies
 if [[ "$1" == "--remote" ]]; then
   [[ -f wrangler.deploy.json ]] || fail "wrangler.deploy.json is missing. Deploy EasyNote before resetting its remote password."
-  node scripts/maintenance.mjs reset-password --remote --config wrangler.deploy.json
+  prompt_cloudflare_token
+  CLOUDFLARE_API_TOKEN="$cloudflare_api_token" EASYNOTE_INTERACTIVE_CLOUDFLARE=1 \
+    node scripts/maintenance.mjs reset-password --remote --config wrangler.deploy.json
 else
   node scripts/maintenance.mjs reset-password --local --config wrangler.json
 fi

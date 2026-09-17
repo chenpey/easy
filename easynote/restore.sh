@@ -12,9 +12,18 @@ fi
 reject_environment_credentials
 require_runtime
 ensure_dependencies
+if [[ " $* " == *" --remote "* ]]; then
+  require_terminal
+fi
 if [[ " $* " != *" --check "* ]]; then
   require_terminal
   read -r -p 'Type restore easynote to write the target D1 and R2 resources: ' confirmation
   [[ "$confirmation" == "restore easynote" ]] || fail "Restore cancelled."
 fi
-node scripts/maintenance.mjs restore "$@"
+if [[ " $* " == *" --remote "* ]]; then
+  prompt_cloudflare_token
+  CLOUDFLARE_API_TOKEN="$cloudflare_api_token" EASYNOTE_INTERACTIVE_CLOUDFLARE=1 \
+    node scripts/maintenance.mjs restore "$@"
+else
+  node scripts/maintenance.mjs restore "$@"
+fi

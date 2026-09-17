@@ -18,8 +18,16 @@ async function request(path: string, method = 'GET', body?: unknown, headers: Re
     }, body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
-async function save(id: string, revision = 0, patch: Record<string, unknown> = {}, operationId = randomUUID()) {
-  return request(`/api/notes/${id}`, revision ? 'PUT' : 'POST', { ...base, ...patch, revision, operationId });
+async function save(
+  id: string,
+  revision = 0,
+  patch: Record<string, unknown> = {},
+  operationId = randomUUID(),
+  createVersion = true,
+) {
+  return request(`/api/notes/${id}`, revision ? 'PUT' : 'POST', {
+    ...base, ...patch, revision, operationId, createVersion,
+  });
 }
 async function create(patch: Record<string, unknown> = {}) {
   const id = randomUUID();
@@ -149,7 +157,8 @@ test('AI tokens are scoped, revocable and preserve revision history', async () =
   assert.deepEqual(literalSearch.notes.map((item: any) => item.id), [literalId]);
 
   const aiUpdate = await request(`/api/integrations/notes/${id}`, 'PUT', {
-    ...base, title: 'AI 更新', content: '## 结果\n\n索引迁移到了苏黎世区域', revision: note.revision, operationId: randomUUID(),
+    ...base, title: 'AI 更新', content: '## 结果\n\n索引迁移到了苏黎世区域',
+    revision: note.revision, operationId: randomUUID(), createVersion: false,
   }, bearer);
   assert.equal(aiUpdate.status, 200, await aiUpdate.clone().text());
   const updated = (await aiUpdate.json() as any).note;
@@ -173,6 +182,7 @@ test('AI tokens are scoped, revocable and preserve revision history', async () =
   assert.equal((await (await request(`/api/integrations/notes/${id}`, 'GET', undefined, bearer)).json() as any).note.title, 'AI 更新');
 
   const versions = await (await request(`/api/notes/${id}/versions`)).json() as any;
+  assert.deepEqual(versions.versions.map((version: any) => version.revision), [2, 1]);
   assert.equal(versions.versions[0].actorType, 'ai');
   assert.equal(versions.versions[0].actorName, '测试 AI');
 
@@ -209,6 +219,29 @@ test('idempotent create and update; operation IDs cannot be reused with changed 
   const retry = await save(id, 1, { title: 'new' }, updateOperation);
   assert.equal(retry.status, 200);
   assert.equal((await retry.json() as any).note.revision, 2);
+});
+
+test('automatic saves skip history while manual checkpoints are explicit and deduplicated', async () => {
+  const id = randomUUID();
+  assert.equal((await save(id, 0, { content: '自动保存 1' }, randomUUID(), false)).status, 201);
+  assert.equal((await save(id, 1, { content: '自动保存 2' }, randomUUID(), false)).status, 200);
+  let history = await (await request(`/api/notes/${id}/versions`)).json() as any;
+  assert.deepEqual(history.versions, []);
+
+  const checkpointOperation = randomUUID();
+  const checkpoint = await save(id, 2, { content: '自动保存 2' }, checkpointOperation, true);
+  assert.equal(checkpoint.status, 200, await checkpoint.clone().text());
+  assert.equal((await checkpoint.json() as any).note.revision, 2);
+  assert.equal((await save(id, 2, { content: '自动保存 2' }, checkpointOperation, true)).status, 200);
+  assert.equal((await save(id, 2, { content: '自动保存 2' }, checkpointOperation, false)).status, 409);
+  assert.equal((await save(id, 2, { content: '自动保存 2' }, randomUUID(), true)).status, 200);
+  history = await (await request(`/api/notes/${id}/versions`)).json() as any;
+  assert.deepEqual(history.versions.map((version: any) => version.revision), [2]);
+
+  assert.equal((await save(id, 2, { content: '自动保存 3' }, randomUUID(), false)).status, 200);
+  assert.equal((await save(id, 3, { content: '手动保存 4' }, randomUUID(), true)).status, 200);
+  history = await (await request(`/api/notes/${id}/versions`)).json() as any;
+  assert.deepEqual(history.versions.map((version: any) => version.revision), [4, 2]);
 });
 
 test('only one completely blank active note can exist', async () => {
@@ -351,6 +384,9 @@ test('history keeps the configured content-version limit across pin revision gap
 test('validation rejects malformed notes, missing images and oversized content', async () => {
   assert.equal((await save(randomUUID(), 0, { content: 'x'.repeat(262145) })).status, 400);
   assert.equal((await save(randomUUID(), 0, { tags: [42] })).status, 400);
+  assert.equal((await request(`/api/notes/${randomUUID()}`, 'POST', {
+    ...base, revision: 0, operationId: randomUUID(), createVersion: 'yes',
+  })).status, 400);
   assert.equal((await save(randomUUID(), 0, { content: `![missing](/api/images/${randomUUID()})` })).status, 409);
 });
 

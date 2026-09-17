@@ -7,10 +7,17 @@ export interface NoteRow {
   deleted_at: number | null; created_at: number; updated_at: number; revision: number;
   mutation_id: string; mutation_hash: string;
 }
+interface VersionInputRow {
+  title: string; content: string; tags: string; pinned: number; archived: number; deleted_at: number | null;
+}
 export const toNote = (row: NoteRow): Note => ({
   id: row.id, title: row.title, content: row.content, tags: JSON.parse(row.tags),
   pinned: !!row.pinned, archived: !!row.archived, deletedAt: row.deleted_at, createdAt: row.created_at,
   updatedAt: row.updated_at, revision: row.revision,
+});
+const versionInput = (row: VersionInputRow): NoteInput => ({
+  title: row.title, content: row.content, tags: JSON.parse(row.tags),
+  pinned: !!row.pinned, archived: !!row.archived, deletedAt: row.deleted_at,
 });
 
 export async function loadNote(env: Env, userId: string, id: string): Promise<NoteRow | null> {
@@ -58,10 +65,12 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   const input = validate(data, env);
   if (!idPattern.test(id) || typeof data.operationId !== 'string' || !idPattern.test(data.operationId) ||
       !Number.isSafeInteger(data.revision) || Number(data.revision) < 0 ||
+      data.createVersion !== undefined && typeof data.createVersion !== 'boolean' ||
       (create && data.revision !== 0) || (!create && data.revision === 0)) {
     throw new ApiError(400, 'Invalid revision or operation ID.');
   }
-  const hash = await digest(JSON.stringify({ ...input, revision: data.revision }));
+  const createVersion = user.actorType === 'ai' || data.createVersion === true;
+  const hash = await digest(JSON.stringify({ ...input, revision: data.revision, createVersion }));
   const current = await loadNote(env, user.id, id);
   if (current?.mutation_id === data.operationId) {
     if (current.mutation_hash !== hash) throw new ApiError(409, 'Operation ID reused with different content.');
@@ -74,10 +83,43 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
     throw new ApiError(409, 'The note changed on another device.', { current: toNote(current) });
   }
   const currentInput = current ? noteInput(toNote(current)) : null;
+  const latestVersion = createVersion && current
+    ? await env.DB.prepare(`SELECT title,content,tags,pinned,archived,deleted_at
+      FROM note_versions WHERE note_id=? ORDER BY revision DESC LIMIT 1`)
+      .bind(id).first<VersionInputRow>()
+    : null;
+  const shouldCreateVersion = createVersion &&
+    (!latestVersion || !sameVersionedInput(versionInput(latestVersion), input));
   if (current && currentInput && sameNoteInput(currentInput, input)) {
-    return json({ note: toNote(current), unchanged: true });
+    if (!shouldCreateVersion) return json({ note: toNote(current), unchanged: true });
+    const time = Date.now();
+    const revision = current.revision;
+    const mutation = data.operationId as string;
+    const guard = 'EXISTS(SELECT 1 FROM notes WHERE id=? AND user_id=? AND revision=? AND mutation_id=?)';
+    const guardBinds = [id, user.id, revision, mutation];
+    const keep = numberSetting(env, 'VERSIONS_KEPT', 1, 100);
+    const results = await env.DB.batch([
+      env.DB.prepare(`UPDATE notes SET mutation_id=?,mutation_hash=?
+        WHERE id=? AND user_id=? AND revision=?`)
+        .bind(mutation, hash, id, user.id, revision),
+      env.DB.prepare(`INSERT OR IGNORE INTO note_versions
+        (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived,actor_type,actor_name)
+        SELECT id,revision,title,content,tags,pinned,deleted_at,?,archived,?,? FROM notes
+        WHERE id=? AND user_id=? AND revision=? AND mutation_id=?`)
+        .bind(time, user.actorType, user.actorName, ...guardBinds),
+      env.DB.prepare(`DELETE FROM note_versions WHERE note_id=? AND revision NOT IN
+        (SELECT revision FROM note_versions WHERE note_id=? ORDER BY revision DESC LIMIT ?) AND ${guard}`)
+        .bind(id, id, keep, ...guardBinds),
+      env.DB.prepare(`DELETE FROM image_refs WHERE note_id=? AND revision<>? AND revision NOT IN
+        (SELECT revision FROM note_versions WHERE note_id=?) AND ${guard}`)
+        .bind(id, revision, id, ...guardBinds),
+    ]);
+    const saved = await loadNote(env, user.id, id);
+    if (!results[0].meta.changes || !saved) {
+      throw new ApiError(409, 'The note changed on another device.', { current: saved ? toNote(saved) : undefined });
+    }
+    return json({ note: toNote(saved), unchanged: true });
   }
-  const versionedChange = !currentInput || !sameVersionedInput(currentInput, input);
   const ids = storedFileIds(input.content);
   if (ids.length > 80) throw new ApiError(400, 'A note can reference at most 80 stored files.');
   const placeholders = ids.map(() => '?').join(',');
@@ -109,7 +151,7 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   }
   const guard = 'EXISTS(SELECT 1 FROM notes WHERE id=? AND user_id=? AND revision=? AND mutation_id=?)';
   const guardBinds = [id, user.id, revision, mutation];
-  if (versionedChange) {
+  if (shouldCreateVersion) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO note_versions
       (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived,actor_type,actor_name)
       SELECT id,revision,title,content,tags,pinned,deleted_at,updated_at,archived,?,? FROM notes
