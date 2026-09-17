@@ -57,13 +57,8 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   expect(manifest).toMatchObject({
     name: 'EasyNote', start_url: '/', scope: '/', display: 'standalone',
     theme_color: '#3361cc', background_color: '#ffffff',
-    share_target: {
-      action: '/?share-target=1',
-      method: 'GET',
-      enctype: 'application/x-www-form-urlencoded',
-      params: { title: 'title', text: 'text', url: 'url' },
-    },
   });
+  expect(manifest).not.toHaveProperty('share_target');
   expect(manifest.icons).toEqual(expect.arrayContaining([
     expect.objectContaining({ sizes: '192x192', type: 'image/png' }),
     expect.objectContaining({ sizes: '512x512', type: 'image/png' }),
@@ -126,17 +121,6 @@ test('offline library is enabled by default and an explicit opt-out persists', a
   await expect(page.getByRole('switch', { name: '离线笔记库' })).toHaveAttribute('aria-checked', 'false');
 });
 
-test('PWA share target creates an inbox note and removes shared data from the URL', async ({ page }) => {
-  const marker = randomUUID().slice(0, 8);
-  await page.goto(`/?share-target=1&title=${encodeURIComponent(`分享-${marker}`)}&text=${encodeURIComponent('来自手机的摘录')}&url=${encodeURIComponent('https://example.test/article')}`);
-  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(`分享-${marker}`);
-  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('来自手机的摘录');
-  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('https://example.test/article');
-  await expect(page.getByRole('textbox', { name: '笔记标签' })).toHaveValue('收件箱');
-  await expect(page).toHaveURL(origin + '/');
-  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
-});
-
 test('task center opens the source note at the unfinished task', async ({ page }) => {
   const title = `任务中心-${randomUUID().slice(0, 6)}`;
   await page.goto('/');
@@ -160,7 +144,24 @@ test('mobile note list exposes the task center and opens a task source', async (
   await page.getByRole('button', { name: '任务中心', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('移动端待办', { exact: true })).toBeVisible();
-  await dialog.getByRole('button').filter({ hasText: '移动端待办' }).click();
+  const task = dialog.getByRole('button').filter({ hasText: '移动端待办' });
+  const alignment = await task.evaluate((button) => {
+    const copy = button.querySelector<HTMLElement>('.task-center-copy')!;
+    const arrow = button.querySelector<SVGElement>('svg')!;
+    const buttonBox = button.getBoundingClientRect();
+    const copyBox = copy.getBoundingClientRect();
+    const arrowBox = arrow.getBoundingClientRect();
+    return {
+      leftGap: copyBox.left - buttonBox.left,
+      rightGap: buttonBox.right - arrowBox.right,
+      copyWidth: copyBox.width,
+    };
+  });
+  expect(alignment.leftGap).toBeLessThan(16);
+  expect(alignment.rightGap).toBeLessThan(16);
+  expect(alignment.copyWidth).toBeGreaterThan(200);
+  await dialog.screenshot({ path: 'test-results/mobile-task-center.png' });
+  await task.click();
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

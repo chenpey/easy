@@ -25,12 +25,6 @@ export default defineConfig({
         background_color: '#ffffff',
         theme_color: '#3361cc',
         categories: ['productivity'],
-        share_target: {
-          action: '/?share-target=1',
-          method: 'GET',
-          enctype: 'application/x-www-form-urlencoded',
-          params: { title: 'title', text: 'text', url: 'url' },
-        },
         icons: [
           { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
           { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png' },

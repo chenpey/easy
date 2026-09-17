@@ -789,9 +789,24 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
 .recovery-result p { margin: 0; color: var(--muted); line-height: 1.5; }
 .recovery-result button { width: fit-content; }
 .task-center { display: grid; max-height: 62dvh; overflow-y: auto; }
-.task-center > button { display: grid; width: 100%; min-height: 54px; padding: 9px 10px; justify-items: start; border-width: 0 0 1px; border-radius: 0; text-align: left; }
-.task-center > button span { overflow-wrap: anywhere; }
-.task-center > button small { color: var(--muted); font-size: 11px; }
+.task-center > button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  justify-content: stretch;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  padding: 11px 8px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  text-align: left;
+}
+.task-center > button:last-child { border-bottom: 0; }
+.task-center > button > svg { color: var(--subtle); }
+.task-center-copy { display: grid; min-width: 0; gap: 4px; overflow-wrap: anywhere; }
+.task-center-copy > span { color: var(--ink); font-size: 14px; line-height: 1.45; }
+.task-center-copy > small { color: var(--muted); font-size: 12px; line-height: 1.4; }
 .share-status { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 12px; background: var(--soft); border: 1px solid var(--line); }
 .share-status > div { display: grid; gap: 3px; }
 .share-status span { color: var(--muted); font-size: 11px; }

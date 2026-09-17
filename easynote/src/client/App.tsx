@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ClipboardList, Command, Download, FileText, FolderOpen, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronRight, ClipboardList, Command, Download, FileText, FolderOpen, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
 import type { Note, NoteInput, NoteSummary, NoteTask, Session, SharedNote, Version } from '../shared/types';
 import { api, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
 import { AccountSecurity } from './AccountSecurity';
@@ -397,7 +397,6 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const editor = useRef<EditorHandle>(null);
   const editorCursor = useRef(0);
   const pendingEditorOffset = useRef<{ noteId: string; offset: number } | null>(null);
-  const shareTargetHandled = useRef(false);
   const pendingInsertion = useRef<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const commandList = useRef<HTMLDivElement>(null);
@@ -497,28 +496,6 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     }, 180);
     return () => window.clearTimeout(timer);
   }, [pdfExport, printNote, pdfOptions]);
-  useEffect(() => {
-    if (shareTargetHandled.current || book.loading) return;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('share-target') !== '1') return;
-    shareTargetHandled.current = true;
-    const sharedTitle = (params.get('title') ?? '').trim();
-    const sharedText = (params.get('text') ?? '').trim();
-    const sharedUrl = (params.get('url') ?? '').trim();
-    let fallback = '收件箱';
-    try { if (sharedUrl) fallback = new URL(sharedUrl).hostname || fallback; } catch { /* Keep the inbox title. */ }
-    const content = [sharedText, sharedUrl && !sharedText.includes(sharedUrl) ? sharedUrl : ''].filter(Boolean).join('\n\n');
-    window.history.replaceState(null, '', window.location.pathname);
-    void book.create({
-      title: (sharedTitle || fallback).slice(0, 256),
-      content,
-      tags: ['收件箱'],
-    }).then(() => {
-      setMobileNote(true);
-      setLayout('edit');
-      showNotice('已保存到收件箱');
-    }).catch((error: unknown) => book.setError(String(error)));
-  }, [book.loading]);
   const showShortcutHelp = () => {
     setCommandPalette(false);
     setShortcutHelp(true);
@@ -1173,8 +1150,11 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         {tasksLoading ? <div className="panel-empty">正在汇总待办…</div> : !tasks.length
           ? <div className="panel-empty">没有未完成的待办事项</div>
           : tasks.map((task) => <button key={`${task.noteId}:${task.offset}`} onClick={() => void openTask(task)}>
-            <span>{task.text}</span>
-            <small>{task.noteTitle || '未命名笔记'} · 第 {task.line} 行{task.archived ? ' · 已归档' : ''}</small>
+            <span className="task-center-copy">
+              <span>{task.text}</span>
+              <small>{task.noteTitle || '未命名笔记'} · 第 {task.line} 行{task.archived ? ' · 已归档' : ''}</small>
+            </span>
+            <ChevronRight size={16} aria-hidden="true" />
           </button>)}
       </div>
     </Modal>}
