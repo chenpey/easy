@@ -50,6 +50,7 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   const manifestLink = page.locator('link[rel="manifest"]');
   await expect(manifestLink).toHaveAttribute('href', '/manifest.webmanifest');
   await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/apple-touch-icon.png');
+  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('sizes', '180x180');
   const manifestResponse = await page.request.get('/manifest.webmanifest');
   expect(manifestResponse.status()).toBe(200);
   expect(manifestResponse.headers()['content-type']).toContain('manifest+json');
@@ -60,8 +61,8 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   });
   expect(manifest).not.toHaveProperty('share_target');
   expect(manifest.icons).toEqual(expect.arrayContaining([
-    expect.objectContaining({ sizes: '192x192', type: 'image/png' }),
-    expect.objectContaining({ sizes: '512x512', type: 'image/png' }),
+    expect.objectContaining({ sizes: '192x192', type: 'image/png', purpose: 'any' }),
+    expect.objectContaining({ sizes: '512x512', type: 'image/png', purpose: 'any' }),
     expect.objectContaining({ sizes: '512x512', purpose: 'maskable' }),
   ]));
   for (const path of ['/pwa-192x192.png', '/pwa-512x512.png', '/pwa-maskable-512x512.png', '/apple-touch-icon.png']) {
