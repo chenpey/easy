@@ -310,7 +310,7 @@ Custom Domain 要求根域名已在同一 Cloudflare 账号中变为 **Active**�
 
 打开 [My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens/)，选择 **Create Token → Create Custom Token**。
 
-旧版 Custom Token 权限选择器使用以下项目：
+部署 Token 需要以下权限：
 
 | Scope | Permission | Level | 用途 |
 | --- | --- | --- | --- |
@@ -325,7 +325,7 @@ Custom Domain 要求根域名已在同一 Cloudflare 账号中变为 **Active**�
 
 只有使用 Custom Domain 时才需要最后两项 Zone 权限；使用 `workers.dev` 时可以省略。使用 Custom Domain 时，还要在 **Zone Resources** 选择 `Include → Specific zone → 目标根域名`。
 
-Cloudflare 新版 Developer Platform 角色界面中，首次创建 Worker 需要 Workers 产品级 **Admin**；Worker 已存在时可缩小为该 Worker 的 **Editor**。D1 与 R2 仍只授予目标产品和资源所需的编辑权限。
+上表即为当前部署所需权限；使用 Custom Domain 时额外添加两项 Zone 权限。
 
 ![EasyNote Cloudflare API Token 最小权限与资源范围](docs/img/cloudflare/cloudflare-api-token.svg)
 
