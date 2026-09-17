@@ -16,7 +16,7 @@
     "test": "npm run test:api && npm run test:ai",
     "test:api": "node --import tsx --test test/api.test.ts",
     "test:ai": "node --import tsx --test test/ai.test.ts",
-    "test:scripts": "node --test test/scripts.test.mjs test/maintenance.test.mjs",
+    "test:scripts": "node --test test/deploy.test.mjs test/scripts.test.mjs test/maintenance.test.mjs",
     "test:ui": "playwright test",
     "ai:setup": "npm run --silent build:ai && node dist/ai/index.js setup",
     "ai:mcp": "npm run --silent build:ai && node dist/ai/index.js mcp",

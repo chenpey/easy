@@ -31,10 +31,84 @@ async function fixture({ configured = true } = {}) {
   for (const name of ['setup.sh', 'dev.sh', 'deploy.sh', 'package.json', 'package-lock.json', 'wrangler.json']) {
     await cp(`${project}/${name}`, `${root}/${name}`);
   }
-  for (const name of ['common.sh', 'setup.mjs', 'deploy-config.mjs']) await cp(`${project}/scripts/${name}`, `${root}/scripts/${name}`);
+  for (const name of ['common.sh', 'setup.mjs', 'cloudflare.mjs', 'deploy.mjs']) {
+    await cp(`${project}/scripts/${name}`, `${root}/scripts/${name}`);
+  }
   if (configured) await writeFile(`${root}/.dev.vars`, localConfig, { mode: 0o600 });
+  await writeFile(`${root}/mock-cloudflare.mjs`, `
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+const root = ${JSON.stringify(root)};
+const accountId = ${JSON.stringify(accountId)};
+const databaseId = ${JSON.stringify(databaseId)};
+let database;
+let bucket;
+let workersSubdomain = process.env.FAKE_NO_SUBDOMAIN === '1' ? '' : 'personal-notes';
+function config() {
+  return existsSync(root + '/wrangler.deploy.json')
+    ? JSON.parse(readFileSync(root + '/wrangler.deploy.json', 'utf8'))
+    : null;
+}
+function response(result, status = 200) {
+  return new Response(JSON.stringify(status < 400
+    ? {success:true, result}
+    : {success:false, errors:[{code:status, message:result}]}), {
+    status, headers: {'Content-Type':'application/json'},
+  });
+}
+globalThis.fetch = async (input, init = {}) => {
+  const url = new URL(input);
+  const method = init.method || 'GET';
+  const body = init.body ? JSON.parse(init.body) : undefined;
+  appendFileSync(root + '/cloudflare-calls.jsonl', JSON.stringify({method, path:url.pathname, body}) + '\\n');
+  if (init.headers?.Authorization !== 'Bearer ' + ${JSON.stringify(apiToken)}) return response('Invalid token', 403);
+  if (url.pathname === '/client/v4/accounts') return response([{id:accountId, name:'Personal'}]);
+  if (url.pathname.endsWith('/workers/subdomain')) {
+    if (method === 'PUT') {
+      workersSubdomain = body.subdomain;
+      return response({subdomain:workersSubdomain});
+    }
+    return workersSubdomain ? response({subdomain:workersSubdomain}) : response('Subdomain not found', 404);
+  }
+  if (url.pathname.endsWith('/settings')) {
+    if (process.env.FAKE_REMOTE_WORKER !== '1') return response('Worker not found', 404);
+    const saved = config();
+    return response({bindings:[
+      {name:'DB', type:'d1', id:saved.d1_databases[0].database_id},
+      {name:'IMAGES', type:'r2_bucket', bucket_name:saved.r2_buckets[0].bucket_name},
+    ]});
+  }
+  if (url.pathname.endsWith('/d1/database')) {
+    if (method === 'GET') {
+      if (process.env.FAKE_EXISTING_RESOURCES !== '1') return response(database ? [database] : []);
+      const saved = config();
+      return response([{uuid:databaseId, name:saved?.d1_databases?.[0]?.database_name || 'easynote-db'}]);
+    }
+    database = {uuid:databaseId, name:body.name};
+    return response(database);
+  }
+  if (url.pathname.includes('/d1/database/')) {
+    const saved = config();
+    return response({uuid:databaseId, name:saved.d1_databases[0].database_name});
+  }
+  if (url.pathname.endsWith('/domains/managed')) return response({enabled:false});
+  if (url.pathname.endsWith('/domains/custom')) return response({domains:[]});
+  if (url.pathname.endsWith('/r2/buckets') && method === 'POST') {
+    bucket = {name:body.name};
+    return response(bucket);
+  }
+  if (url.pathname.includes('/r2/buckets/')) {
+    if (process.env.FAKE_EXISTING_RESOURCES !== '1' && !bucket) return response('Bucket not found', 404);
+    const saved = config();
+    return response(bucket || {name:saved?.r2_buckets?.[0]?.bucket_name || 'easynote-images'});
+  }
+  return response('Unknown route', 404);
+};
+`, { mode: 0o644 });
   await writeFile(`${root}/bin/node`, `#!/bin/bash
 if [[ "\${FAKE_OLD_NODE:-}" == 1 && "\${1:-}" == -e && "\${2:-}" == *process.versions.node* ]]; then exit 1; fi
+if [[ "\${1:-}" == "scripts/deploy.mjs" || "\${1:-}" == */scripts/deploy.mjs ]]; then
+  exec ${shellQuote(process.execPath)} --import ${shellQuote(`${root}/mock-cloudflare.mjs`)} "$@"
+fi
 exec ${shellQuote(process.execPath)} "$@"
 `, { mode: 0o755 });
   await symlink('/usr/bin/dirname', `${root}/bin/dirname`);
@@ -71,7 +145,14 @@ if (tool === 'wrangler' && args[0] === 'secret' && args[1] === 'put') {
 }
 `, { mode: 0o644 });
   await writeFile(`${root}/bin/npm`, `#!/bin/bash\nexec ${shellQuote(process.execPath)} ${shellQuote(mock)} npm "$@"\n`, { mode: 0o755 });
-  const env = { ...process.env, PATH: `${root}/bin:/usr/bin:/bin`, NO_COLOR: '1', TERM: 'dumb' };
+  const env = {
+    ...process.env,
+    PATH: `${root}/bin:/usr/bin:/bin`,
+    HOME: root,
+    XDG_CONFIG_HOME: `${root}/.config`,
+    NO_COLOR: '1',
+    TERM: 'dumb',
+  };
   for (const key of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY']) delete env[key];
   return { root, env };
 }
@@ -84,6 +165,10 @@ function run(f, name, args = [], env = {}) {
 
 async function calls(f) {
   try { return (await readFile(`${f.root}/calls.jsonl`, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+}
+async function cloudflareCalls(f) {
+  try { return (await readFile(`${f.root}/cloudflare-calls.jsonl`, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); }
   catch (error) { if (error.code === 'ENOENT') return []; throw error; }
 }
 async function dependencies(f) {
@@ -260,18 +345,17 @@ test('first local startup initializes an account and then launches without a sec
   assert.ok((await calls(f)).some((c) => c.tool === 'wrangler' && c.args[0] === 'dev'));
 });
 
-test('deployment cancellation makes no cloud calls and does not write a new resource config', async () => {
+test('deployment cancellation performs only read checks and does not write a new resource config', async () => {
   const f = await fixture();
   await dependencies(f);
   const result = await terminal(f, 'deploy.sh', [], [
-    ['Cloudflare account ID: ', accountId],
-    ['Existing D1 database UUID (create easynote-db in Cloudflare first): ', databaseId],
-    ['Existing R2 bucket name: ', 'easynote-test-images'],
+    ['Cloudflare API token (hidden, used only for this run): ', apiToken],
     ['Worker name [easynote]: ', 'easynote-test'],
-    ['Type deploy easynote to apply migrations and deploy: ', 'cancel'],
+    ['Type deploy easynote to create/update resources and apply migrations: ', 'cancel'],
   ]);
   assert.match(result.output, /Deployment cancelled/);
   assert.equal((await calls(f)).filter((c) => c.tool === 'wrangler').length, 0);
+  assert.ok((await cloudflareCalls(f)).every((call) => call.method === 'GET'));
   await assert.rejects(stat(`${f.root}/wrangler.deploy.json`), { code: 'ENOENT' });
 });
 
@@ -284,10 +368,9 @@ test('deployment reuses resource IDs, refreshes template settings and preserves 
   original.r2_buckets[0].bucket_name = 'easynote-saved-images';
   await writeFile(`${f.root}/wrangler.deploy.json`, JSON.stringify(original));
   const result = await terminal(f, 'deploy.sh', [], [
-    ['Reuse these deployment resources? [Y/n]: ', ''],
-    ['Type deploy easynote to apply migrations and deploy: ', 'deploy easynote'],
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
-  ]);
+    ['Type deploy easynote to create/update resources and apply migrations: ', 'deploy easynote'],
+  ], { FAKE_REMOTE_WORKER: '1', FAKE_EXISTING_RESOURCES: '1' });
   assert.match(result.output, /Remote owner verifier already exists/);
   assert.match(result.output, /Deployment complete/);
   assert.ok(!result.output.includes('Owner password'));
@@ -299,24 +382,23 @@ test('deployment reuses resource IDs, refreshes template settings and preserves 
   assert.equal(saved.d1_databases[0].database_id, databaseId);
   const wranglerCalls = (await calls(f)).filter((c) => c.tool === 'wrangler');
   assert.deepEqual(wranglerCalls.map((c) => c.args.slice(0, 2)), [
-    ['d1', 'info'], ['r2', 'bucket'], ['d1', 'migrations'], ['deploy', '--config'], ['secret', 'list'],
+    ['d1', 'migrations'], ['deploy', '--config'], ['secret', 'list'],
   ]);
   assert.ok(wranglerCalls.every((call) => call.hasApiToken && call.accountId === accountId));
+  assert.ok((await cloudflareCalls(f)).every((call) => call.method === 'GET'));
   assert.ok(!result.output.includes(apiToken));
 });
 
-test('new deployments initialize only a missing owner secret, never storing plaintext credentials', async () => {
+test('new deployments create D1 and private R2 before initializing a missing owner secret', async () => {
   const f = await fixture();
   await dependencies(f);
   const result = await terminal(f, 'deploy.sh', [], [
-    ['Cloudflare account ID: ', accountId],
-    ['Existing D1 database UUID (create easynote-db in Cloudflare first): ', databaseId],
-    ['Existing R2 bucket name: ', 'easynote-test-images'],
-    ['Worker name [easynote]: ', 'easynote-test'],
-    ['Type deploy easynote to apply migrations and deploy: ', 'deploy easynote'],
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
+    ['Worker name [easynote]: ', 'easynote-test'],
+    ['workers.dev account subdomain [easynote-test]: ', 'personal-notes'],
+    ['Type deploy easynote to create/update resources and apply migrations: ', 'deploy easynote'],
     ...setupSteps,
-  ], { FAKE_SECRETS: '[]' });
+  ], { FAKE_SECRETS: '[]', FAKE_NO_SUBDOMAIN: '1' });
   assert.match(result.output, /Owner verifier installed/);
   assert.ok(!result.output.includes(secret));
   const installed = await readFile(`${f.root}/installed-owner.json`, 'utf8');
@@ -325,6 +407,14 @@ test('new deployments initialize only a missing owner secret, never storing plai
   assert.ok(!result.output.includes(apiToken));
   assert.ok((await calls(f)).filter((c) => c.tool === 'wrangler')
     .every((call) => call.hasApiToken && call.accountId === accountId));
+  const cloudCalls = await cloudflareCalls(f);
+  assert.ok(cloudCalls.some((call) => call.method === 'POST' && call.path.endsWith('/d1/database')));
+  assert.ok(cloudCalls.some((call) => call.method === 'POST' && call.path.endsWith('/r2/buckets')));
+  assert.ok(cloudCalls.some((call) => call.method === 'PUT' && call.path.endsWith('/workers/subdomain')));
+  const saved = JSON.parse(await readFile(`${f.root}/wrangler.deploy.json`, 'utf8'));
+  assert.equal(saved.account_id, accountId);
+  assert.equal(saved.d1_databases[0].database_id, databaseId);
+  assert.equal(saved.r2_buckets[0].bucket_name, 'easynote-images');
   assert.equal(await readFile(`${f.root}/.dev.vars`, 'utf8'), localConfig);
 });
 
@@ -343,7 +433,7 @@ test('credential environment aliases are rejected and build failure stops deploy
 test('invalid persisted resource IDs fail closed and leave configuration unchanged', async () => {
   const f = await fixture();
   await dependencies(f);
-  const invalid = '{"name":"easynote","d1_databases":[]}';
+  const invalid = JSON.stringify({ name: 'easynote', account_id: accountId, d1_databases: [] });
   await writeFile(`${f.root}/wrangler.deploy.json`, invalid);
   const result = await terminal(f, 'deploy.sh');
   assert.match(result.output, /real D1 database UUID is required/);

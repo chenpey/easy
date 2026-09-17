@@ -61,7 +61,8 @@ easynote/
 │   ├── common.sh             # 环境、锁定依赖、构建与端口检查
 │   ├── setup.mjs             # 强制交互式账号初始化
 │   ├── maintenance.mjs       # 密码恢复与 D1/R2 灾备
-│   └── deploy-config.mjs     # 生成独立生产配置
+│   ├── cloudflare.mjs        # Cloudflare API、资源检查与创建
+│   └── deploy.mjs            # 交互式生产部署编排
 ├── test/                     # API / UI 集成测试及隔离运行时
 ├── setup.sh                 # 准备本地依赖和账号
 ├── dev.sh                   # 一键本地启动
@@ -109,12 +110,12 @@ bash dev.sh
 | 首次运行 `setup.sh` 或 `dev.sh` | 新的本地管理员密码 | 交互式隐藏输入；仅保存验证器 |
 | `backup.sh --local`、`restore.sh --local`、`deploy.sh --check` | 无 Cloudflare 凭据 | 只操作本地资源；写操作仍要求确认 |
 | `reset-password.sh --local` | 新的本地账号密码 | 交互式选择账号并隐藏输入 |
-| `deploy.sh` | Cloudflare 自定义 API Token | 用户确认部署后才逐次隐藏输入 |
+| `deploy.sh` | Cloudflare 自定义 API Token | 构建通过后隐藏输入，用于资源发现、创建和部署 |
 | `../reset.sh easynote --remote` | Cloudflare 自定义 API Token | 用户确认清空后隐藏输入，Token 仅用于本次进程 |
 | `backup.sh --remote`、`restore.sh --remote`、`reset-password.sh --remote` | Cloudflare 自定义 API Token | 每次运行重新隐藏输入 |
 | `npm run ai:setup` | EasyNote AI 集成令牌 | 由已登录用户在应用内创建，与 Cloudflare Token 无关 |
 
-远程部署和维护使用一个具备所需权限、限定到目标账号的 Cloudflare 自定义 API Token。脚本在每次远程操作确认后通过终端隐藏读取 Token，其生命周期限定在本次运行。`wrangler.deploy.json` 以 `0600` 权限保存 Account ID、Worker 名和 D1/R2 资源标识。
+远程部署和维护使用一个具备所需权限、限定到目标账号的 Cloudflare 自定义 API Token。脚本在每次远程操作时通过终端隐藏读取 Token，其生命周期限定在本次运行。`wrangler.deploy.json` 以 `0600` 权限保存 Account ID、Worker 名和 D1/R2 资源标识。
 
 这些脚本入口都支持 `--help`，也可从任意目录通过脚本路径执行。端口已占用时会报错，不终止已有进程、不悄悄换端口。
 
@@ -286,17 +287,15 @@ Paid 总费用可按下式估算：
 
 ## 部署到 Cloudflare
 
-### 1. 准备独立资源
+### 1. 首次启用 R2
 
-在同一个 Cloudflare 账号中：
+首次使用 R2 时，登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)，进入目标账号的 **Storage & databases → R2 → Overview**，按页面提示完成 R2 subscription 的 checkout。看到 **Create bucket** 后即可返回终端，不需要手工创建 bucket。
 
-1. 创建专用 D1 数据库，例如 `easynote-db`，复制 32 位 Account ID 和数据库 UUID。
-2. 启用 R2，并创建专用且不公开的 bucket，例如 `easynote-images`。
-3. 使用 `workers.dev` 时，先在 Workers & Pages 中初始化账号级子域名。
+这是 Cloudflare 要求的账号级一次性开通步骤。部署脚本无法代替账单与条款确认；未开通时会在写入资源前停止并显示 R2 Overview 地址。
 
 ![EasyNote Cloudflare D1、R2 与 workers.dev 资源准备](docs/img/cloudflare/cloudflare-resources.svg)
 
-EasyNote 使用专属 D1 和 R2 资源。R2 保持私有，图片和附件统一经 Worker 鉴权访问。部署脚本使用已准备的云资源；自定义域名在部署完成后从 Worker 的 Domains 页面绑定。
+部署脚本会根据 Token 自动发现账号、创建或复用专属 `easynote-db` 和私有 `easynote-images`，并取得 D1 UUID。账号尚无 `workers.dev` 子域名时，脚本询问名称后通过 API 初始化。自定义域名可在部署完成后从 Worker 的 Domains 页面绑定。
 
 ### 2. 创建自定义 API Token
 
@@ -306,11 +305,12 @@ EasyNote 使用专属 D1 和 R2 资源。R2 保持私有，图片和附件统一
 
 | Scope | Permission | Level | 用途 |
 | --- | --- | --- | --- |
+| Account | Account Settings | Read | 自动发现 Token 可访问的账号 |
 | Account | Workers Scripts | Edit | 创建或更新 Worker、静态资源、Cron 和 `INITIAL_OWNER` Secret |
-| Account | D1 | Edit | 校验专用数据库并执行 migrations |
-| Account | Workers R2 Storage | Edit | 校验并绑定专用私有 bucket |
+| Account | D1 | Edit | 检查或创建专用数据库并执行 migrations |
+| Account | Workers R2 Storage | Edit | 检查或创建专用私有 bucket |
 
-在 **Account Resources** 选择 `Include → Specific account → 目标账号`。部署时显式输入 Account ID；以上账号级权限即可覆盖脚本操作。
+在 **Account Resources** 选择 `Include → Specific account → 目标账号`。只有一个可访问账号时脚本自动选择；Token 覆盖多个账号时要求从列表中明确选择。
 
 Cloudflare 新版 Developer Platform 角色界面中，首次创建 Worker 需要 Workers 产品级 **Admin**；Worker 已存在时可缩小为该 Worker 的 **Editor**。D1 与 R2 仍只授予目标产品和资源所需的编辑权限。
 
@@ -324,16 +324,18 @@ Token secret 只显示一次，应存入密码管理器。部署、远程备份�
 bash deploy.sh
 ```
 
-脚本自动准备依赖、检查并构建，然后询问 Account ID、D1 UUID、R2 bucket、Worker 名和执行确认。确认后才隐藏输入 Token，先校验 Token 对 D1/R2 的访问，再执行远程迁移、部署 Worker，并检查 `INITIAL_OWNER`：存在则保留，缺少才交互式初始化。
+脚本自动准备依赖、检查并构建，然后隐藏输入一次 API Token。首次部署时自动发现账号、询问 Worker 名、检查同名资源和 `workers.dev`；确认变更后创建缺少的 D1、私有 R2 bucket 和账号级子域名，再执行 migrations、部署 Worker，并检查 `INITIAL_OWNER`：存在则保留，缺少才交互式初始化。
 
-- 后续部署展示并复用已保存的 Worker、Account、D1、R2；Token 输入位于构建和变更确认之后。
+- 后续部署自动复用已保存的 Worker、Account、D1 和 R2，并校验远端绑定一致。
+- 首次发现同名 D1 或 R2 时，必须明确确认它们专用于当前 EasyNote；已有同名 Worker 不会被接管。
+- R2 bucket 创建后保持私有；发现 `r2.dev` 或 bucket 自定义域名已启用时停止部署。
 - `wrangler.deploy.json` 使用 `0600` 权限保存目标资源标识和公开应用配置。
 - 应用参数在 `wrangler.json` 维护。复用部署时重新从模板生成生产配置，仅继承已保存的账号和资源标识。
 - 更换 Cloudflare 账号或存储资源时，先核对资源归属并完成备份，再更新部署配置。
 - 更新部署会应用 D1 migrations，并保留已有初始账号验证器和账号密码。
-- Token 权限不足或中途失败时，修正原因后使用同一资源继续部署。
+- D1 创建成功后立即保存 UUID；Token 权限不足或后续步骤失败时，修正原因后可复用已创建资源继续部署。
 
-官方参考：[Wrangler API Token 环境变量](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)、[Workers 权限](https://developers.cloudflare.com/workers/authorization/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[D1](https://developers.cloudflare.com/d1/)、[R2](https://developers.cloudflare.com/r2/)。
+官方参考：[Wrangler API Token 环境变量](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)、[Workers 权限](https://developers.cloudflare.com/workers/authorization/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[创建 D1 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/create/)、[创建 R2 bucket API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/create/)、[workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)。
 
 ## 关键行为
 

@@ -5,6 +5,8 @@ cd "$EASYNOTE_ROOT"
 export WRANGLER_LOG_PATH="$EASYNOTE_ROOT/.wrangler/logs/"
 export WRANGLER_REGISTRY_PATH="$EASYNOTE_ROOT/.wrangler/registry"
 export WRANGLER_SEND_METRICS=false
+export XDG_CONFIG_HOME="$EASYNOTE_ROOT/.wrangler/config"
+export XDG_CACHE_HOME="$EASYNOTE_ROOT/.wrangler/cache"
 
 fail() {
   printf 'EasyNote: %s\n' "$*" >&2

@@ -12,7 +12,7 @@
 
 ## 远程授权
 
-所有带 `--remote` 的备份、预检、恢复和密码重置命令都要求交互式终端，并在每次运行时隐藏输入 Cloudflare 自定义 API Token。使用与部署相同的最小权限组合：目标账号范围内的 Workers Scripts (Edit)、D1 (Edit) 和 Workers R2 Storage (Edit)。
+所有带 `--remote` 的备份、预检、恢复和密码重置命令都要求交互式终端，并在每次运行时隐藏输入 Cloudflare 自定义 API Token。目标账号范围内需要 Workers Scripts (Edit)、D1 (Edit) 和 Workers R2 Storage (Edit)；首次自动部署还需要 Account Settings (Read) 以发现目标账号。
 
 脚本在每次远程操作时通过终端隐藏读取 Token，Token 生命周期限定在本次运行。`wrangler.deploy.json` 保存 Account ID、Worker 名以及 D1/R2 资源标识。灾备和部署使用 Cloudflare API Token，EasyNote AI 集成令牌用于 MCP。
 

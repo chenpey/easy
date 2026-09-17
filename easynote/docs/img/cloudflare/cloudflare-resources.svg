@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="920" viewBox="0 0 1500 920" role="img" aria-labelledby="title desc">
-  <title id="title">EasyNote Cloudflare 资源准备示意图</title>
-  <desc id="desc">在同一 Cloudflare 账号中准备 D1 数据库、私有 R2 存储桶和 workers.dev 入口。</desc>
+  <title id="title">EasyNote Cloudflare 资源自动创建示意图</title>
+  <desc id="desc">首次启用 R2 后，部署脚本使用一个 API Token 自动准备 D1、私有 R2 和 workers.dev。</desc>
   <defs>
     <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%">
       <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#18324d" flood-opacity=".12"/>
@@ -11,30 +11,30 @@
     </style>
   </defs>
   <rect width="1500" height="920" fill="#f5f7fb"/>
-  <text x="70" y="72" class="title">EasyNote Cloudflare 资源准备</text>
-  <text x="70" y="112" class="small muted">EasyNote 使用专属 D1 / R2；部署脚本会要求输入 Account ID、D1 UUID 和 R2 bucket 名称。</text>
+  <text x="70" y="72" class="title">EasyNote Cloudflare 资源自动创建</text>
+  <text x="70" y="112" class="small muted">隐藏输入一个部署 Token；脚本自动发现账号并准备专属 D1、私有 R2 和 workers.dev。</text>
 
   <rect x="70" y="155" width="1360" height="198" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="120" cy="211" r="25" fill="#1769e0"/><text x="112" y="220" class="heading white">1</text>
-  <text x="170" y="207" class="heading">创建专用 D1 数据库</text>
-  <text x="170" y="254" class="body mono">Storage &amp; databases → D1 SQL database → Create database</text>
-  <text x="170" y="296" class="body">名称示例：<tspan class="mono">easynote-db</tspan>　创建后复制 Database ID（UUID）。</text>
-  <text x="170" y="330" class="small muted">deploy.sh 会对该数据库执行 migrations 并建立完整表结构。</text>
+  <text x="170" y="207" class="heading">首次启用账号的 R2 subscription</text>
+  <text x="170" y="254" class="body mono">Storage &amp; databases → R2 → Overview → Complete checkout</text>
+  <text x="170" y="296" class="body">这是唯一需要在 Dashboard 完成的账号级一次性步骤。</text>
+  <text x="170" y="330" class="small muted">未启用时 deploy.sh 会停止并显示 R2 Overview 地址。</text>
 
   <rect x="70" y="383" width="1360" height="212" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="120" cy="439" r="25" fill="#f48120"/><text x="112" y="448" class="heading white">2</text>
-  <text x="170" y="435" class="heading">启用 R2 并创建专用私有 bucket</text>
-  <text x="170" y="482" class="body mono">Storage &amp; databases → R2 → Overview → Create bucket</text>
-  <text x="170" y="524" class="body">名称示例：<tspan class="mono">easynote-images</tspan>　存储图片和附件。</text>
-  <text x="170" y="562" class="small orange">R2 保持私有；所有文件经 EasyNote Worker 鉴权读取。</text>
+  <text x="170" y="435" class="heading">自动创建专属 D1 和私有 R2</text>
+  <text x="170" y="482" class="body mono">deploy.sh → Cloudflare API → easynote-db + easynote-images</text>
+  <text x="170" y="524" class="body">脚本自动保存 Account ID 和 D1 UUID，无需手工复制资源标识。</text>
+  <text x="170" y="562" class="small orange">R2 公共入口必须关闭；所有文件经 EasyNote Worker 鉴权读取。</text>
 
   <rect x="70" y="625" width="1360" height="196" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="120" cy="681" r="25" fill="#087f5b"/><text x="112" y="690" class="heading white">3</text>
-  <text x="170" y="677" class="heading">确认 workers.dev 公共入口</text>
-  <text x="170" y="724" class="body mono">Workers &amp; Pages → Overview → Your subdomain</text>
+  <text x="170" y="677" class="heading">自动检查 workers.dev 并部署</text>
+  <text x="170" y="724" class="body">账号尚无子域名时，脚本询问名称后通过 Cloudflare API 初始化。</text>
   <text x="170" y="766" class="body">最终地址：<tspan class="mono">https://&lt;worker-name&gt;.&lt;account-subdomain&gt;.workers.dev</tspan></text>
   <text x="170" y="800" class="small muted">Custom Domain 可在部署成功后从 Worker 的 Domains 页面绑定。</text>
 
   <rect x="70" y="850" width="1360" height="44" rx="10" fill="#eef5ff" stroke="#b9d4ff"/>
-  <text x="98" y="880" class="small blue">资源归属 Token 所选账号；Account ID 可在账号 Overview 复制。</text>
+  <text x="98" y="880" class="small blue">Token 仅在当前进程中使用；资源标识写入权限为 0600 的本地部署配置。</text>
 </svg>
