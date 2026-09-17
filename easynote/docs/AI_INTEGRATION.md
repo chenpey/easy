@@ -11,7 +11,7 @@ MCP 桥接器实时访问 EasyNote API，写入工具复用 PWA 的 revision、o
 
 ## 快速接入
 
-AI 令牌表和版本审计字段属于 `0001_initial.sql` 基线；后续功能使用按序号命名的前向迁移。`bash dev.sh` 和 `bash deploy.sh` 会应用待执行的迁移，生产 D1 和本地 `.wrangler/state` 按持久数据管理。
+`0001_initial.sql` 一次建立账号、AI 令牌、笔记、版本审计、同步和全文索引所需的完整 D1 结构。`bash dev.sh` 和 `bash deploy.sh` 会自动应用该数据库基线。
 
 ### 1. 创建令牌
 

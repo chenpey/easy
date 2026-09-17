@@ -1094,13 +1094,15 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       <AiAccess disabled={disabled || !book.online || !!session.offline} reportError={book.setError} notify={showNotice} />
       <input hidden ref={importInput} type="file" accept=".zip,.md,.markdown,.txt" multiple onChange={(e) => {
         const files = Array.from(e.target.files ?? []);
-        if (files.length) void transferAction(() => importExternalFiles(files, session.config, setTransfer), ({ imported, skipped }) =>
+        if (files.length) void transferAction(() =>
+          importExternalFiles(files, session.config, setTransfer, book.findDuplicates), ({ imported, skipped }) =>
           imported ? `已导入 ${imported} 篇${skipped ? `，跳过 ${skipped} 篇重复笔记` : '笔记'}` : `未导入：${skipped} 篇笔记已存在`);
         e.target.value = '';
       }} />
       <input hidden ref={importFolderInput} type="file" multiple {...{ webkitdirectory: '' }} onChange={(e) => {
         const files = Array.from(e.target.files ?? []);
-        if (files.length) void transferAction(() => importExternalFiles(files, session.config, setTransfer), ({ imported, skipped }) =>
+        if (files.length) void transferAction(() =>
+          importExternalFiles(files, session.config, setTransfer, book.findDuplicates), ({ imported, skipped }) =>
           imported ? `已导入 ${imported} 篇${skipped ? `，跳过 ${skipped} 篇重复笔记` : '笔记'}` : `未导入：${skipped} 篇笔记已存在`);
         e.target.value = '';
       }} />

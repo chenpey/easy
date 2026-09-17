@@ -56,7 +56,7 @@ easynote/
 │   │   └── config.ts         # 交互式本地令牌配置
 │   └── shared/types.ts
 ├── docs/AI_INTEGRATION.md    # 用户与 AI 接入指南
-├── migrations/               # 初始 Schema 与后续前向迁移
+├── migrations/               # 完整 D1 Schema 基线
 ├── scripts/
 │   ├── common.sh             # 环境、锁定依赖、构建与端口检查
 │   ├── setup.mjs             # 强制交互式账号初始化
@@ -83,7 +83,7 @@ cd easynote
 bash dev.sh
 ```
 
-首次启动会自动准备依赖并交互式创建本地管理员，随后构建、应用本地数据库迁移并启动服务。后续运行同一个命令会复用已有账号配置。默认访问 `http://127.0.0.1:8791`，按 `Ctrl+C` 停止。本地数据保存在模拟 D1 / R2 中。
+首次启动会自动准备依赖并交互式创建本地管理员，随后构建、建立本地数据库结构并启动服务。后续运行同一个命令会复用已有账号配置。默认访问 `http://127.0.0.1:8791`，按 `Ctrl+C` 停止。本地数据保存在模拟 D1 / R2 中。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -147,7 +147,7 @@ Service Worker 只预缓存应用外壳，不缓存 `/api`、登录会话、笔�
 
 网页“导出 ZIP”用于迁移当前笔记；“导出草稿”只保护当前浏览器里的未同步内容。真正的灾难恢复使用 `backup.sh`：完整导出 D1 中的账号、笔记、历史、墓碑和令牌状态，再根据该数据库快照下载 R2 对象并逐个验证大小和 SHA-256。派生的全文索引不进入备份，在恢复笔记时自动重建。
 
-`restore.sh --check` 会验证备份清单、数据库、对象、当前迁移版本以及目标 D1/R2 是否为空，不写入数据。正式恢复先上传 R2，再导入 D1；任何非空目标都会被拒绝。详细流程见 [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md)。
+`restore.sh --check` 会验证备份清单、数据库、对象、当前 Schema 基线以及目标 D1/R2 是否为空，不写入数据。正式恢复先上传 R2，再导入 D1；任何非空目标都会被拒绝。详细流程见 [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md)。
 
 ## AI 接入
 
@@ -338,7 +338,7 @@ bash deploy.sh
 
 每次保存提交 `revision`、随机 `operationId` 和 `createVersion`。自动保存使用 `createVersion: false`，只更新 `notes` 当前内容和技术 revision；点击“立即同步”或按 `Cmd/Ctrl+S` 使用 `createVersion: true`，即使自动保存已完成，也会为当前 revision 建立快照。AI 写入由服务端强制建立快照。快照内容与最近历史相同时不重复记录，且纯快照不递增 revision。单独置顶或取消置顶仍递增技术 revision 并参与多端同步，但不会因内容相同生成历史。
 
-恢复旧版本前会先显式快照当前内容，再通过普通更新写入所选版本，因此可以从历史中回到恢复前状态；恢复时保留当前置顶状态。历史列表还会折叠旧数据中连续重复的记录。只有写入成功才能显示“已保存到云端”。
+恢复旧版本前会先显式快照当前内容，再通过普通更新写入所选版本，因此可以从历史中回到恢复前状态；恢复时保留当前置顶状态。只有写入成功才能显示“已保存到云端”。
 
 “全部笔记”只显示未归档内容，并继续将置顶笔记排在前面；归档笔记仅在“归档笔记”视图中出现。置顶和归档是彼此独立的属性。
 
@@ -422,7 +422,7 @@ ZIP v2 包含 `manifest.json`、`notes/*.md` 和所引用的 `files/*`。Markdow
 - 导出范围包括正常和回收站笔记，不包含账号、密码、会话、历史版本、本机草稿或无引用图片。
 - 导出读取每篇笔记当时的内容，不是跨设备写入下的全库事务快照。备份期间建议暂停其他设备编辑。
 - 单次浏览器导入/导出限制为 64 MiB 未压缩内容、1200 个文件，定义在 `src/client/transfer.ts`。
-- EasyNote ZIP 导入先检查清单、尺寸、路径、重复条目、文件 SHA-256 及引用完整性，再按正文全文查重，仅上传非重复笔记实际引用的文件。
+- EasyNote ZIP 导入先检查清单、尺寸、路径、重复条目、文件 SHA-256 及引用完整性，再以内容指纹检查当前草稿、离线镜像和完整列表摘要；本地未命中的指纹由服务端一次批量确认，仅上传非重复笔记实际引用的文件。
 - 外部导入支持 Obsidian Markdown 目录、通用 Markdown/TXT ZIP、单个或多个 `.md` / `.markdown` / `.txt`。可从 YAML frontmatter 提取 `title` 和 `tags`，将 Wiki 链接、Wiki 嵌入和相对 Markdown 笔记链接改写为 EasyNote 稳定链接。
 - 外部导入会按原目录解析 JPEG、PNG、WebP、PDF、Markdown、TXT、CSV 和 JSON 引用并上传；HTTP(S) 外链保持原文，路径逃逸、重复路径、非 UTF-8 正文和超限内容会终止导入。不支持 Obsidian 插件私有数据或 ENEX 等专有格式。
 - 非重复笔记会创建新 ID 并重写文件引用，不覆盖现有内容；正文完全一致或完全空白的笔记会跳过，并在结果中显示数量。
@@ -476,6 +476,7 @@ ZIP v2 包含 `manifest.json`、`notes/*.md` 和所引用的 `files/*`。Markdow
 | `GET /api/sync` | 按单调序号增量同步完整笔记和删除记录 |
 | `GET /api/tasks` | 汇总未完成 TODO 及源码位置 |
 | `GET /api/notes` | 列表、搜索、视图、标签筛选，50 条分页 |
+| `POST /api/notes/duplicates` | 批量查询当前账号已有的笔记内容指纹 |
 | `POST /api/notes/:id` | 创建笔记，revision 必须为 0；`createVersion` 控制是否记录历史 |
 | `GET /api/notes/:id` | 读取完整正文 |
 | `PUT /api/notes/:id` | 按 revision 更新；`createVersion` 控制是否记录历史 |

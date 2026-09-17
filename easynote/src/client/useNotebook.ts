@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { filePath, noteInput, noteLinkIds, sameNoteInput, storedFileIds, type Note, type NoteInput, type NoteSummary, type Session } from '../shared/types';
+import {
+  filePath,
+  noteFingerprint,
+  noteInput,
+  noteLinkIds,
+  sameNoteInput,
+  storedFileIds,
+  type Note,
+  type NoteInput,
+  type NoteSummary,
+  type Session,
+} from '../shared/types';
 import { unfinishedTasks } from '../shared/tasks';
 import { api, ApiError } from './api';
 import { preparePdfExport } from './pdf';
@@ -19,6 +30,11 @@ import {
   syncCursor,
   type Draft,
 } from './drafts';
+
+const blankNote = (note: Pick<Note, 'title' | 'content' | 'tags' | 'archived' | 'deletedAt'>) =>
+  !note.title && !note.content && !note.tags.length && !note.archived && note.deletedAt === null;
+const blankSummary = (note: NoteSummary) =>
+  !note.title && !note.excerpt && !note.tags.length && !note.archived && note.deletedAt === null;
 
 export function useNotebook(session: Session) {
   const userId = session.user!.id;
@@ -55,6 +71,14 @@ export function useNotebook(session: Session) {
     if (alive.current) setError(`本地草稿写入失败，请勿关闭页面。\n${String(e)}`);
     throw e;
   });
+  const discardDraft = async (id: string) => {
+    const timer = pendingTimers.current.get(id);
+    if (timer) clearTimeout(timer);
+    pendingTimers.current.delete(id);
+    drafts.current.delete(id);
+    blocked.current.delete(id);
+    await persist(id, null);
+  };
   const show = useCallback((value: Note | null) => { current.current = value; setNote(value); }, []);
   const notify = () => { if (alive.current) bump((v) => v + 1); };
 
@@ -140,6 +164,20 @@ export function useNotebook(session: Session) {
     const generation = ++listGeneration.current;
     const result = await api.list({ q: query, view, tag, offset: append ? nextOffset ?? 0 : 0 }, signal);
     if (!alive.current || generation !== listGeneration.current) return;
+    const existingBlank = result.notes.find(blankSummary);
+    if (existingBlank) {
+      const redundant = [...drafts.current.values()]
+        .map((draft) => draft.note)
+        .filter((item) => item.revision === 0 && item.id !== existingBlank.id && blankNote(item));
+      if (redundant.length) {
+        const replacement = redundant.some((item) => item.id === current.current?.id)
+          ? mirror.current.get(existingBlank.id) ?? (await api.note(existingBlank.id, signal)).note
+          : null;
+        await Promise.all(redundant.map((item) => discardDraft(item.id)));
+        if (!alive.current || generation !== listGeneration.current) return;
+        if (replacement) show(replacement);
+      }
+    }
     setNotes((prev) => append ? [...prev, ...result.notes.filter((n) => !prev.some((old) => old.id === n.id))] : result.notes);
     setNextOffset(result.nextOffset);
     const data = await api.tags(view, signal);
@@ -267,6 +305,30 @@ export function useNotebook(session: Session) {
     edit({ content: `${latest.content}${latest.content ? '\n\n' : ''}${text}\n` }, latest);
   };
 
+  const findDuplicates = async (fingerprints: string[]): Promise<Map<string, string>> => {
+    const wanted = new Set(fingerprints);
+    const matches = new Map<string, string>();
+    const candidates = new Map<string, Pick<Note, 'id' | 'title' | 'content'>>();
+    for (const item of mirror.current.values()) candidates.set(item.id, item);
+    for (const item of notes) {
+      if (!candidates.has(item.id) && Array.from(item.excerpt).length < 180) {
+        candidates.set(item.id, { id: item.id, title: item.title, content: item.excerpt });
+      }
+    }
+    if (current.current) candidates.set(current.current.id, current.current);
+    for (const draft of drafts.current.values()) candidates.set(draft.note.id, draft.note);
+    await Promise.all([...candidates.values()].map(async (candidate) => {
+      const fingerprint = await noteFingerprint(candidate.title, candidate.content);
+      if (wanted.has(fingerprint) && !matches.has(fingerprint)) matches.set(fingerprint, candidate.id);
+    }));
+    const missing = [...wanted].filter((fingerprint) => !matches.has(fingerprint));
+    if (missing.length) {
+      const remote = await api.duplicates(missing);
+      for (const match of remote.matches) matches.set(match.fingerprint, match.noteId);
+    }
+    return matches;
+  };
+
   const create = (input: Partial<NoteInput> = {}): Promise<Note> => {
     if (createInFlight.current) return createInFlight.current;
     const operation = (async () => {
@@ -276,9 +338,22 @@ export function useNotebook(session: Session) {
         return value;
       };
       if (!Object.keys(input).length) {
-        const local = [current.current, ...[...drafts.current.values()].map((draft) => draft.note)]
-          .find((item): item is Note => !!item && !item.title && !item.content && !item.tags.length &&
-            !item.archived && item.deletedAt === null);
+        const fullNotes = [
+          ...mirror.current.values(),
+          ...(current.current ? [current.current] : []),
+          ...[...drafts.current.values()].map((draft) => draft.note),
+        ];
+        const saved = fullNotes.find((item) => item.revision > 0 && blankNote(item));
+        if (saved) return open(saved);
+        const listed = notes.find(blankSummary);
+        if (listed) {
+          const existing = fullNotes.find((item) => item.id === listed.id) ?? (await api.note(listed.id)).note;
+          const redundant = fullNotes.filter((item) =>
+            item.revision === 0 && item.id !== existing.id && blankNote(item) && drafts.current.has(item.id));
+          await Promise.all(redundant.map((item) => discardDraft(item.id)));
+          return open(existing);
+        }
+        const local = fullNotes.find((item) => item.revision === 0 && blankNote(item));
         if (local) return open(local);
         if (navigator.onLine && !session.offline) {
           const existing = await api.blank();
@@ -615,6 +690,6 @@ export function useNotebook(session: Session) {
     online, offlineLibrary, offlineCount,
     busy: running.current.size > 0, select, create, edit, append, save: () => note ? save(note.id) : Promise.resolve(true),
     retry, conflictCopy, purge, purgeTrash, refresh: () => refreshRef.current(), loadMore: () => refresh(true),
-    configureOffline, cachedFile, backlinks, tasks, searchAll, manageTag, bulkUpdate,
+    configureOffline, cachedFile, backlinks, tasks, searchAll, manageTag, bulkUpdate, findDuplicates,
   };
 }

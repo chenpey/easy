@@ -100,8 +100,8 @@ export const api = {
   tags: (view: string, signal?: AbortSignal) =>
     request<{ tags: string[] }>(`/api/tags?${new URLSearchParams({ view })}`, 'GET', undefined, signal),
   blank: () => request<{ note: Note | null }>('/api/notes/blank'),
-  duplicate: (title: string, content: string) =>
-    request<{ duplicate: boolean; noteId: string | null }>('/api/notes/duplicate', 'POST', { title, content }),
+  duplicates: (fingerprints: string[]) =>
+    request<{ matches: Array<{ fingerprint: string; noteId: string }> }>('/api/notes/duplicates', 'POST', { fingerprints }),
   note: (id: string, signal?: AbortSignal) => request<{ note: Note }>(`/api/notes/${id}`, 'GET', undefined, signal),
   save: (id: string, input: NoteInput, revision: number, operationId: string, createVersion = false) =>
     request<{ note: Note; unchanged?: boolean }>(`/api/notes/${id}`, revision === 0 ? 'POST' : 'PUT', {

@@ -1,5 +1,5 @@
 import { zip, unzip, strToU8, strFromU8 } from 'fflate';
-import { filePath, idPattern, imagePath, storedFileIds, type ClientConfig } from '../shared/types';
+import { filePath, idPattern, imagePath, noteFingerprint, storedFileIds, type ClientConfig } from '../shared/types';
 import { api, uploadAttachment, uploadImage } from './api';
 import { loadCachedFile, loadDrafts } from './drafts';
 
@@ -27,6 +27,7 @@ export interface ImportResult {
   imported: number;
   skipped: number;
 }
+export type DuplicateLookup = (fingerprints: string[]) => Promise<Map<string, string>>;
 const sha = async (bytes: Uint8Array) =>
   [...new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(bytes)))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -35,9 +36,6 @@ function titleFromContent(content: string): string {
   const title = firstLine.replace(/^#{1,6}(?:\s+|$)/, '').replace(/\s+#+$/, '').trim();
   return title.slice(0, 256);
 }
-
-const duplicateKey = (title: string, content: string) =>
-  sha(strToU8(content ? `content\u0000${content}` : `empty\u0000${title.trim()}`));
 
 function noteExportPath(title: string, used: Set<string>): string {
   let base = title.normalize('NFC').trim()
@@ -276,6 +274,7 @@ async function importExternalEntries(
   rawEntries: Array<{ path: string; bytes: Uint8Array }>,
   config: ClientConfig,
   progress: (text: string) => void,
+  findDuplicates: DuplicateLookup,
 ): Promise<ImportResult> {
   if (!rawEntries.length || rawEntries.length > MAX_ENTRIES) throw new Error('请选择包含 Markdown 或 TXT 的目录或 ZIP。');
   let total = 0;
@@ -375,8 +374,12 @@ async function importExternalEntries(
   const fingerprints = new Map<string, string>();
   const unique: typeof prepared = [];
   let skipped = 0;
-  for (const candidate of prepared) {
-    const fingerprint = await duplicateKey(candidate.source.title, candidate.content);
+  const fingerprinted = await Promise.all(prepared.map(async (candidate) => ({
+    candidate,
+    fingerprint: await noteFingerprint(candidate.source.title, candidate.content),
+  })));
+  const existing = await findDuplicates([...new Set(fingerprinted.map(({ fingerprint }) => fingerprint))]);
+  for (const { candidate, fingerprint } of fingerprinted) {
     const incoming = fingerprints.get(fingerprint);
     if (incoming) {
       remapped.set(candidate.source.id, incoming);
@@ -384,9 +387,10 @@ async function importExternalEntries(
       progress(`跳过重复笔记 ${skipped}`);
       continue;
     }
-    const existing = await api.duplicate(candidate.source.title, candidate.content);
-    if (existing.duplicate && existing.noteId) {
-      remapped.set(candidate.source.id, existing.noteId);
+    const existingId = existing.get(fingerprint);
+    if (existingId) {
+      remapped.set(candidate.source.id, existingId);
+      fingerprints.set(fingerprint, existingId);
       skipped++;
       progress(`跳过重复笔记 ${skipped}`);
       continue;
@@ -426,25 +430,32 @@ export async function importExternalFiles(
   selected: File[],
   config: ClientConfig,
   progress: (text: string) => void,
+  findDuplicates: DuplicateLookup,
 ): Promise<ImportResult> {
   if (!selected.length) throw new Error('没有选择导入文件。');
   if (selected.length === 1 && (selected[0].name.toLocaleLowerCase('en-US').endsWith('.zip') ||
       EXTERNAL_NOTE.test(selected[0].name) && selected[0].size === 0)) {
-    return importArchive(selected[0], config, progress);
+    return importArchive(selected[0], config, progress, findDuplicates);
   }
   const entries = await Promise.all(selected.map(async (file) => ({
     path: file.webkitRelativePath || file.name,
     bytes: new Uint8Array(await file.arrayBuffer()),
   })));
-  return importExternalEntries(entries, config, progress);
+  return importExternalEntries(entries, config, progress, findDuplicates);
 }
 
-export async function importArchive(file: File, config: ClientConfig, progress: (text: string) => void): Promise<ImportResult> {
+export async function importArchive(
+  file: File,
+  config: ClientConfig,
+  progress: (text: string) => void,
+  findDuplicates: DuplicateLookup,
+): Promise<ImportResult> {
   if (EXTERNAL_NOTE.test(file.name)) {
     if (file.size > config.maxNoteBytes) throw new Error('笔记大小超过限制。');
     const content = await file.text();
     const title = titleFromContent(content);
-    if ((await api.duplicate(title, content)).duplicate) {
+    const fingerprint = await noteFingerprint(title, content);
+    if ((await findDuplicates([fingerprint])).has(fingerprint)) {
       progress('已跳过重复笔记');
       return { imported: 0, skipped: 1 };
     }
@@ -456,12 +467,22 @@ export async function importArchive(file: File, config: ClientConfig, progress: 
   }
   const files = await unpack(file);
   if (!files['manifest.json']) {
-    return importExternalEntries(Object.entries(files).map(([path, bytes]) => ({ path, bytes })), config, progress);
+    return importExternalEntries(
+      Object.entries(files).map(([path, bytes]) => ({ path, bytes })),
+      config,
+      progress,
+      findDuplicates,
+    );
   }
   if (files['manifest.json'].length > 2 * 1024 **2) throw new Error('EasyNote 备份清单过大。');
   const manifest = JSON.parse(strFromU8(files['manifest.json'])) as Manifest;
   if (manifest.format !== 'easynote') {
-    return importExternalEntries(Object.entries(files).map(([path, bytes]) => ({ path, bytes })), config, progress);
+    return importExternalEntries(
+      Object.entries(files).map(([path, bytes]) => ({ path, bytes })),
+      config,
+      progress,
+      findDuplicates,
+    );
   }
   if (manifest.version !== 2 || !Array.isArray(manifest.notes) || !Array.isArray(manifest.files)) {
     throw new Error('不支持的备份格式。');
@@ -505,9 +526,13 @@ export async function importArchive(file: File, config: ClientConfig, progress: 
   const unique: typeof prepared = [];
   const fingerprints = new Set<string>();
   let skipped = 0;
-  for (const candidate of prepared) {
-    const fingerprint = await duplicateKey(candidate.entry.title, candidate.content);
-    if (fingerprints.has(fingerprint) || (await api.duplicate(candidate.entry.title, candidate.content)).duplicate) {
+  const fingerprinted = await Promise.all(prepared.map(async (candidate) => ({
+    candidate,
+    fingerprint: await noteFingerprint(candidate.entry.title, candidate.content),
+  })));
+  const existing = await findDuplicates([...new Set(fingerprinted.map(({ fingerprint }) => fingerprint))]);
+  for (const { candidate, fingerprint } of fingerprinted) {
+    if (fingerprints.has(fingerprint) || existing.has(fingerprint)) {
       skipped++;
       progress(`跳过重复笔记 ${skipped}`);
       continue;

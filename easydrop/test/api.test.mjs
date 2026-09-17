@@ -781,16 +781,11 @@ test("image previews are authenticated, inline and limited to safe raster types"
   await maintenance({ DB: db, FILES: bucket });
   assert.equal(await bucket.head(`files/${id}/preview`), null);
 
-  const legacyId = crypto.randomUUID();
-  const admin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
-  await db.prepare(
-    `INSERT INTO items(id, owner_user_id, type, name, size, state, created_at)
-     VALUES (?, ?, 'file', 'legacy.webp', 1, 'ready', 1)`,
-  ).bind(legacyId, admin.id).run();
-  await bucket.put(`files/${legacyId}`, Buffer.from([0]));
-  const legacyHistory = await (await request("/api/history", { authenticated: true })).json();
-  assert.equal(legacyHistory.items.find((item) => item.id === legacyId).media_type, "image/webp");
-  assert.equal((await request(`/previews/${legacyId}`, { authenticated: true })).status, 404);
+  const opaque = await uploadFile("opaque.webp", Buffer.from([0]), "application/octet-stream");
+  const opaqueId = (await opaque.json()).id;
+  const opaqueHistory = await (await request("/api/history", { authenticated: true })).json();
+  assert.equal(opaqueHistory.items.find((item) => item.id === opaqueId).media_type, null);
+  assert.equal((await request(`/previews/${opaqueId}`, { authenticated: true })).status, 404);
 });
 
 test("multipart upload persists verified parts, resumes safely and completes once", async () => {

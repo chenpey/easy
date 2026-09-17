@@ -407,7 +407,7 @@ bash deploy.sh
 - 出错立即停止，Cloudflare API 错误包含 HTTP 方法、路径、状态和完整响应正文。修复原因后可复用已创建资源继续部署。
 - 初次上传 Worker 后保持锁定状态，安装 `INITIAL_ADMIN` Secret 后开放服务。
 - 后续部署保留 `INITIAL_ADMIN` Secret，用户创建后以 D1 中的账户和密码验证器为准。
-- `0007_accounts_and_tenants.sql` 按本次全新数据模型重建内容表，并要求执行时 `items` 为空；如果意外存在旧分享数据，迁移会直接失败，不会静默删除。
+- `0001_initial.sql` 一次建立账号、租户内容、会话、幂等操作、分片上传和临时分享所需的完整 D1 结构。
 
 首次安装 Secret 失败时，修复 Token 权限后重新运行 `bash deploy.sh`。R2 保持私有，缓存规则保持所有业务请求经过 Worker。
 
@@ -537,7 +537,7 @@ bash deploy.sh
 | `src/worker.js` | 路由、分享与文件接口、清理任务 |
 | `src/auth.js` | 密码派生、会话、CSRF、限流及配置校验 |
 | `web/` | 登录页、分享页、前端交互和样式 |
-| `migrations/` | D1 表结构迁移 |
+| `migrations/` | 完整 D1 Schema 基线 |
 | `scripts/build.mjs` | 将前端打包到 `dist/` |
 | `scripts/manage.mjs` | 本地初始管理员设置和交互部署 |
 | `scripts/cloudflare.mjs` | Cloudflare API、账号发现、资源检查与创建 |

@@ -470,6 +470,45 @@ test('new note reopens the existing completely blank note', async ({ page }) => 
   expect((await (await page.request.get('/api/notes/blank')).json()).note).toBeNull();
 });
 
+test('a recovered empty local draft merges into the existing cloud blank note', async ({ page }) => {
+  await page.goto('/');
+  await page.route('**/api/notes/*', async (route) => {
+    if (route.request().method() === 'POST') await route.abort();
+    else await route.continue();
+  });
+  await page.getByRole('button', { name: '新建笔记', exact: true }).first().click();
+  await expect(page.getByText('待处理草稿', { exact: true })).toBeVisible();
+  await page.unroute('**/api/notes/*');
+
+  const cloudId = randomUUID();
+  const created = await page.request.post(`${origin}/api/notes/${cloudId}`, {
+    headers,
+    data: {
+      title: '', content: '', tags: [], pinned: false, archived: false,
+      deletedAt: null, revision: 0, operationId: randomUUID(),
+    },
+  });
+  expect(created.status()).toBe(201);
+  await page.reload();
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  expect((await (await page.request.get('/api/notes/blank')).json()).note.id).toBe(cloudId);
+  const draftKeys = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('easynote', 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
+      const request = db.transaction('drafts').objectStore('drafts').getAllKeys();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return keys;
+  });
+  expect(draftKeys).toEqual([]);
+});
+
 test('unsaved local draft survives refresh and syncs only after explicit retry', async ({ page }) => {
   await page.goto('/');
   const title = `草稿恢复-${randomUUID().slice(0, 6)}`;
@@ -578,8 +617,13 @@ test('images render, export includes bytes, and import creates a readable copy',
   const standaloneFile = {
     name: `${randomUUID()}.md`, mimeType: 'text/markdown', buffer: Buffer.from(standaloneContent),
   };
+  let duplicateLookups = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/notes/duplicates') duplicateLookups++;
+  });
   await importInput.setInputFiles(standaloneFile);
   await expect(page.locator('.toast')).toHaveText('已导入 1 篇笔记');
+  expect(duplicateLookups).toBe(1);
   await expect.poll(async () => {
     const notes = await (await page.request.get(`/api/notes?q=${encodeURIComponent(standaloneTitle)}&view=all`)).json();
     return notes.notes.some((note: { title: string }) => note.title === standaloneTitle);
@@ -587,16 +631,19 @@ test('images render, export includes bytes, and import creates a readable copy',
 
   await importInput.setInputFiles(standaloneFile);
   await expect(page.locator('.toast')).toHaveText('未导入：1 篇笔记已存在');
+  expect(duplicateLookups).toBe(1);
   const duplicates = await (await page.request.get(`/api/notes?q=${encodeURIComponent(standaloneTitle)}&view=all`)).json();
   expect(duplicates.notes.filter((note: { title: string }) => note.title === standaloneTitle)).toHaveLength(1);
 
   const emptyFile = { name: 'empty.md', mimeType: 'text/markdown', buffer: Buffer.from('') };
   await importInput.setInputFiles(emptyFile);
   await expect(page.locator('.toast')).toHaveText('已导入 1 篇笔记');
+  expect(duplicateLookups).toBe(2);
   const blank = await (await page.request.get('/api/notes/blank')).json();
   expect(blank.note?.id).toBeTruthy();
   await importInput.setInputFiles(emptyFile);
   await expect(page.locator('.toast')).toHaveText('未导入：1 篇笔记已存在');
+  expect(duplicateLookups).toBe(2);
   expect((await (await page.request.get('/api/notes/blank')).json()).note.id).toBe(blank.note.id);
 });
 

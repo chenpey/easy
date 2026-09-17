@@ -4,14 +4,12 @@ import type { Note, Session, SyncChange } from '../shared/types';
 export interface Draft { note: Note; operationId: string }
 export interface CachedFile { blob: Blob; mime: string; filename: string }
 
-const DATABASE_NAME = 'easynote';
-const DATABASE_VERSION = 2;
-const database = () => openDB(DATABASE_NAME, DATABASE_VERSION, {
+const database = () => openDB('easynote', 1, {
   upgrade(db) {
-    if (!db.objectStoreNames.contains('drafts')) db.createObjectStore('drafts');
-    if (!db.objectStoreNames.contains('notes')) db.createObjectStore('notes');
-    if (!db.objectStoreNames.contains('files')) db.createObjectStore('files');
-    if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
+    db.createObjectStore('drafts');
+    db.createObjectStore('notes');
+    db.createObjectStore('files');
+    db.createObjectStore('meta');
   },
 });
 

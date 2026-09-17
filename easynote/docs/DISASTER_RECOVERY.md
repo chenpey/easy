@@ -36,7 +36,7 @@ bash backup.sh --local
 2. 从该 SQL 快照读取所有状态为 `ready` 的私有文件记录。
 3. 按 `<user_id>/<file_id>` 下载对应 R2 对象。
 4. 对照 D1 中的大小和 SHA-256 逐个校验。
-5. 写入带数据库、迁移和对象校验值的 `manifest.json`。
+5. 写入带数据库、Schema 基线和对象校验值的 `manifest.json`。
 
 备份包含密码验证器、会话哈希和 AI 令牌哈希，目录权限设为仅当前用户可读写。应将备份复制到加密、离线且有独立保留策略的位置。
 
@@ -50,7 +50,7 @@ bash restore.sh /path/to/easynote-backup --remote --check
 
 预检只读执行以下检查：
 
-- 清单、D1 SQL、当前全部迁移和全部 R2 对象哈希一致。
+- 清单、D1 SQL、当前 Schema 基线和全部 R2 对象哈希一致。
 - 目标 D1 尚未初始化，或已有完整但无数据的 EasyNote Schema。
 - 目标 D1 的账号、笔记和文件记录数均为零。
 - 备份将写入的每一个 R2 Key 在目标桶中都不存在。
@@ -63,7 +63,7 @@ bash restore.sh /path/to/easynote-backup --remote --check
 bash restore.sh /path/to/easynote-backup --remote
 ```
 
-输入确认文本后，脚本会在需要时依次应用当前迁移，重新检查目标为空，先恢复 R2 对象，再导入 D1 数据。笔记导入时会自动重建全文索引。中途失败时保留输出用于排查，并对新的空资源重新执行恢复。
+输入确认文本后，脚本会在需要时建立当前数据库结构，重新检查目标为空，先恢复 R2 对象，再导入 D1 数据。笔记导入时会自动重建全文索引。中途失败时保留输出用于排查，并对新的空资源重新执行恢复。
 
 恢复后应立即：
 

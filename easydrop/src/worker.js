@@ -73,10 +73,14 @@ function validateFile(name, size, config) {
   if (size > config.uploadLimit) throw new HttpError(413, `File exceeds ${config.uploadLimit} bytes.`);
 }
 
-function imageMediaType(value, name) {
+function storedImageMediaType(value) {
   const supplied = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (imageTypes.has(supplied)) return supplied;
-  if (supplied) return null;
+  return imageTypes.has(supplied) ? supplied : null;
+}
+
+function uploadImageMediaType(value, name) {
+  const supplied = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (supplied) return storedImageMediaType(supplied);
   const extension = typeof name === "string" ? name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] : null;
   return imageExtensions.get(extension) || null;
 }
@@ -608,7 +612,7 @@ async function initiateMultipart(request, env, config, session) {
   if (data.mediaType !== undefined && (typeof data.mediaType !== "string" || data.mediaType.length > 100)) {
     throw new HttpError(400, "Invalid media type.");
   }
-  const mediaType = imageMediaType(data.mediaType, data.name);
+  const mediaType = uploadImageMediaType(data.mediaType, data.name);
   if (data.chunkSize !== config.uploadChunkBytes || !/^[a-f0-9]{64}$/.test(data.fileFingerprint || "")) {
     throw new HttpError(400, "Upload chunk size or file fingerprint is invalid.");
   }
@@ -903,7 +907,7 @@ async function uploadImagePreview(request, env, id, session) {
     `SELECT name, media_type, state FROM items
      WHERE id = ? AND owner_user_id = ? AND type = 'file' AND state IN ('pending', 'ready')`,
   ).bind(id, session.user_id).first();
-  if (!item || !imageMediaType(item.media_type, item.name)) {
+  if (!item || !storedImageMediaType(item.media_type)) {
     throw new HttpError(404, "Image upload not found.");
   }
   const body = await request.arrayBuffer();
@@ -933,7 +937,7 @@ async function previewImage(request, env, id, session) {
     `SELECT name, media_type FROM items
      WHERE id = ? AND owner_user_id = ? AND type = 'file' AND state = 'ready'`,
   ).bind(id, session.user_id).first();
-  const contentType = item && imageMediaType(item.media_type, item.name);
+  const contentType = item && storedImageMediaType(item.media_type);
   if (!contentType) throw new HttpError(404, "Image preview not found.");
   const object = request.method === "HEAD"
     ? await env.FILES.head(previewObjectKey(id))
@@ -1087,7 +1091,7 @@ async function route(request, env, ctx, responseState) {
     return json({
       items: items.results.slice(0, pageSize).map((item) => ({
         ...item,
-        media_type: item.type === "file" ? imageMediaType(item.media_type, item.name) : null,
+        media_type: item.type === "file" ? storedImageMediaType(item.media_type) : null,
       })),
       nextCursor: items.results.length > pageSize ? items.results[pageSize - 1].seq : null,
       revision: session.revision,

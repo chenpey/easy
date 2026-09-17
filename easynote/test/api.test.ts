@@ -5,6 +5,7 @@ import { createRuntime, testCsrf, testToken, testUserId, testPassword } from './
 import { digest } from '../src/worker/core';
 import { cleanup } from '../src/worker/images';
 import { passwordVerifier } from '../src/worker/auth';
+import { noteFingerprint } from '../src/shared/types';
 
 let instance: Awaited<ReturnType<typeof createRuntime>>;
 const origin = 'https://easynote.example.test';
@@ -262,20 +263,32 @@ test('only one completely blank active note can exist', async () => {
   assert.notEqual(next.id, first.id);
 });
 
-test('import duplicate checks use exact content and deduplicate blank notes', async () => {
-  await create({ title: '原始标题', content: '完全相同的正文', tags: [] });
-  const duplicate = await request('/api/notes/duplicate', 'POST', { title: '另一个标题', content: '完全相同的正文' });
+test('batch duplicate lookup follows content fingerprints and tracks updates', async () => {
+  const marker = randomUUID();
+  const note = await create({ title: '原始标题', content: marker, tags: [] });
+  const empty = await create({ title: `空正文-${marker}`, content: '', tags: [] });
+  const contentFingerprint = await noteFingerprint('另一个标题', marker);
+  const emptyFingerprint = await noteFingerprint(empty.title, '');
+  const missingFingerprint = await noteFingerprint('原始标题', '不同正文');
+  const duplicate = await request('/api/notes/duplicates', 'POST', {
+    fingerprints: [contentFingerprint, emptyFingerprint, missingFingerprint, contentFingerprint],
+  });
   assert.equal(duplicate.status, 200);
-  const duplicateBody = await duplicate.json() as any;
-  assert.equal(duplicateBody.duplicate, true);
-  assert.match(duplicateBody.noteId, /^[0-9a-f-]{36}$/);
-  assert.equal((await (await request('/api/notes/duplicate', 'POST', {
-    title: '原始标题', content: '不同正文',
-  })).json() as any).duplicate, false);
-  assert.equal((await (await request('/api/notes/duplicate', 'POST', {
-    title: '', content: '',
-  })).json() as any).duplicate, true);
-  assert.equal((await request('/api/notes/duplicate', 'POST', { title: '', content: 42 })).status, 400);
+  const matches = new Map((await duplicate.json() as any).matches
+    .map((match: any) => [match.fingerprint, match.noteId]));
+  assert.equal(matches.get(contentFingerprint), note.id);
+  assert.equal(matches.get(emptyFingerprint), empty.id);
+  assert.equal(matches.has(missingFingerprint), false);
+
+  const updatedContent = `${marker}-updated`;
+  assert.equal((await save(note.id, note.revision, { content: updatedContent })).status, 200);
+  const updatedFingerprint = await noteFingerprint(note.title, updatedContent);
+  const afterUpdate = await (await request('/api/notes/duplicates', 'POST', {
+    fingerprints: [contentFingerprint, updatedFingerprint],
+  })).json() as any;
+  assert.deepEqual(afterUpdate.matches, [{ fingerprint: updatedFingerprint, noteId: note.id }]);
+  assert.equal((await request('/api/notes/duplicates', 'POST', { fingerprints: ['invalid'] })).status, 400);
+  assert.deepEqual(await (await request('/api/notes/duplicates', 'POST', { fingerprints: [] })).json(), { matches: [] });
 });
 
 test('unchanged saves do not create revisions, including reordered tags', async () => {
@@ -297,16 +310,6 @@ test('unchanged saves do not create revisions, including reordered tags', async 
   assert.equal((await unpinned.json() as any).note.revision, 3);
   const afterUnpin = await (await request(`/api/notes/${note.id}/versions`)).json() as any;
   assert.deepEqual(afterUnpin.versions.map((version: any) => version.revision), [1]);
-});
-
-test('history collapses consecutive revisions that differ only by pin state', async () => {
-  const note = await create({ content: 'legacy duplicate' });
-  await instance.db.prepare(`INSERT INTO note_versions
-    (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived)
-    SELECT note_id, 2, title, content, tags, CASE pinned WHEN 1 THEN 0 ELSE 1 END, deleted_at, saved_at + 1, archived
-    FROM note_versions WHERE note_id=? AND revision=1`).bind(note.id).run();
-  const data = await (await request(`/api/notes/${note.id}/versions`)).json() as any;
-  assert.deepEqual(data.versions.map((version: any) => version.revision), [2]);
 });
 
 test('two devices cannot silently overwrite the same revision', async () => {
@@ -424,6 +427,10 @@ test('another account cannot read, edit or reference private notes and images', 
   const headers = { Cookie: `__Host-easynote=${otherToken}` };
   assert.equal((await request(`/api/notes/${note.id}`, 'GET', undefined, headers)).status, 404);
   assert.equal((await request(`/api/notes/${note.id}`, 'PUT', { ...base, revision: 1, operationId: randomUUID() }, headers)).status, 410);
+  const duplicateLookup = await request('/api/notes/duplicates', 'POST', {
+    fingerprints: [await noteFingerprint(note.title, note.content)],
+  }, headers);
+  assert.deepEqual(await duplicateLookup.json(), { matches: [] });
   const imageId = randomUUID();
   await instance.db.prepare("INSERT INTO images VALUES(?,?,?,?,?,?,?,?,?,?,?)")
     .bind(imageId, testUserId, 'owned.png', 'image/png', 1, 1, 1, '0'.repeat(64), 'ready', Date.now(), Date.now()).run();

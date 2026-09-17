@@ -1,11 +1,23 @@
-import { idPattern, noteInput, sameNoteInput, sameVersionedInput, storedFileIds, type Note, type NoteInput, type SyncChange, type Version } from '../shared/types';
+import {
+  fingerprintPattern,
+  idPattern,
+  noteFingerprint,
+  noteInput,
+  sameNoteInput,
+  sameVersionedInput,
+  storedFileIds,
+  type Note,
+  type NoteInput,
+  type SyncChange,
+  type Version,
+} from '../shared/types';
 import { ApiError, clientConfig, digest, json, numberSetting, readJson, type Env } from './core';
 import type { Identity } from './auth';
 
 export interface NoteRow {
   id: string; user_id: string; title: string; content: string; tags: string; pinned: number; archived: number;
   deleted_at: number | null; created_at: number; updated_at: number; revision: number;
-  mutation_id: string; mutation_hash: string;
+  dedup_hash: string; mutation_id: string; mutation_hash: string;
 }
 interface VersionInputRow {
   title: string; content: string; tags: string; pinned: number; archived: number; deleted_at: number | null;
@@ -29,13 +41,6 @@ const blankCondition = "title='' AND content='' AND tags='[]' AND archived=0 AND
 async function loadBlank(env: Env, userId: string): Promise<NoteRow | null> {
   return env.DB.prepare(`SELECT * FROM notes WHERE user_id=? AND ${blankCondition} LIMIT 1`)
     .bind(userId).first<NoteRow>();
-}
-
-async function duplicateNoteId(env: Env, userId: string, title: string, content: string): Promise<string | null> {
-  const query = content
-    ? env.DB.prepare('SELECT id FROM notes WHERE user_id=? AND content=? LIMIT 1').bind(userId, content)
-    : env.DB.prepare("SELECT id FROM notes WHERE user_id=? AND title=? AND content='' LIMIT 1").bind(userId, title);
-  return (await query.first<{ id: string }>())?.id ?? null;
 }
 
 function isBlank(input: NoteInput): boolean {
@@ -70,6 +75,7 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
     throw new ApiError(400, 'Invalid revision or operation ID.');
   }
   const createVersion = user.actorType === 'ai' || data.createVersion === true;
+  const dedupHash = await noteFingerprint(input.title, input.content);
   const hash = await digest(JSON.stringify({ ...input, revision: data.revision, createVersion }));
   const current = await loadNote(env, user.id, id);
   if (current?.mutation_id === data.operationId) {
@@ -131,20 +137,20 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   const revision = Number(data.revision) + 1;
   const mutation = data.operationId;
   const fields = [
-    input.title, input.content, JSON.stringify(input.tags),
+    input.title, input.content, dedupHash, JSON.stringify(input.tags),
     input.pinned ? 1 : 0, input.archived ? 1 : 0, input.deletedAt,
   ];
   const statements: D1PreparedStatement[] = [];
   if (create) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO notes
-      (id,user_id,title,content,tags,pinned,archived,deleted_at,created_at,updated_at,revision,mutation_id,mutation_hash)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?
+      (id,user_id,title,content,dedup_hash,tags,pinned,archived,deleted_at,created_at,updated_at,revision,mutation_id,mutation_hash)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?
       WHERE ${readyCondition}
         AND NOT EXISTS(SELECT 1 FROM purged_notes WHERE id=?)
         AND (SELECT COUNT(*) FROM notes WHERE user_id=?)<?`)
       .bind(id, user.id, ...fields, time, time, revision, mutation, hash, ...readyBinds, id, user.id, numberSetting(env, 'MAX_NOTES', 1, 10000)));
   } else {
-    statements.push(env.DB.prepare(`UPDATE notes SET title=?,content=?,tags=?,pinned=?,archived=?,deleted_at=?,
+    statements.push(env.DB.prepare(`UPDATE notes SET title=?,content=?,dedup_hash=?,tags=?,pinned=?,archived=?,deleted_at=?,
       updated_at=?,revision=?,mutation_id=?,mutation_hash=?
       WHERE id=? AND user_id=? AND revision=? AND ${readyCondition}`)
       .bind(...fields, time, revision, mutation, hash, id, user.id, data.revision, ...readyBinds));
@@ -253,14 +259,28 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
       WHERE user_id=? AND ${scope} ORDER BY value LIMIT 200`).bind(user.id).all<{ name: string }>();
     return json({ tags: result.results.map((row) => row.name) });
   }
-  if (path === '/api/notes/duplicate' && request.method === 'POST') {
-    const data = await readJson(request, clientConfig(env).maxNoteBytes * 6 + 1024);
-    if (typeof data.title !== 'string' || data.title.length > 256 || typeof data.content !== 'string' ||
-        new TextEncoder().encode(data.content).length > clientConfig(env).maxNoteBytes) {
-      throw new ApiError(400, 'Invalid note title or content.');
+  if (path === '/api/notes/duplicates' && request.method === 'POST') {
+    const data = await readJson(request, 96 * 1024);
+    if (Object.keys(data).some((key) => key !== 'fingerprints') || !Array.isArray(data.fingerprints) ||
+        data.fingerprints.length > 1200 ||
+        data.fingerprints.some((fingerprint) => typeof fingerprint !== 'string' || !fingerprintPattern.test(fingerprint))) {
+      throw new ApiError(400, 'Invalid note fingerprints.');
     }
-    const noteId = await duplicateNoteId(env, user.id, data.title.trim(), data.content);
-    return json({ duplicate: noteId !== null, noteId });
+    const fingerprints = [...new Set(data.fingerprints as string[])];
+    const statements: D1PreparedStatement[] = [];
+    for (let offset = 0; offset < fingerprints.length; offset += 80) {
+      const chunk = fingerprints.slice(offset, offset + 80);
+      statements.push(env.DB.prepare(`SELECT dedup_hash AS fingerprint,MIN(id) AS note_id FROM notes
+        WHERE user_id=? AND dedup_hash IN (${chunk.map(() => '?').join(',')}) GROUP BY dedup_hash`)
+        .bind(user.id, ...chunk));
+    }
+    const results = statements.length
+      ? await env.DB.batch<{ fingerprint: string; note_id: string }>(statements)
+      : [];
+    return json({
+      matches: results.flatMap((result) =>
+        result.results.map((row) => ({ fingerprint: row.fingerprint, noteId: row.note_id }))),
+    });
   }
   if (path === '/api/notes/trash' && request.method === 'DELETE') {
     const time = Date.now();
@@ -307,10 +327,7 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
       archived: !!row.archived, deletedAt: row.deleted_at, revision: row.revision, savedAt: row.saved_at,
       actorType: row.actor_type, actorName: row.actor_name,
     }));
-    return json({
-      versions: versions.filter((version, index) =>
-        index === 0 || !sameVersionedInput(version, versions[index - 1])),
-    });
+    return json({ versions });
   }
   if (match[2]) return null;
   if (request.method === 'GET') {

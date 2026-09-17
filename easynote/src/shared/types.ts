@@ -130,6 +130,13 @@ export function sameNoteInput(left: NoteInput, right: NoteInput): boolean {
 export const imagePath = (id: string) => `/api/images/${id}`;
 export const filePath = (id: string) => `/api/files/${id}`;
 export const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export const fingerprintPattern = /^[a-f0-9]{64}$/;
+
+export async function noteFingerprint(title: string, content: string): Promise<string> {
+  const source = content ? `content\u0000${content}` : `empty\u0000${title.trim()}`;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 export function storedFileIds(content: string): string[] {
   return [...new Set([...content.matchAll(/\/api\/(?:images|files)\/([0-9a-f-]{36})(?![0-9a-f-])/gi)]
