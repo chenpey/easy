@@ -11,6 +11,7 @@ import {
   type Note,
   type NoteInput,
 } from '../shared/types.js';
+import { EASYNOTE_VERSION } from '../shared/version.js';
 import { EasyNoteClient } from './client.js';
 import { configPathFromArgs, loadConfig, setupConfig } from './config.js';
 
@@ -150,7 +151,7 @@ function resourceMarkdown(note: Note): string {
 
 async function createMcpServer(client: EasyNoteClient): Promise<McpServer> {
   const status = await client.status();
-  const server = new McpServer({ name: 'easynote-mcp-server', version: '0.1.0' });
+  const server = new McpServer({ name: 'easynote-mcp-server', version: EASYNOTE_VERSION });
 
   server.registerTool('easynote_search_notes', {
     title: 'Search EasyNote Notes',

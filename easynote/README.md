@@ -1,5 +1,7 @@
 # EasyNote
 
+当前版本：`0.1.1`
+
 一个面向个人或小团队的自托管 Markdown 笔记应用。React + TypeScript 前端，pdfmake 生成 PDF、PDF.js 分页预览，Cloudflare Worker API，D1 保存账号与笔记，私有 R2 保存图片与附件。
 
 ## 已实现
@@ -102,6 +104,19 @@ bash dev.sh
 | `bash restore.sh <目录> --remote` | 恢复至空的 D1/R2 资源 |
 | `npm run ai:setup` | 交互式配置 MCP 地址和令牌 |
 | `npm run ai:mcp` | 启动本地 MCP stdio 服务 |
+
+### 版本更新
+
+版本统一维护在仓库根目录 [`versions.json`](../versions.json)。每次 EasyNote 功能更新准备提交时，在仓库根目录执行：
+
+```bash
+node scripts/version.mjs bump easynote patch
+node scripts/version.mjs check
+git add .
+git commit -m "发布：EasyNote v0.1.2"
+```
+
+`minor` 用于新增功能，`major` 用于不兼容变更。脚本会同步本 README、根 README、`package.json`、锁文件和应用显示版本。
 
 ### 凭据与授权边界
 

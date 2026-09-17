@@ -1,6 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { readFileSync } from 'node:fs';
+
+const versions = JSON.parse(readFileSync(new URL('../versions.json', import.meta.url), 'utf8')) as {
+  easynote: string;
+};
 
 export default defineConfig({
   plugins: [
@@ -54,6 +59,9 @@ export default defineConfig({
       },
     }),
   ],
+  define: {
+    __EASYNOTE_VERSION__: JSON.stringify(versions.easynote),
+  },
   server: {
     proxy: {
       '/api': {

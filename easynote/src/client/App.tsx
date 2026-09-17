@@ -27,7 +27,7 @@ interface InstallPromptEvent extends Event {
 }
 
 function IconButton({ label, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
-  return <button className="icon-button" title={label} aria-label={label} {...props}>{children}</button>;
+  return <button className="icon-button" data-tooltip={label} aria-label={label} {...props}>{children}</button>;
 }
 
 function BrandIcon({ size }: { size: number }) {
@@ -983,7 +983,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         {book.nextOffset !== null && <button className="load-more" onClick={() => void run(book.loadMore)}>加载更多<ChevronDown size={14} /></button>}
       </div>
       <footer className="list-footer">{book.notes.length} 篇{book.nextOffset !== null ? '+' : ''}
-        <span>{book.online && !session.offline ? 'EasyNote 0.1' : <><WifiOff size={11} />离线</>}</span>
+        <span>{book.online && !session.offline ? `EasyNote ${__EASYNOTE_VERSION__}` : <><WifiOff size={11} />离线</>}</span>
       </footer>
     </section>
     <div

@@ -2,6 +2,15 @@
 
 Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专属依赖、配置、数据存储和使用文档，Cloudflare D1/R2 资源与本地运行产物也分别管理。
 
+## 版本
+
+<!-- versions:start -->
+| 项目 | 当前版本 |
+| --- | --- |
+| [EasyDrop](easydrop/) | `1.0.0` |
+| [EasyNote](easynote/) | `0.1.1` |
+<!-- versions:end -->
+
 ## 项目目录
 
 ### [EasyDrop](easydrop/)
@@ -40,6 +49,18 @@ Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专
 - EasyNews 需要 Python 3.12 和 uv，使用 `uv sync --locked` 创建并使用项目专属环境。
 
 具体启动、测试、部署、配置和安全边界以各项目 README 为准。
+
+## 版本管理
+
+版本源文件是 [`versions.json`](versions.json)，不要直接修改两个项目的 `package.json` 或 README 版本行。准备提交功能更新时，在仓库根目录执行：
+
+```bash
+node scripts/version.mjs bump easynote patch
+# 或：node scripts/version.mjs bump easydrop minor
+node scripts/version.mjs check
+```
+
+脚本会同步项目的 `package.json`、锁文件、运行时版本、README 和根目录版本表。`patch` 适合兼容性修复，`minor` 适合新增功能，`major` 适合不兼容变更。随后使用带版本号的提交信息，例如 `发布：EasyNote v0.1.2`。
 
 ## 清空重建
 

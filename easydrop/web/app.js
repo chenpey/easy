@@ -2,9 +2,11 @@ import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, 
 import QRCode from "qrcode";
 
 const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound };
+const APP_VERSION = __EASYDROP_VERSION__;
 const renderIcons = () => createIcons({ icons });
 const $ = (id) => document.getElementById(id);
 const isLogin = document.body.dataset.page === "login";
+if ($("app-version")) $("app-version").textContent = `v${APP_VERSION}`;
 let session;
 let nextCursor = null;
 let currentRevision = -1;

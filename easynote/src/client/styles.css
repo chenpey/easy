@@ -104,6 +104,7 @@ h1, h2, h3, p { margin-top: 0; }
 .icon-button.danger-icon { color: var(--danger); }
 .icon-button.danger-icon:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--paper)); }
 .icon-button {
+  position: relative;
   height: 32px;
   width: 32px;
   padding: 0;
@@ -113,6 +114,33 @@ h1, h2, h3, p { margin-top: 0; }
   color: var(--muted);
 }
 .icon-button:hover { color: var(--accent); background: var(--hover); border-color: transparent; }
+.icon-button[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 7px);
+  left: 50%;
+  width: max-content;
+  max-width: 240px;
+  padding: 5px 8px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 3px 10px #00000024;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -2px);
+  transition: opacity .1s ease, transform .1s ease;
+}
+.icon-button[data-tooltip]:hover::after,
+.icon-button[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
 @media (prefers-reduced-motion: no-preference) {
   .spin { animation: spin .8s linear infinite; }
 }
