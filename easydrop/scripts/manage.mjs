@@ -43,6 +43,18 @@ function ask(prompt, secret = false) {
   });
 }
 
+async function askExactConfirmation(phrase, action) {
+  while (true) {
+    process.stdout.write(`\nTo continue, type exactly:\n  \x1b[1m${phrase}\x1b[22m\n`);
+    const answer = await ask('Confirmation: ');
+    if (answer === phrase) return;
+    if (answer.toLowerCase() === 'cancel') {
+      throw new Error('Cancelled.');
+    }
+    console.error(`Confirmation did not match. Type exactly "${phrase}" to ${action}. Try again.`);
+  }
+}
+
 async function askInitialAdmin() {
   let username;
   while (!username) {
@@ -161,9 +173,7 @@ async function main() {
     administrator: initialAdmin ? "initialize" : "preserve existing users and sessions",
   };
   console.log(JSON.stringify(summary, null, 2));
-  if (await ask(`Type ${name} to create/update resources and apply pending D1 migrations: `) !== name) {
-    throw new Error("Cancelled.");
-  }
+  await askExactConfirmation(name, "create/update resources and apply pending D1 migrations");
   await withProgress("Building static assets", () => import("./build.mjs"));
   await withProgress("Preparing D1 and R2 resources",
     () => provisionDeployment(api, config, inspection, saveConfig));

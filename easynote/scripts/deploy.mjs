@@ -42,6 +42,18 @@ function ask(prompt, secret = false) {
   });
 }
 
+async function askExactConfirmation(phrase, action) {
+  while (true) {
+    process.stdout.write(`\nTo continue, type exactly:\n  \x1b[1m${phrase}\x1b[22m\n`);
+    const answer = await ask('Confirmation: ');
+    if (answer === phrase) return;
+    if (answer.toLowerCase() === 'cancel') {
+      throw new Error('Deployment cancelled.');
+    }
+    console.error(`Confirmation did not match. Type exactly "${phrase}" to ${action}. Try again.`);
+  }
+}
+
 async function loadConfig(path) {
   try {
     return JSON.parse(await readFile(path, 'utf8'));
@@ -205,9 +217,7 @@ async function main() {
     url,
   }, null, 2));
 
-  if (await ask('Type deploy easynote to create/update resources and apply migrations: ') !== 'deploy easynote') {
-    throw new Error('Deployment cancelled.');
-  }
+  await askExactConfirmation('deploy easynote', 'create/update resources and apply migrations');
 
   const deployedUrl = await withProgress(
     'Preparing Cloudflare D1, R2 and public entrypoint',
@@ -222,7 +232,9 @@ async function main() {
     'Uploading the Worker',
     () => runWrangler(['deploy', '--config', 'wrangler.deploy.json'], token, accountId),
   );
-  await withProgress('Checking the initial owner', () => runSetup(token, accountId));
+  console.log('\nChecking the initial owner...');
+  await runSetup(token, accountId);
+  console.log('Initial owner check complete.');
   await withProgress('Verifying public DNS and HTTPS access', () => verifyDeploymentAccess(deployedUrl));
   console.log(`\nDeployment complete: ${deployedUrl}`);
   console.log('The Cloudflare API Token and owner password were not saved.');

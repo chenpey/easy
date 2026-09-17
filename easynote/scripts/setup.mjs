@@ -86,11 +86,29 @@ async function main() {
   }
   try {
     console.log('Initialize the owner account. This does NOT reset passwords for existing database accounts.');
-    const username = (await ask('Owner username (3-32 lowercase letters, digits, . _ -): ')).toLowerCase();
-    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error('Invalid username.');
-    const password = await ask('Owner password (12-128 characters, hidden): ', true);
-    if (password.length < 12 || password.length > 128) throw new Error('Password must be 12-128 characters.');
-    if (password !== await ask('Confirm password (hidden): ', true)) throw new Error('Passwords do not match.');
+    let username;
+    while (!username) {
+      const candidate = (await ask('Owner username (3-32 lowercase letters, digits, . _ -): ')).toLowerCase();
+      if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(candidate)) {
+        console.error('Invalid username. Try again.');
+        continue;
+      }
+      username = candidate;
+    }
+
+    let password;
+    while (!password) {
+      const candidate = await ask('Owner password (12-128 characters, hidden): ', true);
+      if (candidate.length < 12 || candidate.length > 128) {
+        console.error('Password must be 12-128 characters. Try again.');
+        continue;
+      }
+      if (candidate !== await ask('Confirm password (hidden): ', true)) {
+        console.error('Passwords do not match. Try again.');
+        continue;
+      }
+      password = candidate;
+    }
     const salt = randomBytes(32).toString('hex');
     const key = pbkdf2Sync(password, Buffer.from(salt, 'hex'), 100000, 32, 'sha256');
     const proof = createHmac('sha256', key).update('easynote/password/v1').digest('hex');

@@ -357,6 +357,25 @@ test('interactive setup hides the password, stores only a verifier and preserves
   assert.equal(await readFile(`${f.root}/.dev.vars`, 'utf8'), content);
 });
 
+test('interactive setup keeps prompting after invalid username, password and confirmation', async () => {
+  const f = await fixture({ configured: false });
+  await dependencies(f);
+  const result = await terminal(f, 'setup.sh', [], [
+    ['Owner username (3-32 lowercase letters, digits, . _ -): ', 'bad!'],
+    ['Owner username (3-32 lowercase letters, digits, . _ -): ', 'test-owner'],
+    ['Owner password (12-128 characters, hidden): ', 'short'],
+    ['Owner password (12-128 characters, hidden): ', secret],
+    ['Confirm password (hidden): ', 'different-password'],
+    ['Owner password (12-128 characters, hidden): ', secret],
+    ['Confirm password (hidden): ', secret],
+  ]);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /Invalid username/);
+  assert.match(result.output, /Password must be 12-128 characters/);
+  assert.match(result.output, /Passwords do not match/);
+  assert.ok(!result.output.includes(secret));
+});
+
 test('first local startup initializes an account and then launches without a second command', async () => {
   const f = await fixture({ configured: false });
   await dependencies(f);
@@ -372,7 +391,7 @@ test('deployment cancellation performs only read checks and does not write a new
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
     ['Worker name [easynote]: ', 'easynote-test'],
     ['Custom domain (blank for workers.dev): ', ''],
-    ['Type deploy easynote to create/update resources and apply migrations: ', 'cancel'],
+    ['Confirmation: ', 'cancel'],
   ]);
   assert.match(result.output, /Deployment cancelled/);
   assert.equal((await calls(f)).filter((c) => c.tool === 'wrangler').length, 0);
@@ -391,9 +410,11 @@ test('deployment reuses resource IDs, refreshes template settings and preserves 
   const result = await terminal(f, 'deploy.sh', [], [
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
     ['Custom domain [workers.dev] (Enter keeps it; type a hostname or workers.dev): ', ''],
-    ['Type deploy easynote to create/update resources and apply migrations: ', 'deploy easynote'],
+    ['Confirmation: ', 'easynote'],
+    ['Confirmation: ', 'deploy easynote'],
   ], { FAKE_REMOTE_WORKER: '1', FAKE_EXISTING_RESOURCES: '1' });
   assert.match(result.output, /Remote owner verifier already exists/);
+  assert.match(result.output, /Confirmation did not match/);
   assert.match(result.output, /Deployment complete/);
   assert.ok(!result.output.includes('Owner password'));
   const saved = JSON.parse(await readFile(`${f.root}/wrangler.deploy.json`, 'utf8'));
@@ -419,7 +440,7 @@ test('new deployments create D1 and private R2 before initializing a missing own
     ['Worker name [easynote]: ', 'easynote-test'],
     ['Custom domain (blank for workers.dev): ', ''],
     ['workers.dev account subdomain [easynote-test]: ', 'personal-notes'],
-    ['Type deploy easynote to create/update resources and apply migrations: ', 'deploy easynote'],
+    ['Confirmation: ', 'deploy easynote'],
     ...setupSteps,
   ], { FAKE_SECRETS: '[]', FAKE_NO_SUBDOMAIN: '1' });
   assert.match(result.output, /Owner verifier installed/);
@@ -448,7 +469,7 @@ test('new deployments bind a custom domain and verify its public DNS and HTTPS a
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
     ['Worker name [easynote]: ', 'easynote-test'],
     ['Custom domain (blank for workers.dev): ', 'share.example.test'],
-    ['Type deploy easynote to create/update resources and apply migrations: ', 'deploy easynote'],
+    ['Confirmation: ', 'deploy easynote'],
     ...setupSteps,
   ]);
   assert.match(result.output, /https:\/\/share\.example\.test/);
