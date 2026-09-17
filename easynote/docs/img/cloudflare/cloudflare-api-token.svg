@@ -31,8 +31,8 @@
     <text x="170" y="564">Account</text><text x="410" y="564">D1</text><text x="970" y="564" class="orange">Edit</text><text x="1120" y="564" class="green">校验数据库 / 迁移</text>
     <text x="170" y="616">Account</text><text x="410" y="616">Workers R2 Storage</text><text x="970" y="616" class="orange">Edit</text><text x="1120" y="616" class="green">校验并绑定私有桶</text>
   </g>
-  <text x="150" y="681" class="small muted">新权限界面若使用角色名称：首次创建 Worker 选择 Workers 产品级 Admin；已有 Worker 后可缩小为该 Worker 的 Editor。</text>
-  <text x="150" y="710" class="small muted">EasyNote 部署脚本管理 Worker；Custom Domain 可在部署完成后从 Worker Domains 页面绑定。</text>
+  <text x="150" y="681" class="small muted">新权限界面：首次创建 Worker 使用 Workers 产品级 Admin。</text>
+  <text x="150" y="710" class="small muted">已有 Worker 可使用该 Worker 的 Editor；Custom Domain 在 Worker Domains 页面绑定。</text>
 
   <rect x="70" y="757" width="1460" height="202" rx="18" fill="#fff" filter="url(#shadow)"/>
   <circle cx="115" cy="811" r="24" fill="#f48120"/><text x="107" y="820" class="heading white">3</text>
@@ -42,6 +42,6 @@
   <text x="162" y="936" class="small muted">D1 与 R2 归属同一目标账号，并作为 EasyNote 专属资源。</text>
 
   <rect x="70" y="987" width="1460" height="64" rx="14" fill="#f0faf6" stroke="#9bd3be"/>
-  <text x="105" y="1017" class="body green" font-weight="700">部署时粘贴到终端隐藏输入；脚本只传给本次 Wrangler 子进程。</text>
-  <text x="105" y="1043" class="tiny muted">不会保存到仓库、wrangler.deploy.json、环境配置或 Shell 命令参数。</text>
+  <text x="105" y="1017" class="body green" font-weight="700">部署时通过终端隐藏输入，Token 生命周期限定在本次运行。</text>
+  <text x="105" y="1043" class="tiny muted">wrangler.deploy.json 仅保存 Account ID、Worker 名和 D1 / R2 资源标识。</text>
 </svg>

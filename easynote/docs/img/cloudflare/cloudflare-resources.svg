@@ -11,7 +11,7 @@
     </style>
   </defs>
   <rect width="1500" height="920" fill="#f5f7fb"/>
-  <text x="70" y="72" class="title">EasyNote 部署前：在同一个 Cloudflare 账号准备 3 项</text>
+  <text x="70" y="72" class="title">EasyNote Cloudflare 资源准备</text>
   <text x="70" y="112" class="small muted">EasyNote 使用专属 D1 / R2；部署脚本会要求输入 Account ID、D1 UUID 和 R2 bucket 名称。</text>
 
   <rect x="70" y="155" width="1360" height="198" rx="18" fill="#fff" filter="url(#shadow)"/>
@@ -36,5 +36,5 @@
   <text x="170" y="800" class="small muted">Custom Domain 可在部署成功后从 Worker 的 Domains 页面绑定。</text>
 
   <rect x="70" y="850" width="1360" height="44" rx="10" fill="#eef5ff" stroke="#b9d4ff"/>
-  <text x="98" y="880" class="small blue">以上资源归属 Token 的 Account Resources 所选账号；Account ID 可在账号 Overview 复制。</text>
+  <text x="98" y="880" class="small blue">资源归属 Token 所选账号；Account ID 可在账号 Overview 复制。</text>
 </svg>
