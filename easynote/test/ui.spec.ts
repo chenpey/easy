@@ -151,6 +151,20 @@ test('task center opens the source note at the unfinished task', async ({ page }
   await expect.poll(() => editor.locator('.cm-line').allTextContents()).toContain('定位：- [ ] 精准定位');
 });
 
+test('mobile note list exposes the task center and opens a task source', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const title = `移动任务-${randomUUID().slice(0, 6)}`;
+  await page.goto('/');
+  await newNote(page, title, '开头\n\n- [ ] 移动端待办\n\n结尾');
+  await page.getByRole('button', { name: '返回笔记列表' }).click();
+  await page.getByRole('button', { name: '任务中心', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('移动端待办', { exact: true })).toBeVisible();
+  await dialog.getByRole('button').filter({ hasText: '移动端待办' }).click();
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test('a note can create and revoke an expiring read-only share', async ({ page, browser }) => {
   const title = `安全分享-${randomUUID().slice(0, 6)}`;
   const bottomMarker = `分享页尾-${randomUUID().slice(0, 6)}`;

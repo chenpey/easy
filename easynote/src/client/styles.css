@@ -580,6 +580,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 .trash-banner { display: flex; justify-content: space-between; padding: 9px 20px; align-items: center; color: var(--muted); background: var(--soft); font-size: 12px; }
 .trash-banner button { color: var(--danger); }
 .mobile-filters, .mobile-back { display: none; }
+.mobile-filter-actions { display: flex; gap: 2px; }
 .sidebar-hidden { grid-template-columns: var(--note-list-width, 300px) 5px minmax(0, 1fr); }
 .sidebar-hidden .sidebar { display: none; }
 dialog {

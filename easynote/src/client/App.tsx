@@ -620,6 +620,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const openTask = async (task: NoteTask) => {
     if (note?.id === task.noteId && layout === 'edit') {
       setTaskCenter(false);
+      setMobileNote(true);
       requestAnimationFrame(() => requestAnimationFrame(() => editor.current?.goTo(task.offset)));
       return;
     }
@@ -969,7 +970,13 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <button disabled={!selected.size || disabled} onClick={() => setBulkTagOpen(true)}><Tag size={14} />加标签</button>
         </div>}
         <label className="search-field"><Search size={15} /><input ref={searchInput} aria-label="搜索笔记" placeholder="搜索笔记" value={book.query} onChange={(e) => book.setQuery(e.target.value)} /></label>
-        <div className="mobile-filters"><select aria-label="笔记分类" value={book.view} onChange={(e) => chooseView(e.target.value)}><option value="all">全部笔记</option><option value="archive">归档笔记</option><option value="trash">回收站</option></select><IconButton label="设置" onClick={() => setSettings(true)}><Settings size={17} /></IconButton></div>
+        <div className="mobile-filters">
+          <select aria-label="笔记分类" value={book.view} onChange={(e) => chooseView(e.target.value)}><option value="all">全部笔记</option><option value="archive">归档笔记</option><option value="trash">回收站</option></select>
+          <div className="mobile-filter-actions">
+            <IconButton label="任务中心" onClick={() => void openTaskCenter()}><ClipboardList size={17} /></IconButton>
+            <IconButton label="设置" onClick={() => setSettings(true)}><Settings size={17} /></IconButton>
+          </div>
+        </div>
       </header>
       <div className="list-scroll" onKeyDown={(event) => moveButtonFocus(event, '.note-row')}>
         {book.loading ? <div className="empty-state">正在加载…</div> : !book.notes.length ? <div className="empty-state"><FileText size={28} /><span>{book.query ? '没有匹配的笔记' : '暂无笔记'}</span></div> : book.notes.map((item) =>

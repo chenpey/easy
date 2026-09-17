@@ -1,6 +1,6 @@
 # EasyNote
 
-当前版本：`0.1.4`
+当前版本：`0.1.5`
 
 一个面向个人或小团队的自托管 Markdown 笔记应用。React + TypeScript 前端，pdfmake 生成 PDF、PDF.js 分页预览，Cloudflare Worker API，D1 保存账号与笔记，私有 R2 保存图片与附件。
 
@@ -18,7 +18,7 @@
 - 修订号并发保护、最后一次操作的幂等重试、冲突副本、手动保存历史、AI 写入历史和版本恢复。
 - 默认开启的完整离线笔记库：IndexedDB 镜像正文、私有文件、全文搜索和待同步草稿，恢复联网后自动提交。
 - 前台轮询与切回页面同步。网络错误停止自动轮询，明确显示错误，由用户重试恢复。
-- 可安装 PWA，提供独立窗口、桌面/主屏幕图标、应用外壳离线缓存、离线冷启动和 Share Target 快速收集；从手机分享的标题、文字和 URL 自动进入“收件箱”。
+- 可安装 PWA，提供独立窗口、桌面/主屏幕图标、应用外壳离线缓存、离线冷启动和 Chromium Share Target 快速收集；从支持平台分享的标题、文字和 URL 自动进入“收件箱”。
 - 常用键盘操作、可搜索命令面板、大纲、稳定内部链接和反向链接。
 - 标签重命名、合并、删除，以及笔记批量归档和加标签。
 - AI 读写分离接入：受限令牌、FTS5 相关度搜索、最近笔记、批量读取、MCP Resources 和写入工具；AI 修改进入正常版本历史。
@@ -146,7 +146,9 @@ git commit -m "发布：EasyNote v0.1.2"
 
 生产环境通过 HTTPS 部署后，Chromium 浏览器可使用地址栏安装入口；登录后的“设置”中也会在浏览器允许时显示“安装 EasyNote”。Safari / iOS 使用系统分享菜单中的“添加到主屏幕”。
 
-安装后的 PWA 可作为系统分享目标。从其他应用分享网页、标题或文字时，EasyNote 创建带“收件箱”标签的笔记；若会话尚未登录，分享参数会保留到登录成功后再收集。Share Target 使用同源 GET 启动，不接收文件，也不会绕过账号认证。
+在支持 [Web Share Target](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Manifest/Reference/share_target#browser_compatibility) 的 Chromium 平台安装 PWA 后，EasyNote 会注册为系统分享目标。从其他应用分享网页、标题或文字时，EasyNote 创建带“收件箱”标签的笔记；若会话尚未登录，分享参数会保留到登录成功后再收集。Share Target 使用同源 GET 启动，不接收文件，也不会绕过账号认证。
+
+Safari、iOS 和 Firefox 当前不支持 PWA `share_target`，因此即使添加到主屏幕也不会出现在系统分享目标中。Android 应使用 Chrome、Opera 或 Samsung Internet 完成安装；只创建浏览器书签不算安装。若 EasyNote 是在加入 Share Target 之前安装的，可卸载后重新安装，让系统重新读取最新 Manifest。
 
 Service Worker 只预缓存应用外壳，不缓存 `/api`、登录会话、笔记正文或私有文件；PDF 引擎和中文字体首次使用时按需缓存，启用离线笔记库时会主动预热。按账号隔离的 IndexedDB 离线笔记库默认开启，可在“设置 → 离线笔记库”中关闭；启用后会增量保存全部笔记和引用文件，支持离线冷启动、全文搜索、阅读、编辑和 PDF 导出。断网修改进入待同步队列，恢复有效会话后按原 revision 和 operationId 自动提交；冲突仍进入显式冲突处理。
 
