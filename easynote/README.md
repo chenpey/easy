@@ -94,6 +94,8 @@ bash dev.sh
 | `bash deploy.sh --check` | 本地构建与 Wrangler 部署预检 |
 | `bash reset-password.sh --local` | 交互式选择并重置本地账号，撤销该账号会话和 AI 令牌 |
 | `bash reset-password.sh --remote` | 交互式选择并重置生产账号；重置初始管理员时同步初始化验证器 |
+| `bash ../reset.sh easynote --local` | 确认后清空本地 D1/R2 状态，保留本地账号配置 |
+| `bash ../reset.sh easynote --remote` | 确认并隐藏输入 Token 后重置 Cloudflare D1/R2 与 Worker |
 | `bash backup.sh --remote` | 创建并校验完整 D1/R2 灾备 |
 | `bash restore.sh <目录> --remote --check` | 只执行恢复预检 |
 | `bash restore.sh <目录> --remote` | 恢复至空的 D1/R2 资源 |
@@ -108,6 +110,7 @@ bash dev.sh
 | `backup.sh --local`、`restore.sh --local`、`deploy.sh --check` | 无 Cloudflare 凭据 | 只操作本地资源；写操作仍要求确认 |
 | `reset-password.sh --local` | 新的本地账号密码 | 交互式选择账号并隐藏输入 |
 | `deploy.sh` | Cloudflare 自定义 API Token | 用户确认部署后才逐次隐藏输入 |
+| `../reset.sh easynote --remote` | Cloudflare 自定义 API Token | 用户确认清空后隐藏输入，Token 仅用于本次进程 |
 | `backup.sh --remote`、`restore.sh --remote`、`reset-password.sh --remote` | Cloudflare 自定义 API Token | 每次运行重新隐藏输入 |
 | `npm run ai:setup` | EasyNote AI 集成令牌 | 由已登录用户在应用内创建，与 Cloudflare Token 无关 |
 

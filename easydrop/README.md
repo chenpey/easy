@@ -280,6 +280,8 @@ npm run dev
 
 `dev` 使用 `.wrangler/` 中的本地 D1/R2 数据。默认地址为 `http://127.0.0.1:8787`；可通过 `npm run dev -- --port 8788` 指定其他端口。
 
+从仓库根目录运行 `bash reset.sh easydrop --local` 可在确认后清空本地 D1/R2 状态，并保留 `.dev.vars` 中的管理员配置。清理后同时在浏览器中清除 `http://127.0.0.1:8787` 的站点数据。
+
 依赖安装使用 `package-lock.json`，并在 `package.json` 的 `allowScripts` 中按精确版本允许 esbuild、workerd 和可选的 fsevents 安装脚本。出现新的安装脚本提示时，先核对锁文件中的来源和版本，再更新精确授权。
 
 本地 loopback 使用 `ALLOW_LOCAL_HTTP=true` 和独立开发 Cookie；生产环境使用 HTTPS。
@@ -556,6 +558,8 @@ bash deploy.sh
 | `npm run preview` | 启动随机密码、随机端口的临时预览 |
 | `npm run build` | 仅构建前端，不发布到云端 |
 | `bash deploy.sh` / `npm run deploy` | 使用 API Token 交互式部署 |
+| `bash ../reset.sh easydrop --local` | 确认后清空本地 D1/R2 状态 |
+| `bash ../reset.sh easydrop --remote` | 确认并隐藏输入 Token 后重置 Cloudflare D1/R2 与 Worker |
 | `npm run check` | 检查 JavaScript 语法 |
 | `npm test` | 运行 API 与部署协议集成测试 |
 | `npm run test:ui` | 运行 Playwright 浏览器测试 |

@@ -40,3 +40,18 @@
 - EasyNews 需要 Python 3.12 和 uv，使用 `uv sync --locked` 创建并使用项目专属环境。
 
 具体启动、测试、部署、配置和安全边界以各项目 README 为准。
+
+## 清空重建
+
+仓库根目录的 `reset.sh` 用于清空 EasyNote 或 EasyDrop：
+
+```bash
+bash reset.sh easynote --local
+bash reset.sh easydrop --local
+bash reset.sh easynote --remote
+bash reset.sh easydrop --remote
+```
+
+本地模式删除所选项目的 `.wrangler/state`，保留 `.dev.vars` 中的本地管理员配置，并提示清除对应浏览器站点数据。远程模式读取该项目的 `wrangler.deploy.json`，要求输入完整确认文本及隐藏的 Cloudflare API Token，然后删除 Worker、清空并重建同名 R2 bucket、重建 D1 Schema。完成后进入对应项目执行 `bash deploy.sh` 即可重新部署。
+
+远程清理要求 R2 中的对象均由应用记录。若 bucket 中存在孤立对象，脚本会在删除 bucket 时停止；先在 Cloudflare Dashboard 对该 bucket 执行 **Empty Bucket**，再重新运行清理命令。
