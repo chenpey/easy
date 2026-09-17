@@ -105,7 +105,13 @@ export async function loadDrafts(userId: string): Promise<Map<string, Draft>> {
 
 export async function offlineEnabled(userId: string): Promise<boolean> {
   const db = await database();
-  try { return await db.get('meta', offlineKey(userId)) === true; }
+  try {
+    const key = offlineKey(userId);
+    const configured = await db.get('meta', key);
+    if (typeof configured === 'boolean') return configured;
+    await db.put('meta', true, key);
+    return true;
+  }
   finally { db.close(); }
 }
 

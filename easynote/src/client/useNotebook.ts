@@ -36,6 +36,22 @@ const blankNote = (note: Pick<Note, 'title' | 'content' | 'tags' | 'archived' | 
 const blankSummary = (note: NoteSummary) =>
   !note.title && !note.excerpt && !note.tags.length && !note.archived && note.deletedAt === null;
 
+async function prepareOfflineResources(): Promise<void> {
+  if (!('serviceWorker' in navigator)) return;
+  let timeout = 0;
+  try {
+    await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<never>((_, reject) => {
+        timeout = window.setTimeout(() => reject(new Error('离线资源准备超时，请稍后重试。')), 20_000);
+      }),
+    ]);
+  } finally {
+    window.clearTimeout(timeout);
+  }
+  await preparePdfExport();
+}
+
 export function useNotebook(session: Session) {
   const userId = session.user!.id;
   const [notes, setNotes] = useState<NoteSummary[]>([]);
@@ -49,6 +65,7 @@ export function useNotebook(session: Session) {
   const ready = useRef(false);
   const pollInFlight = useRef(false);
   const pollAbort = useRef<AbortController | null>(null);
+  const selectionAbort = useRef<AbortController | null>(null);
   const pollError = useRef('');
   const [tick, bump] = useState(0);
   const [view, setView] = useState('all');
@@ -274,29 +291,57 @@ export function useNotebook(session: Session) {
   };
 
   const select = async (id: string) => {
+    if (current.current?.id === id) return;
     const generation = ++selectionGeneration.current;
+    selectionAbort.current?.abort();
     try {
       const local = drafts.current.get(id);
       if (local) { show(local.note); return; }
-      if (offlineLibraryRef.current && (!navigator.onLine || session.offline)) {
-        const cached = mirror.current.get(id) ?? await loadMirroredNote(userId, id);
+      let cached: Note | null = null;
+      if (offlineLibraryRef.current) {
+        cached = mirror.current.get(id) ?? await loadMirroredNote(userId, id);
+        if (!alive.current || generation !== selectionGeneration.current) return;
+        if (cached) {
+          mirror.current.set(id, cached);
+          show(cached);
+        }
+      }
+      if (!navigator.onLine || session.offline) {
         if (!cached) throw new Error('这篇笔记尚未保存到本机。');
-        show(cached);
         return;
       }
-      const result = await api.note(id);
-      if (!alive.current || generation !== selectionGeneration.current) return;
-      if (offlineLibraryRef.current) {
-        mirror.current.set(id, result.note);
-        await cacheMirroredNote(userId, result.note);
+      const controller = new AbortController();
+      selectionAbort.current = controller;
+      const revalidate = async () => {
+        try {
+          const result = await api.note(id, controller.signal);
+          if (offlineLibraryRef.current) {
+            mirror.current.set(id, result.note);
+            void cacheMirroredNote(userId, result.note).catch((e: unknown) => {
+              if (alive.current) setError(`离线笔记写入失败。\n${String(e)}`);
+            });
+          }
+          if (!alive.current || generation !== selectionGeneration.current || drafts.current.has(id)) return;
+          if (current.current?.id !== id || current.current.revision !== result.note.revision) show(result.note);
+          if (offlineLibraryRef.current) setOnline(true);
+        } catch (e) {
+          if (controller.signal.aborted || !alive.current || generation !== selectionGeneration.current) return;
+          if (cached) {
+            if (!(e instanceof ApiError)) setOnline(false);
+            return;
+          }
+          throw e;
+        } finally {
+          if (selectionAbort.current === controller) selectionAbort.current = null;
+        }
+      };
+      if (cached) {
+        void revalidate().catch((e: unknown) => { if (alive.current) setError(String(e)); });
+        return;
       }
-      show(drafts.current.get(id)?.note ?? result.note);
+      await revalidate();
     } catch (e) {
-      const cached = offlineLibraryRef.current ? mirror.current.get(id) ?? await loadMirroredNote(userId, id) : null;
-      if (cached && alive.current && generation === selectionGeneration.current) {
-        setOnline(false);
-        show(cached);
-      } else if (alive.current) setError(String(e));
+      if (alive.current && generation === selectionGeneration.current) setError(String(e));
     }
   };
 
@@ -513,20 +558,7 @@ export function useNotebook(session: Session) {
   };
 
   const configureOffline = async (enabled: boolean): Promise<void> => {
-    if (enabled && 'serviceWorker' in navigator) {
-      let timeout = 0;
-      try {
-        await Promise.race([
-          navigator.serviceWorker.ready,
-          new Promise<never>((_, reject) => {
-            timeout = window.setTimeout(() => reject(new Error('离线资源准备超时，请稍后重试。')), 20_000);
-          }),
-        ]);
-      } finally {
-        window.clearTimeout(timeout);
-      }
-      await preparePdfExport();
-    }
+    if (enabled) await prepareOfflineResources();
     await setOfflineEnabled(userId, enabled, session);
     offlineLibraryRef.current = enabled;
     setOfflineLibrary(enabled);
@@ -570,12 +602,18 @@ export function useNotebook(session: Session) {
         setOnline(false);
         renderMirror();
       }
+      if (enabled && !session.offline) {
+        void prepareOfflineResources().catch((e: unknown) => {
+          if (alive.current) setError(`离线 PDF 资源准备失败。\n${String(e)}`);
+        });
+      }
     }).catch((e: unknown) => { if (alive.current) setError(String(e)); }).finally(() => {
       if (alive.current) { setLoading(false); notify(); }
     });
     return () => {
       alive.current = false;
       ready.current = false;
+      selectionAbort.current?.abort();
       for (const timer of pendingTimers.current.values()) clearTimeout(timer);
     };
   }, [userId, show]);

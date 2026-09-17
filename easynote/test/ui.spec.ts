@@ -15,6 +15,17 @@ async function newNote(page: Page, title: string, content = '') {
   await page.getByRole('textbox', { name: '笔记正文' }).fill(content);
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
 }
+async function disableOfflineLibrary(page: Page) {
+  await page.locator('.account').click();
+  const offline = page.getByRole('switch', { name: '离线笔记库' });
+  await expect(offline).toHaveAttribute('aria-checked', 'true');
+  const refreshed = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/notes' && response.request().method() === 'GET');
+  await offline.click();
+  await refreshed;
+  await expect(offline).toHaveAttribute('aria-checked', 'false');
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+}
 
 test('does not render the login form while the initial session is loading', async ({ page }) => {
   let release!: () => void;
@@ -99,6 +110,20 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'EasyNote' })).toBeVisible();
   await context.setOffline(false);
+});
+
+test('offline library is enabled by default and an explicit opt-out persists', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.account').click();
+  const offline = page.getByRole('switch', { name: '离线笔记库' });
+  await expect(offline).toHaveAttribute('aria-checked', 'true');
+  await offline.click();
+  await expect(offline).toHaveAttribute('aria-checked', 'false');
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+
+  await page.reload();
+  await page.locator('.account').click();
+  await expect(page.getByRole('switch', { name: '离线笔记库' })).toHaveAttribute('aria-checked', 'false');
 });
 
 test('PWA share target creates an inbox note and removes shared data from the URL', async ({ page }) => {
@@ -491,6 +516,7 @@ test('new note reopens the existing completely blank note', async ({ page }) => 
 
 test('a recovered empty local draft merges into the existing cloud blank note', async ({ page }) => {
   await page.goto('/');
+  await disableOfflineLibrary(page);
   await page.route('**/api/notes/*', async (route) => {
     if (route.request().method() === 'POST') await route.abort();
     else await route.continue();
@@ -530,6 +556,7 @@ test('a recovered empty local draft merges into the existing cloud blank note', 
 
 test('unsaved local draft survives refresh and syncs only after explicit retry', async ({ page }) => {
   await page.goto('/');
+  await disableOfflineLibrary(page);
   const title = `草稿恢复-${randomUUID().slice(0, 6)}`;
   await newNote(page, title, '云端版本');
   const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
@@ -907,6 +934,7 @@ test('polling still refreshes the selected note after loading more than 50 notes
     expect(response.status()).toBe(201);
   }
   await page.goto('/');
+  await disableOfflineLibrary(page);
   const loadMore = page.getByRole('button', { name: '加载更多' });
   await loadMore.click();
   await expect(loadMore).toBeHidden();
@@ -939,7 +967,7 @@ test('polling still refreshes the selected note after loading more than 50 notes
 test('an expired session returns to login without a page reload', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '全部笔记' })).toBeVisible();
-  await page.route('**/api/notes?**', (route) => route.fulfill({
+  await page.route('**/api/sync?**', (route) => route.fulfill({
     status: 401,
     contentType: 'application/json',
     body: JSON.stringify({ error: { message: 'Please sign in.' } }),
@@ -1295,6 +1323,45 @@ test('outline, stable internal links and backlinks navigate between notes', asyn
   await page.screenshot({ path: 'test-results/desktop-knowledge-navigation.png', fullPage: true });
 });
 
+test('offline library opens a cached note before remote revalidation finishes', async ({ page }) => {
+  const marker = randomUUID().slice(0, 7);
+  const id = randomUUID();
+  const title = `本地优先-${marker}`;
+  const content = `无需等待网络-${marker}`;
+  const created = await page.request.post(`${origin}/api/notes/${id}`, {
+    headers,
+    data: {
+      title, content, tags: [], pinned: false, archived: false, deletedAt: null,
+      revision: 0, operationId: randomUUID(),
+    },
+  });
+  expect(created.status()).toBe(201);
+
+  await page.goto('/');
+  await page.locator('.account').click();
+  await expect(page.getByRole('switch', { name: '离线笔记库' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByText(/离线笔记库 · \d+ 篇/)).toBeVisible();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+
+  let release!: () => void;
+  const remoteResponse = new Promise<void>((resolve) => { release = resolve; });
+  let revalidating = false;
+  await page.route(`**/api/notes/${id}`, async (route) => {
+    revalidating = true;
+    await remoteResponse;
+    await route.continue();
+  });
+
+  await page.locator('[data-note-row]').filter({ hasText: title }).click();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(title, { timeout: 1000 });
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText(content);
+  expect(revalidating).toBe(true);
+  const revalidated = page.waitForResponse((response) => response.url().endsWith(`/api/notes/${id}`));
+  release();
+  await revalidated;
+  await page.unroute(`**/api/notes/${id}`);
+});
+
 test('full offline library supports cold start, full-text search and note reading', async ({ page, context }) => {
   const marker = randomUUID().slice(0, 7);
   const title = `离线笔记-${marker}`;
@@ -1306,20 +1373,28 @@ test('full offline library supports cold start, full-text search and note readin
   });
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   await page.locator('.account').click();
-  await page.getByRole('switch', { name: '离线笔记库' }).click();
+  await expect(page.getByRole('switch', { name: '离线笔记库' })).toHaveAttribute('aria-checked', 'true');
   await expect(page.getByText(/离线笔记库 · \d+ 篇/)).toBeVisible();
-  const offlineAssets = await page.evaluate(async () => {
+  await expect.poll(async () => page.evaluate(async () => {
     const urls: string[] = [];
     for (const name of await caches.keys()) {
       for (const request of await (await caches.open(name)).keys()) urls.push(request.url);
     }
-    return urls.map((url) => new URL(url).pathname);
+    const paths = urls.map((url) => new URL(url).pathname);
+    return {
+      pdfmake: paths.some((path) => path.includes('/assets/pdfmake')),
+      pdfjs: paths.some((path) => path.includes('/assets/pdfjs')),
+      worker: paths.some((path) => path.includes('/assets/pdf.worker')),
+      regularFont: paths.includes('/fonts/NotoSansSC-Regular.otf'),
+      boldFont: paths.includes('/fonts/NotoSansSC-Bold.otf'),
+    };
+  }), { timeout: 20_000 }).toEqual({
+    pdfmake: true,
+    pdfjs: true,
+    worker: true,
+    regularFont: true,
+    boldFont: true,
   });
-  expect(offlineAssets.some((path) => path.includes('/assets/pdfmake'))).toBe(true);
-  expect(offlineAssets.some((path) => path.includes('/assets/pdfjs'))).toBe(true);
-  expect(offlineAssets.some((path) => path.includes('/assets/pdf.worker'))).toBe(true);
-  expect(offlineAssets).toContain('/fonts/NotoSansSC-Regular.otf');
-  expect(offlineAssets).toContain('/fonts/NotoSansSC-Bold.otf');
   await page.getByRole('button', { name: '关闭', exact: true }).click();
 
   await context.setOffline(true);
@@ -1412,7 +1487,7 @@ test('a revoked offline session is removed as soon as the device reconnects', as
   const liveSession = await login.json();
   await page.reload();
   await page.locator('.account').click();
-  await page.getByRole('switch', { name: '离线笔记库' }).click();
+  await expect(page.getByRole('switch', { name: '离线笔记库' })).toHaveAttribute('aria-checked', 'true');
   await expect(page.getByText(/离线笔记库 · \d+ 篇/)).toBeVisible();
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await context.setOffline(true);
