@@ -9,7 +9,7 @@ const revision = (env, userId) => env.DB.prepare(
 ).bind(userId);
 const objectKey = (id) => `files/${id}`;
 const previewObjectKey = (id) => `${objectKey(id)}/preview`;
-const previewLimit = 256 * 1024;
+const previewLimit = 512 * 1024;
 const validId = (id) => /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id);
 const encoder = new TextEncoder();
 const publicAssets = new Map([

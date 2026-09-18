@@ -154,13 +154,13 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const imageName = `preview-${viewport.width}.png`;
     const imageBase64 = await page.evaluate(() => {
       const canvas = document.createElement("canvas");
-      canvas.width = 48;
-      canvas.height = 36;
+      canvas.width = 1024;
+      canvas.height = 768;
       const context = canvas.getContext("2d");
       context.fillStyle = "#0071e3";
       context.fillRect(0, 0, canvas.width, canvas.height);
       context.fillStyle = "#ffffff";
-      context.fillRect(12, 9, 24, 18);
+      context.fillRect(256, 192, 512, 384);
       return canvas.toDataURL("image/png").split(",")[1];
     });
     await page.locator("#file-input").setInputFiles([
@@ -176,7 +176,8 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const thumbnail = image.locator(".file-thumbnail");
     await image.scrollIntoViewIfNeeded();
     await expect(thumbnail).toBeVisible();
-    await expect.poll(() => thumbnail.evaluate((node) => node.naturalWidth)).toBe(48);
+    await expect.poll(() => thumbnail.evaluate((node) => node.naturalWidth)).toBe(512);
+    await expect(image.locator(".lucide-image")).toHaveClass(/lucide-image/);
     expect(await thumbnail.getAttribute("src")).toMatch(/^\/previews\/[a-f0-9-]+$/);
     await thumbnail.evaluate((node) => { node.dataset.testIdentity = "preserved"; });
     let repeatedPreviewRequests = 0;
@@ -202,7 +203,11 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const fullImage = imagePreviewDialog.locator("#image-preview-content");
     await expect(fullImage).toBeVisible();
     expect(await fullImage.getAttribute("src")).toMatch(/^\/images\/[a-f0-9-]+\/preview-\d+\.png$/);
-    await expect.poll(() => fullImage.evaluate((node) => node.naturalWidth)).toBe(48);
+    await expect.poll(() => fullImage.evaluate((node) => node.naturalWidth)).toBe(1024);
+    const previewBounds = await imagePreviewDialog.locator(".image-preview-stage").boundingBox();
+    const fullImageBounds = await fullImage.boundingBox();
+    expect(fullImageBounds.width).toBeLessThanOrEqual(previewBounds.width + 1);
+    expect(fullImageBounds.height).toBeLessThanOrEqual(previewBounds.height + 1);
     expect(unexpectedDownloads).toBe(0);
     expect(unexpectedPopups).toBe(0);
     await page.screenshot({ path: `test-results/image-preview-${viewport.width}.png` });

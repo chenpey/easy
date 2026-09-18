@@ -88,7 +88,7 @@ EasyDrop 是一个基于 Cloudflare Workers 的文本与文件分享工具，使
 ### 文件下载
 
 - 每条文件记录都有独立下载按钮，由 Worker 验证会话和记录状态，再从私有 R2 读取内容；下载在当前页面直接触发，不打开空白窗口。
-- 对 JPEG、PNG、GIF、WebP、AVIF 和 BMP，内置前端会在上传原文件前尝试生成最长边 256 像素、最大 256 KiB 的 WebP 缩略图；点击缩略图或预览按钮会在站内弹窗中查看原图，下载原图使用独立按钮。SVG 不内联展示。
+- 对 JPEG、PNG、GIF、WebP、AVIF 和 BMP，内置前端会在上传原文件前尝试生成最长边 512 像素、最大 512 KiB 的高质量 WebP 缩略图；旧版低分辨率缩略图会在小文件上自动切换为原图显示。点击缩略图或预览按钮会在站内弹窗中查看原图，下载原图使用独立按钮。SVG 不内联展示。
 - 缩略图作为独立私有 R2 对象保存，历史刷新会复用未变化的图片节点，不重复读取原图。升级前已有图片或浏览器无法生成 WebP 时不显示缩略图，但不影响原文件下载。
 - 每条文件记录提供下载和复制文件链接按钮；鼠标悬停或键盘聚焦下载图标时显示该文件地址的二维码。
 - 文件链接和二维码只包含站点内的受保护下载地址及 URL 编码的原文件名，不包含用户名、密码或会话凭据；新设备打开后会先进入登录页，登录成功自动开始下载并返回主页。
@@ -508,7 +508,7 @@ bash deploy.sh
 | `POST` | `/api/text` | 写校验 | JSON `{"text":"..."}`，新增文本 |
 | `POST` | `/api/uploads` | 写校验 | 提交名称、大小、分片大小和整文件指纹，创建或恢复 Multipart 上传 |
 | `GET` | `/api/uploads/<id>` | 会话 | 查询分片大小、并发数、过期时间和已确认分片 |
-| `PUT` | `/api/uploads/<id>/preview` | 写校验 | 为所属图片上传 1～262144 字节的 WebP 缩略图，要求准确的 `Content-Length` |
+| `PUT` | `/api/uploads/<id>/preview` | 写校验 | 为所属图片上传 1～524288 字节的 WebP 缩略图，要求准确的 `Content-Length` |
 | `PUT` | `/api/uploads/<id>/parts/<number>` | 写校验 | 上传一个原始二进制分片，要求 `X-Part-SHA256` |
 | `POST` | `/api/uploads/<id>/complete` | 写校验 | 校验全部分片、合并 R2 对象并发布历史记录 |
 | `DELETE` | `/api/uploads/<id>` | 写校验 | 取消未完成上传并安排清理 |
@@ -527,7 +527,7 @@ bash deploy.sh
 
 分片上传不是 `multipart/form-data`。每个 `PUT` 请求体直接传一个分片，必须有准确的 `Content-Length`，并用小写十六进制 `X-Part-SHA256` 提供该分片摘要。除最后一片外，每片大小必须等于初始化接口返回的 `chunkSize`。
 
-缩略图上传同样直接传二进制请求体，`Content-Type` 必须为 `image/webp`，`Content-Length` 必须与 1～262144 字节的正文一致。服务端同时检查文件归属、原记录的位图类型和 WebP 文件头；没有独立缩略图时 `/previews/<id>` 返回 `404`，不会回退读取原图。
+缩略图上传同样直接传二进制请求体，`Content-Type` 必须为 `image/webp`，`Content-Length` 必须与 1～524288 字节的正文一致。服务端同时检查文件归属、原记录的位图类型和 WebP 文件头；没有独立缩略图时 `/previews/<id>` 返回 `404`，不会回退读取原图。
 
 历史接口返回 `items`、`nextCursor` 和 `revision`。每条记录包含 `seq`、`id`、`type`、`created_at`，文本正文在 `content`，文件名和字节数在 `name`、`size`；文件存在有效临时链接时，`share_expires_at` 是 Unix 到期时间，否则为 `null`。`nextCursor=null` 表示没有下一页。
 

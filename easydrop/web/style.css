@@ -351,6 +351,8 @@ progress {
   margin-top: 3px;
 }
 
+.history-item > .lucide-image { color: var(--blue); }
+
 .item-content { min-width: 0; }
 
 .thumbnail-link {
@@ -363,17 +365,17 @@ progress {
   border: 1px solid var(--hairline);
   border-radius: 8px;
   overflow: hidden;
-  background: #fff;
+  background: #f1f1f3;
   cursor: zoom-in;
 }
 
-.thumbnail-link:not(:disabled):hover { background: #fff; }
+.thumbnail-link:not(:disabled):hover { background: #e8e8ed; }
 
 .file-thumbnail {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .item-text {
@@ -698,11 +700,12 @@ dialog::backdrop {
 }
 
 .image-preview-stage {
-  display: grid;
+  display: flex;
   width: 100%;
   height: min(70dvh, 720px);
-  min-height: 240px;
-  place-items: center;
+  min-height: 160px;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
   border-radius: 6px;
   background: #111113;
@@ -710,8 +713,10 @@ dialog::backdrop {
 
 #image-preview-content {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
 }
 
@@ -963,7 +968,7 @@ dialog::backdrop {
     max-height: calc(100dvh - 20px);
     padding: 12px;
   }
-  .image-preview-stage { height: 62dvh; min-height: 200px; }
+  .image-preview-stage { height: 62dvh; min-height: 180px; }
   .image-preview-footer { align-items: flex-start; }
 }
 

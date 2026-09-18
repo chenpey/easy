@@ -1,7 +1,7 @@
-import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound } from "lucide";
+import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, Image as ImageIcon, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound } from "lucide";
 import QRCode from "qrcode";
 
-const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound };
+const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, Image: ImageIcon, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound };
 const APP_VERSION = __EASYDROP_VERSION__;
 const renderIcons = () => createIcons({ icons });
 const $ = (id) => document.getElementById(id);
@@ -32,8 +32,10 @@ const copyFeedbackTimers = new WeakMap();
 const historyRowCache = new Map();
 const previewSourceTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp"]);
 const previewSourceExtension = /\.(?:jpe?g|png|gif|webp|avif|bmp)$/i;
-const previewMaxSide = 256;
-const previewMaxBytes = 256 * 1024;
+const previewMaxSide = 512;
+const previewMaxBytes = 512 * 1024;
+const legacyThumbnailFallbackWidth = 384;
+const legacyThumbnailFallbackBytes = 8 * 1024 * 1024;
 let retainHistoryRows = false;
 const uploadStorageKey = () => `easydrop/resumable-uploads/v2/${session?.user.id || "anonymous"}`;
 
@@ -439,6 +441,7 @@ function historyRow(item) {
     actions.append(actionButton("复制文本", "copy", (button) => copy(item.content, button)));
   } else {
     const fileUrl = new URL(`/uploads/${item.id}/${encodeURIComponent(item.name)}`, location.origin).href;
+    const imageUrl = `/images/${item.id}/${encodeURIComponent(item.name)}`;
     if (item.media_type) {
       const thumbnailLink = document.createElement("button");
       thumbnailLink.type = "button";
@@ -452,6 +455,13 @@ function historyRow(item) {
       thumbnail.alt = `${item.name} 缩略图`;
       thumbnail.loading = "lazy";
       thumbnail.decoding = "async";
+      thumbnail.addEventListener("load", () => {
+        if (thumbnail.naturalWidth >= legacyThumbnailFallbackWidth ||
+            item.size > legacyThumbnailFallbackBytes ||
+            thumbnail.dataset.originalFallback) return;
+        thumbnail.dataset.originalFallback = "true";
+        thumbnail.src = imageUrl;
+      });
       thumbnail.addEventListener("error", () => thumbnailLink.remove(), { once: true });
       thumbnailLink.append(thumbnail);
       content.insertBefore(thumbnailLink, body);
@@ -496,7 +506,7 @@ function historyRow(item) {
     notice("已删除");
     await loadHistory();
   }, true));
-  row.append(icon(item.type === "text" ? "file-text" : "files"), content, actions);
+  row.append(icon(item.type === "text" ? "file-text" : item.media_type ? "image" : "files"), content, actions);
   return row;
 }
 
@@ -765,14 +775,14 @@ async function createImagePreview(file) {
   if (!previewSourceTypes.has(file.type.toLowerCase()) && !previewSourceExtension.test(file.name)) return null;
   let bitmap;
   try {
-    bitmap = await createImageBitmap(file);
+    bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
     if (!bitmap.width || !bitmap.height) return null;
     const scale = Math.min(1, previewMaxSide / Math.max(bitmap.width, bitmap.height));
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(bitmap.width * scale));
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
     canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const preview = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", 0.82));
+    const preview = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", 0.9));
     return preview?.type === "image/webp" && preview.size <= previewMaxBytes ? preview : null;
   } catch (error) {
     console.warn(`Thumbnail generation skipped for ${file.name}:`, error);
