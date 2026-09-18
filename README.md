@@ -7,8 +7,8 @@ Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专
 <!-- versions:start -->
 | 项目 | 当前版本 |
 | --- | --- |
-| [EasyDrop](easydrop/) | `1.0.1` |
-| [EasyNote](easynote/) | `0.2.1` |
+| [EasyDrop](easydrop/) | `1.0.2` |
+| [EasyNote](easynote/) | `0.2.2` |
 <!-- versions:end -->
 
 ## 项目目录
@@ -60,7 +60,7 @@ node scripts/version.mjs bump easynote patch
 node scripts/version.mjs check
 ```
 
-脚本会同步项目的 `package.json`、锁文件、运行时版本、README 和根目录版本表。`patch` 适合兼容性修复，`minor` 适合新增功能，`major` 适合不兼容变更。随后使用带版本号的提交信息，例如 `发布：EasyNote v0.2.1`。
+脚本会同步项目的 `package.json`、锁文件、运行时版本、README 和根目录版本表。`patch` 适合兼容性修复，`minor` 适合新增功能，`major` 适合不兼容变更。随后使用带版本号的提交信息，例如 `发布：EasyNote v0.2.2`。
 
 ## 清空重建
 

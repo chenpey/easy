@@ -866,6 +866,12 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
 .share-status span { color: var(--muted); font-size: 11px; }
 .share-url { display: flex; gap: 8px; margin-bottom: 14px; }
 .share-url input { min-width: 0; flex: 1; font-size: 12px; }
+.share-url button { width: 88px; flex: 0 0 88px; justify-content: center; }
+.share-url button.copy-confirmed {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 8%, var(--paper));
+  border-color: color-mix(in srgb, var(--success) 40%, var(--line));
+}
 .user-create-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 110px auto; gap: 8px; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .user-create-form h3 { grid-column: 1 / -1; margin: 0; font-size: 14px; }
 .user-list { max-height: 48dvh; overflow-y: auto; }

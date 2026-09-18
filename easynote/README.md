@@ -1,6 +1,6 @@
 # EasyNote
 
-当前版本：`0.2.1`
+当前版本：`0.2.2`
 
 一个面向个人或小团队的自托管 Markdown 笔记应用。React + TypeScript 前端，pdfmake 生成 PDF、PDF.js 分页预览，Cloudflare Worker API，D1 保存账号与笔记，私有 R2 保存图片与附件。
 
@@ -115,7 +115,7 @@ bash dev.sh
 node scripts/version.mjs bump easynote patch
 node scripts/version.mjs check
 git add .
-git commit -m "发布：EasyNote v0.2.1"
+git commit -m "发布：EasyNote v0.2.2"
 ```
 
 `minor` 用于新增功能，`major` 用于不兼容变更。脚本会同步本 README、根 README、`package.json`、锁文件和应用显示版本。
@@ -411,7 +411,7 @@ bash deploy.sh
 
 ### 限时只读分享
 
-已保存的正常笔记可创建 1 小时、1 天、7 天或 30 天的只读链接。每篇笔记同时只有一个有效链接；创建新链接会替换旧链接，用户也可随时撤销。将笔记移入回收站、禁用/删除所属账号或链接过期都会立即阻止访问。
+已保存的正常笔记可创建 1 小时、1 天、7 天或 30 天的只读链接。每篇笔记同时只有一个有效链接；创建新链接会替换旧链接，用户也可随时撤销。复制成功后，弹窗内的复制按钮会直接显示“已复制”，不会被对话框遮罩遮挡。将笔记移入回收站、禁用/删除所属账号或链接过期都会立即阻止访问。
 
 原始分享 Token 只在创建时返回，D1 仅保存 SHA-256。公开读取接口只返回标题、正文、标签、更新时间和到期时间；图片与附件必须同时满足 Token 有效、文件属于该笔记当前 revision、文件仍为 ready。响应统一 `no-store`，分享页没有编辑、历史、反向链接或租户浏览入口。
 

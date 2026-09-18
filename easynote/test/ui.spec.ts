@@ -181,6 +181,16 @@ test('mobile note list exposes the task center and opens a task source', async (
 });
 
 test('a note can create and revoke an expiring read-only share', async ({ page, browser }) => {
+  await page.addInitScript(() => {
+    let copiedText = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => { copiedText = value; },
+        readText: async () => copiedText,
+      },
+    });
+  });
   const title = `安全分享-${randomUUID().slice(0, 6)}`;
   const bottomMarker = `分享页尾-${randomUUID().slice(0, 6)}`;
   const content = ['公开正文', ...Array.from({ length: 40 }, (_, index) => `第 ${index + 1} 段内容`), bottomMarker].join('\n\n');
@@ -191,6 +201,19 @@ test('a note can create and revoke an expiring read-only share', async ({ page, 
   await page.getByRole('button', { name: '创建链接' }).click();
   const url = await page.getByLabel('只读分享链接').inputValue();
   expect(url).toMatch(/\/shared\/[a-f0-9]{64}$/);
+  const sharingDialog = page.locator('dialog[open]');
+  const copyButton = sharingDialog.locator('.share-url button');
+  const inputWidth = await page.getByLabel('只读分享链接').evaluate((element) => element.getBoundingClientRect().width);
+  await copyButton.click();
+  await expect(copyButton).toHaveText('已复制');
+  await expect(copyButton).toHaveClass(/copy-confirmed/);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(url);
+  expect(await page.getByLabel('只读分享链接').evaluate((element) => element.getBoundingClientRect().width)).toBe(inputWidth);
+  await expect(page.locator('.toast')).not.toHaveText('分享链接已复制');
+  await sharingDialog.screenshot({ path: 'test-results/share-copy-feedback.png' });
+  await page.setViewportSize({ width: 320, height: 740 });
+  expect(await sharingDialog.evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth)).toBe(true);
+  await sharingDialog.screenshot({ path: 'test-results/share-copy-feedback-320.png' });
 
   const anonymous = await browser.newContext({ viewport: { width: 900, height: 500 } });
   const shared = await anonymous.newPage();
