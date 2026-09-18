@@ -979,26 +979,33 @@ async function startUpload() {
   let paused = false;
   const errors = [];
   try {
-    for (const entry of uploadQueue.filter((item) => !item.done)) {
-      if (!session) break;
-      try {
-        if (entry.file.size > session.maxUploadBytes) throw new Error(`${entry.file.name} 超过单文件上限`);
-        await uploadFile(entry);
-        if (pauseRequested) {
-          paused = true;
-          break;
+    const pending = uploadQueue.filter((item) => !item.done);
+    let cursor = 0;
+    const worker = async () => {
+      while (!pauseRequested && session) {
+        const entry = pending[cursor++];
+        if (!entry) return;
+        try {
+          if (entry.file.size > session.maxUploadBytes) throw new Error(`${entry.file.name} 超过单文件上限`);
+          await uploadFile(entry);
+        } catch (error) {
+          if (error instanceof UploadPaused) {
+            entry.state.textContent = "已暂停";
+            paused = true;
+            return;
+          }
+          failures++;
+          entry.state.textContent = "失败";
+          errors.push(error.details || error.message);
         }
-      } catch (error) {
-        if (error instanceof UploadPaused) {
-          entry.state.textContent = "已暂停";
-          paused = true;
-          break;
-        }
-        failures++;
-        entry.state.textContent = "失败";
-        errors.push(error.details || error.message);
       }
-    }
+    };
+    const concurrency = Math.min(
+      session.uploadFileConcurrency || 1,
+      pending.length,
+    );
+    await Promise.all(Array.from({ length: concurrency }, worker));
+    if (pauseRequested) paused = true;
     if (failures) {
       const error = new Error(`${failures} 个文件上传失败`);
       error.details = errors.join("\n\n");

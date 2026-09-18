@@ -632,6 +632,44 @@ test("multipart upload runs concurrently and resumes after pause and reload", as
   }
 });
 
+test("multiple files upload concurrently", async ({ page, context }) => {
+  await loginContext(context);
+  let release;
+  let released = false;
+  const hold = new Promise((resolve) => { release = () => { released = true; resolve(); }; });
+  let active = 0;
+  let maxActive = 0;
+  await page.route("**/api/uploads/*/parts/*", async (route) => {
+    active++;
+    maxActive = Math.max(maxActive, active);
+    try {
+      const response = await route.fetch();
+      await hold;
+      await route.fulfill({ response });
+    } finally {
+      active--;
+    }
+  });
+  try {
+    await page.goto(preview.url);
+    await page.locator("#file-input").setInputFiles([
+      { name: "parallel-a.txt", mimeType: "text/plain", buffer: Buffer.from("first") },
+      { name: "parallel-b.txt", mimeType: "text/plain", buffer: Buffer.from("second") },
+      { name: "parallel-c.txt", mimeType: "text/plain", buffer: Buffer.from("third") },
+    ]);
+    await page.getByRole("button", { name: "上传文件", exact: true }).click();
+    await expect.poll(() => maxActive).toBeGreaterThan(2);
+    release();
+    await expect(page.locator("#notice")).toHaveText("上传完成");
+    await expect(page.locator(".history-item").filter({ hasText: "parallel-a.txt" })).toHaveCount(1);
+    await expect(page.locator(".history-item").filter({ hasText: "parallel-b.txt" })).toHaveCount(1);
+    await expect(page.locator(".history-item").filter({ hasText: "parallel-c.txt" })).toHaveCount(1);
+  } finally {
+    if (!released) release();
+    await page.unroute("**/api/uploads/*/parts/*");
+  }
+});
+
 test("polling refreshes expanded pages, preserves position and recovers after failure", async ({ page, context }) => {
   const headers = await loginContext(context);
   for (let i = 0; i < 18; i++) {

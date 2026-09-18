@@ -1176,6 +1176,7 @@ async function route(request, env, ctx, responseState) {
       maxUploadBytes: config.uploadLimit,
       uploadChunkBytes: config.uploadChunkBytes,
       uploadConcurrency: config.uploadConcurrency,
+      uploadFileConcurrency: config.uploadFileConcurrency,
       uploadSessionTtlSeconds: config.uploadSessionTtl,
       maxTextBytes: config.textLimit,
       pollSeconds: config.pollSeconds,
