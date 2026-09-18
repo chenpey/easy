@@ -1,6 +1,6 @@
 # EasyNote
 
-当前版本：`0.2.0`
+当前版本：`0.2.1`
 
 一个面向个人或小团队的自托管 Markdown 笔记应用。React + TypeScript 前端，pdfmake 生成 PDF、PDF.js 分页预览，Cloudflare Worker API，D1 保存账号与笔记，私有 R2 保存图片与附件。
 
@@ -115,7 +115,7 @@ bash dev.sh
 node scripts/version.mjs bump easynote patch
 node scripts/version.mjs check
 git add .
-git commit -m "发布：EasyNote v0.1.2"
+git commit -m "发布：EasyNote v0.2.1"
 ```
 
 `minor` 用于新增功能，`major` 用于不兼容变更。脚本会同步本 README、根 README、`package.json`、锁文件和应用显示版本。

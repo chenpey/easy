@@ -95,12 +95,12 @@ function requireAdmin(session) {
   if (session.role !== "admin") throw new HttpError(403, "Administrator access required.");
 }
 
-async function requireAnotherEnabledAdmin(env, userId) {
-  const remaining = await env.DB.prepare(
-    `SELECT COUNT(*) AS count FROM users
-     WHERE role = 'admin' AND enabled = 1 AND id != ? AND deletion_requested_at IS NULL`,
-  ).bind(userId).first();
-  if (!remaining.count) throw new HttpError(409, "At least one enabled administrator is required.");
+async function requireActiveAccount(env, session) {
+  const active = await env.DB.prepare(
+    `SELECT 1 FROM users
+     WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?`,
+  ).bind(session.user_id, session.auth_version).first();
+  if (!active) throw new HttpError(401, "Authentication required.");
 }
 
 async function requireCurrentPassword(env, userId, password) {
@@ -108,7 +108,7 @@ async function requireCurrentPassword(env, userId, password) {
     throw new HttpError(400, "Invalid current password.");
   }
   const user = await env.DB.prepare(
-    `SELECT id, role, enabled, password_verifier FROM users
+    `SELECT id, role, enabled, auth_version, password_verifier FROM users
      WHERE id = ? AND deletion_requested_at IS NULL`,
   ).bind(userId).first();
   if (!user || !await verifyStoredPassword(password, user.password_verifier)) {
@@ -196,31 +196,45 @@ async function updateUser(request, env, session, id) {
   if (id === session.user_id && (role !== "admin" || enabled !== 1)) {
     throw new HttpError(409, "The current administrator cannot disable or demote itself.");
   }
-  if (target.role === "admin" && target.enabled === 1 && (role !== "admin" || enabled !== 1)) {
-    await requireAnotherEnabledAdmin(env, id);
-  }
   const duplicate = await env.DB.prepare("SELECT id FROM users WHERE username = ? AND id != ?").bind(username, id).first();
   if (duplicate) throw new HttpError(409, "Username already exists.");
   const timestamp = now();
   const passwordChanged = data.password !== undefined;
   const approvedAt = enabled ? (target.approved_at || timestamp) : target.approved_at;
+  const nextAuthVersion = target.auth_version + 1;
+  let updated;
   try {
-    await env.DB.batch([
+    [updated] = await env.DB.batch([
       env.DB.prepare(
         `UPDATE users SET username = ?, password_verifier = ?, role = ?, enabled = ?,
          recovery_code_hash = ?, recovery_code_created_at = ?, approved_at = ?,
-         auth_version = auth_version + 1, updated_at = ? WHERE id = ?`,
+         auth_version = auth_version + 1, updated_at = ?
+         WHERE id = ? AND auth_version = ? AND (
+          role != 'admin' OR enabled != 1 OR ? = 1 OR EXISTS (
+           SELECT 1 FROM users AS other
+           WHERE other.role = 'admin' AND other.enabled = 1
+            AND other.deletion_requested_at IS NULL AND other.id != users.id
+          )
+         )`,
       ).bind(
         username, verifier, role, enabled,
         passwordChanged ? null : target.recovery_code_hash,
         passwordChanged ? null : target.recovery_code_created_at,
-        approvedAt, timestamp, id,
+        approvedAt, timestamp, id, target.auth_version,
+        Number(role === "admin" && enabled === 1),
       ),
-      env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
+      env.DB.prepare(
+        `DELETE FROM sessions WHERE user_id = ? AND EXISTS (
+         SELECT 1 FROM users WHERE id = ? AND auth_version = ?
+        )`,
+      ).bind(id, id, nextAuthVersion),
     ]);
   } catch (error) {
     if (String(error).includes("UNIQUE")) throw new HttpError(409, "Username already exists.");
     throw error;
+  }
+  if (!updated.meta.changes) {
+    throw new HttpError(409, "User changed or at least one enabled administrator is required.");
   }
   const signedOut = id === session.user_id;
   return json(
@@ -234,22 +248,38 @@ async function deleteUser(env, ctx, session, id) {
   requireAdmin(session);
   if (!validId(id)) throw new HttpError(404, "User not found.");
   const target = await env.DB.prepare(
-    "SELECT id, role, enabled FROM users WHERE id = ? AND deletion_requested_at IS NULL",
+    "SELECT id, role, enabled, auth_version FROM users WHERE id = ? AND deletion_requested_at IS NULL",
   ).bind(id).first();
   if (!target) throw new HttpError(404, "User not found.");
   if (id === session.user_id) throw new HttpError(409, "The current administrator cannot delete itself.");
-  if (target.role === "admin" && target.enabled === 1) {
-    await requireAnotherEnabledAdmin(env, id);
-  }
   const timestamp = now();
-  await env.DB.batch([
+  const nextAuthVersion = target.auth_version + 1;
+  const [deleted] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE users SET enabled = 0, auth_version = auth_version + 1,
-       deletion_requested_at = ?, updated_at = ? WHERE id = ?`,
-    ).bind(timestamp, timestamp, id),
-    env.DB.prepare("UPDATE items SET state = 'deleting' WHERE owner_user_id = ?").bind(id),
-    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
+       deletion_requested_at = ?, updated_at = ?
+       WHERE id = ? AND auth_version = ? AND (
+        role != 'admin' OR enabled != 1 OR EXISTS (
+         SELECT 1 FROM users AS other
+         WHERE other.role = 'admin' AND other.enabled = 1
+          AND other.deletion_requested_at IS NULL AND other.id != users.id
+        )
+       )`,
+    ).bind(timestamp, timestamp, id, target.auth_version),
+    env.DB.prepare(
+      `UPDATE items SET state = 'deleting' WHERE owner_user_id = ? AND EXISTS (
+       SELECT 1 FROM users WHERE id = ? AND auth_version = ? AND deletion_requested_at = ?
+      )`,
+    ).bind(id, id, nextAuthVersion, timestamp),
+    env.DB.prepare(
+      `DELETE FROM sessions WHERE user_id = ? AND EXISTS (
+       SELECT 1 FROM users WHERE id = ? AND auth_version = ? AND deletion_requested_at = ?
+      )`,
+    ).bind(id, id, nextAuthVersion, timestamp),
   ]);
+  if (!deleted.meta.changes) {
+    throw new HttpError(409, "User changed or at least one enabled administrator is required.");
+  }
   backgroundCleanup(env, ctx);
   return json({ success: true }, 202);
 }
@@ -422,18 +452,34 @@ async function deleteOwnAccount(request, env, ctx, session) {
   const data = await readJson(request, 2048);
   if (data.username !== session.username) throw new HttpError(400, "Username confirmation does not match.");
   const target = await requireCurrentPassword(env, session.user_id, data.currentPassword);
-  if (target.role === "admin" && target.enabled === 1) {
-    await requireAnotherEnabledAdmin(env, target.id);
-  }
   const timestamp = now();
-  await env.DB.batch([
+  const nextAuthVersion = target.auth_version + 1;
+  const [deleted] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE users SET enabled = 0, auth_version = auth_version + 1,
-       deletion_requested_at = ?, updated_at = ? WHERE id = ?`,
-    ).bind(timestamp, timestamp, target.id),
-    env.DB.prepare("UPDATE items SET state = 'deleting' WHERE owner_user_id = ?").bind(target.id),
-    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target.id),
+       deletion_requested_at = ?, updated_at = ?
+       WHERE id = ? AND auth_version = ? AND (
+        role != 'admin' OR enabled != 1 OR EXISTS (
+         SELECT 1 FROM users AS other
+         WHERE other.role = 'admin' AND other.enabled = 1
+          AND other.deletion_requested_at IS NULL AND other.id != users.id
+        )
+       )`,
+    ).bind(timestamp, timestamp, target.id, target.auth_version),
+    env.DB.prepare(
+      `UPDATE items SET state = 'deleting' WHERE owner_user_id = ? AND EXISTS (
+       SELECT 1 FROM users WHERE id = ? AND auth_version = ? AND deletion_requested_at = ?
+      )`,
+    ).bind(target.id, target.id, nextAuthVersion, timestamp),
+    env.DB.prepare(
+      `DELETE FROM sessions WHERE user_id = ? AND EXISTS (
+       SELECT 1 FROM users WHERE id = ? AND auth_version = ? AND deletion_requested_at = ?
+      )`,
+    ).bind(target.id, target.id, nextAuthVersion, timestamp),
   ]);
+  if (!deleted.meta.changes) {
+    throw new HttpError(409, "Account changed or at least one enabled administrator is required.");
+  }
   backgroundCleanup(env, ctx);
   return json(
     { success: true },
@@ -474,24 +520,38 @@ async function asset(request, env, path) {
   return env.ASSETS.fetch(new Request(url, { method: request.method, headers }));
 }
 
-async function beginOperation(request, env, userId, fingerprint) {
+async function beginOperation(request, env, session, fingerprint) {
+  const userId = session.user_id;
   const key = request.headers.get("Idempotency-Key") || crypto.randomUUID();
   if (!validId(key)) throw new HttpError(400, "Idempotency-Key must be a UUID v4.");
   const id = crypto.randomUUID();
   const claimed = await env.DB.prepare(
     `INSERT OR IGNORE INTO operations(user_id, request_key, fingerprint, item_id, state, created_at)
-     VALUES (?, ?, ?, ?, 'pending', ?)`,
-  ).bind(userId, key, fingerprint, id, now()).run();
+     SELECT ?, ?, ?, ?, 'pending', ? WHERE EXISTS (
+      SELECT 1 FROM users
+      WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?
+     )`,
+  ).bind(userId, key, fingerprint, id, now(), userId, session.auth_version).run();
   if (claimed.meta.changes) return { id, key };
   const previous = await env.DB.prepare(
-    "SELECT * FROM operations WHERE user_id = ? AND request_key = ?",
-  ).bind(userId, key).first();
-  if (!previous || previous.fingerprint !== fingerprint) throw new HttpError(409, "Idempotency key belongs to different content.");
+    `SELECT * FROM operations WHERE user_id = ? AND request_key = ? AND EXISTS (
+     SELECT 1 FROM users
+     WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?
+    )`,
+  ).bind(userId, key, userId, session.auth_version).first();
+  if (!previous) {
+    await requireActiveAccount(env, session);
+    throw new HttpError(409, "Idempotency operation is unavailable.");
+  }
+  if (previous.fingerprint !== fingerprint) throw new HttpError(409, "Idempotency key belongs to different content.");
   if (previous.state === "failed") {
     const retry = await env.DB.prepare(
       `UPDATE operations SET state = 'pending', item_id = ?, created_at = ?
-       WHERE user_id = ? AND request_key = ? AND state = 'failed' AND item_id = ?`,
-    ).bind(id, now(), userId, key, previous.item_id).run();
+       WHERE user_id = ? AND request_key = ? AND state = 'failed' AND item_id = ? AND EXISTS (
+        SELECT 1 FROM users
+        WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?
+       )`,
+    ).bind(id, now(), userId, key, previous.item_id, userId, session.auth_version).run();
     if (retry.meta.changes) return { id, key };
   }
   if (previous.state !== "done") {
@@ -504,20 +564,31 @@ async function beginOperation(request, env, userId, fingerprint) {
   return { id: previous.item_id, key, replay: true };
 }
 
-async function beginMultipartOperation(request, env, userId, fingerprint) {
+async function beginMultipartOperation(request, env, session, fingerprint) {
+  const userId = session.user_id;
   const key = request.headers.get("Idempotency-Key") || crypto.randomUUID();
   if (!validId(key)) throw new HttpError(400, "Idempotency-Key must be a UUID v4.");
   const id = crypto.randomUUID();
   const claimed = await env.DB.prepare(
     `INSERT OR IGNORE INTO operations(user_id, request_key, fingerprint, item_id, state, created_at)
-     VALUES (?, ?, ?, ?, 'pending', ?)`,
-  ).bind(userId, key, fingerprint, id, now()).run();
+     SELECT ?, ?, ?, ?, 'pending', ? WHERE EXISTS (
+      SELECT 1 FROM users
+      WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?
+     )`,
+  ).bind(userId, key, fingerprint, id, now(), userId, session.auth_version).run();
   if (claimed.meta.changes) return { id, key };
 
   const previous = await env.DB.prepare(
-    "SELECT * FROM operations WHERE user_id = ? AND request_key = ?",
-  ).bind(userId, key).first();
-  if (!previous || previous.fingerprint !== fingerprint) throw new HttpError(409, "Idempotency key belongs to different content.");
+    `SELECT * FROM operations WHERE user_id = ? AND request_key = ? AND EXISTS (
+     SELECT 1 FROM users
+     WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?
+    )`,
+  ).bind(userId, key, userId, session.auth_version).first();
+  if (!previous) {
+    await requireActiveAccount(env, session);
+    throw new HttpError(409, "Idempotency operation is unavailable.");
+  }
+  if (previous.fingerprint !== fingerprint) throw new HttpError(409, "Idempotency key belongs to different content.");
   if (previous.state === "done") {
     const item = await env.DB.prepare(
       "SELECT id FROM items WHERE id = ? AND owner_user_id = ? AND state = 'ready'",
@@ -535,8 +606,14 @@ async function beginMultipartOperation(request, env, userId, fingerprint) {
     const recovered = await env.DB.prepare(
       `UPDATE operations SET item_id = ?, created_at = ? WHERE user_id = ? AND request_key = ? AND item_id = ?
        AND state = 'pending' AND created_at < ?
-       AND NOT EXISTS (SELECT 1 FROM multipart_uploads WHERE item_id = ?)`,
-    ).bind(id, now(), userId, key, previous.item_id, now() - 30, previous.item_id).run();
+       AND NOT EXISTS (SELECT 1 FROM multipart_uploads WHERE item_id = ?) AND EXISTS (
+        SELECT 1 FROM users
+        WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?
+       )`,
+    ).bind(
+      id, now(), userId, key, previous.item_id, now() - 30, previous.item_id,
+      userId, session.auth_version,
+    ).run();
     if (recovered.meta.changes) {
       await env.DB.prepare(
         "UPDATE items SET state = 'deleting' WHERE id = ? AND owner_user_id = ? AND state != 'ready'",
@@ -548,8 +625,11 @@ async function beginMultipartOperation(request, env, userId, fingerprint) {
 
   const retry = await env.DB.prepare(
     `UPDATE operations SET state = 'pending', item_id = ?, created_at = ?
-     WHERE user_id = ? AND request_key = ? AND state = 'failed' AND item_id = ?`,
-  ).bind(id, now(), userId, key, previous.item_id).run();
+     WHERE user_id = ? AND request_key = ? AND state = 'failed' AND item_id = ? AND EXISTS (
+      SELECT 1 FROM users
+      WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?
+     )`,
+  ).bind(id, now(), userId, key, previous.item_id, userId, session.auth_version).run();
   if (!retry.meta.changes) throw new HttpError(409, "Upload state changed. Retry later with the same key.");
   await env.DB.prepare(
     "UPDATE items SET state = 'deleting' WHERE id = ? AND owner_user_id = ? AND state != 'ready'",
@@ -557,11 +637,15 @@ async function beginMultipartOperation(request, env, userId, fingerprint) {
   return { id, key };
 }
 
-async function publishFile(env, id, key, userId) {
+async function publishFile(env, id, key, session) {
+  const userId = session.user_id;
   const [published] = await env.DB.batch([
     env.DB.prepare(`UPDATE items SET state = 'ready' WHERE id = ? AND owner_user_id = ? AND state = 'pending'
       AND EXISTS (SELECT 1 FROM operations
-       WHERE user_id = ? AND request_key = ? AND item_id = ? AND state = 'pending')`).bind(id, userId, userId, key, id),
+       WHERE user_id = ? AND request_key = ? AND item_id = ? AND state = 'pending')
+      AND EXISTS (SELECT 1 FROM users
+       WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?)`)
+      .bind(id, userId, userId, key, id, userId, session.auth_version),
     revision(env, userId),
     env.DB.prepare(`UPDATE operations SET state = 'done' WHERE user_id = ? AND request_key = ? AND item_id = ?
       AND EXISTS (SELECT 1 FROM items WHERE id = ? AND owner_user_id = ? AND state = 'ready')`)
@@ -571,7 +655,10 @@ async function publishFile(env, id, key, userId) {
     env.DB.prepare(`DELETE FROM multipart_uploads WHERE item_id = ?
       AND EXISTS (SELECT 1 FROM items WHERE id = ? AND owner_user_id = ? AND state = 'ready')`).bind(id, id, userId),
   ]);
-  if (!published.meta.changes) throw new HttpError(409, "Upload was cancelled by a history clear.");
+  if (!published.meta.changes) {
+    await requireActiveAccount(env, session);
+    throw new HttpError(409, "Upload was cancelled by a history clear.");
+  }
 }
 
 async function multipartPayload(env, id, config, userId, touch = false) {
@@ -625,23 +712,36 @@ async function initiateMultipart(request, env, config, session) {
   const fingerprint = await digest(JSON.stringify([
     "multipart-file-v1", data.name, data.size, data.chunkSize, data.fileFingerprint,
   ]));
-  const operation = await beginMultipartOperation(request, env, session.user_id, fingerprint);
+  const operation = await beginMultipartOperation(request, env, session, fingerprint);
   const { id, key } = operation;
   if (operation.replay) return json({ success: true, id, complete: true, replayed: true });
   if (operation.resume) return json(await multipartPayload(env, id, config, session.user_id, true));
 
   let multipart;
   try {
-    await env.DB.prepare(
+    const inserted = await env.DB.prepare(
       `INSERT INTO items(id, owner_user_id, type, name, size, media_type, state, created_at)
-       VALUES (?, ?, 'file', ?, ?, ?, 'pending', ?)`,
-    ).bind(id, session.user_id, data.name, data.size, mediaType, now()).run();
+       SELECT ?, ?, 'file', ?, ?, ?, 'pending', ? WHERE EXISTS (
+        SELECT 1 FROM users
+        WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?
+       ) AND EXISTS (
+        SELECT 1 FROM operations
+        WHERE user_id = ? AND request_key = ? AND item_id = ? AND state = 'pending'
+       )`,
+    ).bind(
+      id, session.user_id, data.name, data.size, mediaType, now(),
+      session.user_id, session.auth_version, session.user_id, key, id,
+    ).run();
+    if (!inserted.meta.changes) {
+      await requireActiveAccount(env, session);
+      throw new HttpError(409, "Upload operation is unavailable.");
+    }
     if (data.size === 0) {
       const object = await env.FILES.put(objectKey(id), new Uint8Array(), {
         httpMetadata: { contentType: "application/octet-stream" },
       });
       if (!object || object.size !== 0) throw new HttpError(500, "Empty file could not be stored.");
-      await publishFile(env, id, key, session.user_id);
+      await publishFile(env, id, key, session);
       return json({ success: true, id, complete: true }, 201);
     }
 
@@ -768,7 +868,7 @@ async function completeMultipart(env, id, session) {
       object = await multipart.complete(parts.map((part) => ({ partNumber: part.part_number, etag: part.etag })));
     }
     if (!object || object.size !== item.size) throw new HttpError(500, "Completed file size does not match the upload.");
-    await publishFile(env, id, upload.operation_key, session.user_id);
+    await publishFile(env, id, upload.operation_key, session);
     return json({ success: true, id, complete: true }, 201);
   } catch (error) {
     const committed = await env.DB.prepare(
@@ -1134,22 +1234,43 @@ async function route(request, env, ctx, responseState) {
     if (typeof data.text !== "string" || !data.text.trim()) throw new HttpError(400, "Text cannot be empty.");
     if (encoder.encode(data.text).length > config.textLimit) throw new HttpError(413, `Text exceeds ${config.textLimit} UTF-8 bytes.`);
     const operation = await beginOperation(
-      request, env, session.user_id, await digest(JSON.stringify(["text", data.text])),
+      request, env, session, await digest(JSON.stringify(["text", data.text])),
     );
     const { id, key } = operation;
     if (operation.replay) return json({ success: true, id, replayed: true });
     try {
-      await env.DB.batch([
+      const [inserted] = await env.DB.batch([
         env.DB.prepare(
           `INSERT INTO items(id, owner_user_id, type, content, state, created_at)
-           VALUES (?, ?, 'text', ?, 'ready', ?)`,
-        ).bind(id, session.user_id, data.text, now()),
+           SELECT ?, ?, 'text', ?, 'ready', ? WHERE EXISTS (
+            SELECT 1 FROM users
+            WHERE id = ? AND enabled = 1 AND deletion_requested_at IS NULL AND auth_version = ?
+           ) AND EXISTS (
+            SELECT 1 FROM operations
+            WHERE user_id = ? AND request_key = ? AND item_id = ? AND state = 'pending'
+           )`,
+        ).bind(
+          id, session.user_id, data.text, now(),
+          session.user_id, session.auth_version, session.user_id, key, id,
+        ),
         revision(env, session.user_id),
         env.DB.prepare(
           `UPDATE operations SET state = 'done'
-           WHERE user_id = ? AND request_key = ? AND item_id = ?`,
-        ).bind(session.user_id, key, id),
+           WHERE user_id = ? AND request_key = ? AND item_id = ? AND EXISTS (
+            SELECT 1 FROM items
+            WHERE id = ? AND owner_user_id = ? AND state = 'ready'
+           )`,
+        ).bind(session.user_id, key, id, id, session.user_id),
+        env.DB.prepare(
+          `UPDATE operations SET state = 'failed'
+           WHERE user_id = ? AND request_key = ? AND item_id = ? AND state = 'pending'
+            AND NOT EXISTS (SELECT 1 FROM items WHERE id = ? AND owner_user_id = ?)`,
+        ).bind(session.user_id, key, id, id, session.user_id),
       ]);
+      if (!inserted.meta.changes) {
+        await requireActiveAccount(env, session);
+        throw new HttpError(409, "Text operation is unavailable.");
+      }
     } catch (error) {
       const committed = await env.DB.prepare(
         `SELECT state FROM operations WHERE user_id = ? AND request_key = ? AND item_id = ?`,

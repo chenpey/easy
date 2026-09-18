@@ -17,6 +17,7 @@ const config = JSON.parse(await readFile(new URL("../wrangler.json", import.meta
 async function request(path, { method = "GET", body, headers = {}, authenticated = false } = {}) {
   return mf.dispatchFetch(`${origin}${path}`, {
     method, body,
+    ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
     headers: {
       Origin: origin,
       "CF-Connecting-IP": "192.0.2.1",
@@ -32,6 +33,36 @@ async function jsonRequest(path, data, authenticated = false, headers = {}) {
     method: "POST", body: JSON.stringify(data), authenticated,
     headers: { "Content-Type": "application/json", ...headers },
   });
+}
+
+function deferredJsonBody(data) {
+  const bytes = new TextEncoder().encode(JSON.stringify(data));
+  let release;
+  let reached;
+  const hold = new Promise((resolve) => { release = resolve; });
+  const reading = new Promise((resolve) => { reached = resolve; });
+  let offset = 0;
+  return {
+    body: new ReadableStream({
+      pull(controller) {
+        if (offset === 0) {
+          controller.enqueue(bytes.subarray(0, 1));
+          offset = 1;
+          return;
+        }
+        if (offset === 1) {
+          offset = bytes.length;
+          reached();
+          return hold.then(() => {
+            controller.enqueue(bytes.subarray(1));
+            controller.close();
+          });
+        }
+      },
+    }),
+    reading,
+    release,
+  };
 }
 
 const fileDownloadPath = (id, name) => `/uploads/${id}/${encodeURIComponent(name)}`;
@@ -87,7 +118,7 @@ beforeEach(async () => {
   await db.batch(["DELETE FROM file_shares", "DELETE FROM multipart_parts", "DELETE FROM multipart_uploads", "DELETE FROM items",
     "DELETE FROM sessions", "DELETE FROM login_attempts", "DELETE FROM account_attempts", "DELETE FROM operations",
     "DELETE FROM users WHERE username != 'admin'",
-    "UPDATE users SET enabled = 1, recovery_code_hash = NULL, recovery_code_created_at = NULL, approved_at = created_at, deletion_requested_at = NULL, content_revision = 0 WHERE username = 'admin'",
+    "UPDATE users SET role = 'admin', enabled = 1, recovery_code_hash = NULL, recovery_code_created_at = NULL, approved_at = created_at, deletion_requested_at = NULL, content_revision = 0 WHERE username = 'admin'",
     "UPDATE app_state SET revision = 0, sweep_cursor = '', self_registration_enabled = 0"].map((sql) => db.prepare(sql)));
   const objects = await bucket.list();
   if (objects.objects.length) await bucket.delete(objects.objects.map((item) => item.key));
@@ -328,6 +359,51 @@ test("administrators manage users and every account change revokes active sessio
   assert.equal((await request(`/api/users/${admin.id}`, { method: "DELETE", authenticated: true })).status, 409);
 });
 
+test("concurrent administrator changes preserve one enabled administrator", async () => {
+  await signIn();
+  const primary = { cookie, csrf };
+  const created = await jsonRequest("/api/users", {
+    username: "second-admin", password: "SecondAdminPass123!", role: "admin",
+  }, true);
+  const secondAdmin = (await created.json()).user;
+  const second = await credentialsFor("second-admin", "SecondAdminPass123!");
+  const primaryAdmin = await db.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
+  const demoteSecond = deferredJsonBody({ role: "user" });
+  const demotePrimary = deferredJsonBody({ role: "user" });
+
+  const firstRequest = request(`/api/users/${secondAdmin.id}`, {
+    method: "PATCH",
+    body: demoteSecond.body,
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: primary.cookie,
+      "X-CSRF-Token": primary.csrf,
+    },
+  });
+  const secondRequest = request(`/api/users/${primaryAdmin.id}`, {
+    method: "PATCH",
+    body: demotePrimary.body,
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: second.cookie,
+      "X-CSRF-Token": second.csrf,
+    },
+  });
+
+  await Promise.all([demoteSecond.reading, demotePrimary.reading]);
+  demoteSecond.release();
+  demotePrimary.release();
+  const responses = await Promise.all([firstRequest, secondRequest]);
+  const statuses = responses.map((response) => response.status);
+  assert.equal(statuses.filter((status) => status === 200).length, 1);
+  assert.ok(statuses.some((status) => status === 401 || status === 409));
+  const remaining = await db.prepare(
+    `SELECT COUNT(*) AS count FROM users
+     WHERE role = 'admin' AND enabled = 1 AND deletion_requested_at IS NULL`,
+  ).first();
+  assert.equal(remaining.count, 1);
+});
+
 test("self-registration is gated, pending approval and supports one-time recovery", async () => {
   assert.deepEqual(await (await request("/api/auth/config")).json(), { registrationEnabled: false });
   assert.equal((await jsonRequest("/api/register", {
@@ -487,6 +563,47 @@ test("users manage credentials and account deletion purges their private content
   await maintenance({ DB: db, FILES: bucket });
   assert.equal(await db.prepare("SELECT id FROM users WHERE id = ?").bind(member.id).first(), null);
   assert.equal(await bucket.head(`files/${fileId}`), null);
+});
+
+test("account deletion rejects writes that passed authentication before deletion", async () => {
+  await signIn();
+  const created = await jsonRequest("/api/users", {
+    username: "deletion-race", password: "DeletionRacePass123!", role: "user",
+  }, true);
+  const member = (await created.json()).user;
+  useCredentials(await credentialsFor("deletion-race", "DeletionRacePass123!"));
+  const memberCredentials = { cookie, csrf };
+  const timestamp = Math.floor(Date.now() / 1000);
+  await db.batch(Array.from({ length: 51 }, (_, index) => db.prepare(
+    `INSERT INTO items(id, owner_user_id, type, content, state, created_at)
+     VALUES (?, ?, 'text', ?, 'ready', ?)`,
+  ).bind(crypto.randomUUID(), member.id, `existing-${index}`, timestamp)));
+
+  const deferred = deferredJsonBody({ text: "must not survive deletion" });
+  const staleWrite = request("/api/text", {
+    method: "POST",
+    body: deferred.body,
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: memberCredentials.cookie,
+      "X-CSRF-Token": memberCredentials.csrf,
+      "Idempotency-Key": crypto.randomUUID(),
+    },
+  });
+  await deferred.reading;
+  const deleted = await request("/api/account", {
+    method: "DELETE",
+    authenticated: true,
+    body: JSON.stringify({ username: "deletion-race", currentPassword: "DeletionRacePass123!" }),
+    headers: { "Content-Type": "application/json" },
+  });
+  assert.equal(deleted.status, 202);
+  deferred.release();
+  assert.equal((await staleWrite).status, 401);
+
+  await maintenance({ DB: db, FILES: bucket });
+  assert.equal(await db.prepare("SELECT id FROM users WHERE id = ?").bind(member.id).first(), null);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS count FROM items WHERE owner_user_id = ?").bind(member.id).first()).count, 0);
 });
 
 test("user tenants isolate history, files, mutations and idempotency keys", async () => {

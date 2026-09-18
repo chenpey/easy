@@ -24,6 +24,7 @@ let textOperation;
 let expandedHistory = false;
 let sessionEnded = false;
 let temporaryShareItem;
+let temporaryShareGeneration = 0;
 const maxPollRetrySeconds = 60;
 const activeUploads = new Set();
 const activeRequests = new Set();
@@ -376,11 +377,13 @@ function renderTemporaryShare(item, result = null) {
   $("temporary-share-notice").textContent = "";
   if (!result) {
     $("temporary-share-url").removeAttribute("href");
+    $("temporary-share-url").removeAttribute("download");
     $("temporary-share-url").textContent = "";
     $("temporary-share-expiry").textContent = "";
     return;
   }
   $("temporary-share-url").href = result.url;
+  $("temporary-share-url").download = item.name;
   $("temporary-share-url").textContent = result.url;
   $("temporary-share-expiry").textContent = `有效至 ${new Date(result.expiresAt * 1000).toLocaleString()}`;
   $("temporary-share-qr").hidden = false;
@@ -392,6 +395,7 @@ function renderTemporaryShare(item, result = null) {
 
 function openTemporaryShare(item) {
   temporaryShareItem = item;
+  temporaryShareGeneration++;
   $("temporary-share-form").reset();
   renderTemporaryShare(item);
   $("temporary-share-dialog").showModal();
@@ -1174,16 +1178,26 @@ async function initializeApp() {
     image.onload = null;
     image.onerror = null;
   });
-  $("temporary-share-close").addEventListener("click", () => $("temporary-share-dialog").close());
+  const temporaryShareDialog = $("temporary-share-dialog");
+  $("temporary-share-close").addEventListener("click", () => temporaryShareDialog.close());
+  temporaryShareDialog.addEventListener("close", () => {
+    temporaryShareGeneration++;
+    temporaryShareItem = undefined;
+  });
   $("temporary-share-form").addEventListener("submit", (event) => {
     event.preventDefault();
     busy(event.submitter, async () => {
       if (!temporaryShareItem) return;
       const item = temporaryShareItem;
+      const generation = temporaryShareGeneration;
       const result = await api(`/api/history/${item.id}/share`, {
         method: "POST",
         data: { hours: Number($("temporary-share-hours").value) },
       });
+      if (generation !== temporaryShareGeneration || temporaryShareItem?.id !== item.id) {
+        await loadHistory();
+        return;
+      }
       item.share_expires_at = result.expiresAt;
       renderTemporaryShare(item, result);
       notice("临时链接已创建");
@@ -1194,9 +1208,15 @@ async function initializeApp() {
     copy($("temporary-share-url").href, $("temporary-share-copy"), $("temporary-share-notice"))));
   $("temporary-share-revoke").addEventListener("click", () => busy($("temporary-share-revoke"), async () => {
     if (!temporaryShareItem) return;
-    await api(`/api/history/${temporaryShareItem.id}/share`, { method: "DELETE" });
-    temporaryShareItem.share_expires_at = null;
-    renderTemporaryShare(temporaryShareItem);
+    const item = temporaryShareItem;
+    const generation = temporaryShareGeneration;
+    await api(`/api/history/${item.id}/share`, { method: "DELETE" });
+    if (generation !== temporaryShareGeneration || temporaryShareItem?.id !== item.id) {
+      await loadHistory();
+      return;
+    }
+    item.share_expires_at = null;
+    renderTemporaryShare(item);
     notice("临时链接已撤销");
     await loadHistory();
   }));

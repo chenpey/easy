@@ -233,10 +233,13 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await temporaryDialog.getByRole("spinbutton", { name: "有效时长（小时）" }).fill("2");
     await temporaryDialog.getByRole("button", { name: "创建链接" }).click();
     await expect(page.locator("#notice")).toHaveText("临时链接已创建");
-    const temporaryUrl = await temporaryDialog.locator("#temporary-share-url").getAttribute("href");
+    const temporaryLink = temporaryDialog.locator("#temporary-share-url");
+    const temporaryUrl = await temporaryLink.getAttribute("href");
     const temporaryLinkUrl = new URL(temporaryUrl);
     expect(temporaryLinkUrl.pathname).toMatch(/^\/shared\/[a-f0-9]{64}\//);
     expect(decodeURIComponent(temporaryLinkUrl.pathname.split("/").at(-1))).toBe(filename);
+    await expect(temporaryLink).not.toHaveAttribute("target", "_blank");
+    await expect(temporaryLink).toHaveAttribute("download", filename);
     await expect(temporaryDialog.locator("#temporary-share-status")).toContainText("当前链接有效至");
     await expect.poll(() => temporaryDialog.locator("#temporary-share-qr").evaluate((canvas) => {
       const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
@@ -250,6 +253,11 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(temporaryDialog.locator("#temporary-share-notice")).toHaveText("已复制");
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(temporaryUrl);
     await page.screenshot({ path: `test-results/temporary-share-${viewport.width}.png` });
+    const temporaryDownloadPromise = page.waitForEvent("download");
+    await temporaryLink.click();
+    const temporaryDownload = await temporaryDownloadPromise;
+    expect(temporaryDownload.suggestedFilename()).toBe(filename);
+    expect(await temporaryDownload.failure()).toBeNull();
     const guestContext = await browser.newContext();
     const publicDownload = await guestContext.request.get(temporaryUrl);
     expect(publicDownload.status()).toBe(200);
@@ -475,6 +483,52 @@ test("registration, recovery, password change and self-deletion work end to end"
     data: { enabled: false },
   });
   expect(closed.ok()).toBe(true);
+});
+
+test("temporary share ignores a stale response after switching files", async ({ page, context }) => {
+  await loginContext(context);
+  await page.goto(preview.url);
+  await page.locator("#file-input").setInputFiles([
+    { name: "share-race-a.txt", mimeType: "text/plain", buffer: Buffer.from("first") },
+    { name: "share-race-b.txt", mimeType: "text/plain", buffer: Buffer.from("second") },
+  ]);
+  await page.getByRole("button", { name: "上传文件", exact: true }).click();
+  await expect(page.locator("#notice")).toHaveText("上传完成");
+  const first = page.locator(".history-item").filter({ hasText: "share-race-a.txt" });
+  const second = page.locator(".history-item").filter({ hasText: "share-race-b.txt" });
+  let release;
+  let responseReady;
+  const hold = new Promise((resolve) => { release = resolve; });
+  const reachedResponse = new Promise((resolve) => { responseReady = resolve; });
+  let delayed = false;
+  await page.route("**/api/history/*/share", async (route) => {
+    if (!delayed && route.request().method() === "POST") {
+      delayed = true;
+      const response = await route.fetch();
+      responseReady();
+      await hold;
+      await route.fulfill({ response });
+      return;
+    }
+    await route.continue();
+  });
+
+  try {
+    await first.getByRole("button", { name: "创建临时链接" }).click();
+    const dialog = page.locator("#temporary-share-dialog");
+    await dialog.getByRole("button", { name: "创建链接" }).click();
+    await reachedResponse;
+    await dialog.getByRole("button", { name: "关闭" }).click();
+    await second.getByRole("button", { name: "创建临时链接" }).click();
+    await expect(dialog.locator("#temporary-share-file")).toHaveText("share-race-b.txt");
+    release();
+    await expect(dialog.getByRole("button", { name: "创建链接" })).toBeEnabled();
+    await expect(dialog.locator("#temporary-share-file")).toHaveText("share-race-b.txt");
+    await expect(dialog.locator("#temporary-share-result")).toBeHidden();
+    await expect(dialog.locator("#temporary-share-status")).toHaveText("当前未启用临时访问");
+  } finally {
+    release?.();
+  }
 });
 
 test("editing during submit cannot send a second request or erase new input", async ({ page, context }) => {

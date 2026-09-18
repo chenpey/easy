@@ -173,7 +173,7 @@ export async function inspectDeployment(api, config, existing) {
     foundDatabase, foundBucket, url,
     hasInitialAdmin: !!settings?.bindings?.some((entry) => entry.name === "INITIAL_ADMIN" && entry.type === "secret_text"),
     adoptingDatabase: !!foundDatabase && database.database_id === EMPTY_DATABASE,
-    adoptingBucket: !!foundBucket && !existing,
+    adoptingBucket: !!foundBucket && !settings,
   };
 }
 

@@ -1,2 +1,2 @@
 // Generated from versions.json. Run node scripts/version.mjs sync after editing the source.
-export const EASYNOTE_VERSION = '0.2.0';
+export const EASYNOTE_VERSION = '0.2.1';

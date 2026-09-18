@@ -99,11 +99,12 @@ test("first deployment provisions private storage and subsequent deployment reus
   const next = deploymentConfig(template, config, account, config.name, "");
   const repeated = await inspectDeployment(api, next, config);
   assert.equal(repeated.hasInitialAdmin, true);
+  assert.equal(repeated.adoptingBucket, false);
   await provisionDeployment(api, next, repeated, async () => {});
   assert.equal(records.filter((request) => request.method !== "GET").length, 0);
 });
 
-test("partial R2 failure preserves D1 identity for the next run", async () => {
+test("partial R2 failure preserves D1 identity and re-confirms a later bucket", async () => {
   const config = deploymentConfig(template, null, account, "my-share", "");
   let saved;
   failBucket = true;
@@ -111,10 +112,13 @@ test("partial R2 failure preserves D1 identity for the next run", async () => {
     async (value) => { saved = structuredClone(value); }), /POST .*r2\/buckets[\s\S]*403[\s\S]*R2 is not enabled/);
   assert.equal(saved.d1_databases[0].database_id, database.uuid);
   failBucket = false;
+  bucket = { name: "my-share-files" };
   records = [];
   const next = await inspectDeployment(api, saved, saved);
+  assert.equal(next.adoptingBucket, true);
   await provisionDeployment(api, saved, next, async () => {});
   assert.equal(records.filter((request) => request.method === "POST" && request.path.endsWith("/d1/database")).length, 0);
+  assert.equal(records.filter((request) => request.method === "POST" && request.path.endsWith("/r2/buckets")).length, 0);
 });
 
 test("public R2 and existing unrelated Worker are rejected before writes", async () => {
