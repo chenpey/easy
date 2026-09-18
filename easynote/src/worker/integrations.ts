@@ -113,7 +113,7 @@ async function searchNotes(request: Request, env: Env, user: IntegrationIdentity
   }
   filters.push('n.user_id=?', 'n.deleted_at IS NULL', `n.archived=${view === 'archive' ? 1 : 0}`);
   binds.push(user.id);
-  if (query) {
+  if (query && !ftsQuery) {
     filters.push("(n.title LIKE ? ESCAPE '\\' OR n.content LIKE ? ESCAPE '\\')");
     binds.push(`%${escape(query)}%`, `%${escape(query)}%`);
   }
@@ -125,15 +125,18 @@ async function searchNotes(request: Request, env: Env, user: IntegrationIdentity
   let order = sort === 'updated' ? 'n.updated_at DESC,n.id ASC' : 'n.pinned DESC,n.updated_at DESC,n.id ASC';
   if (query && sort === 'default') {
     const escaped = escape(query);
-    order = `CASE WHEN n.title = ? COLLATE NOCASE THEN 0
-      WHEN n.title LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,
-      ${ftsQuery
-        ? `bm25(notes_fts,${titleSearchWeight},1.0),`
-        : `((length(lower(n.title))-length(replace(lower(n.title),?,'')))*8+
-          length(lower(n.content))-length(replace(lower(n.content),?,''))) DESC,`}
-      n.pinned DESC,n.updated_at DESC,n.id ASC`;
-    orderBinds.push(query, `${escaped}%`);
-    if (!ftsQuery) orderBinds.push(query.toLowerCase(), query.toLowerCase());
+    if (ftsQuery) {
+      order = `CASE WHEN n.title = ? COLLATE NOCASE THEN 0 ELSE 1 END,
+        bm25(notes_fts,${titleSearchWeight},1.0),n.pinned DESC,n.updated_at DESC,n.id ASC`;
+      orderBinds.push(query);
+    } else {
+      order = `CASE WHEN n.title = ? COLLATE NOCASE THEN 0
+        WHEN n.title LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,
+        ((length(lower(n.title))-length(replace(lower(n.title),?,'')))*8+
+          length(lower(n.content))-length(replace(lower(n.content),?,''))) DESC,
+        n.pinned DESC,n.updated_at DESC,n.id ASC`;
+      orderBinds.push(query, `${escaped}%`, query.toLowerCase(), query.toLowerCase());
+    }
   }
   const source = ftsQuery ? 'notes_fts JOIN notes n ON n.rowid=notes_fts.rowid' : 'notes n';
   const result = await env.DB.prepare(`SELECT n.* FROM ${source} WHERE ${filters.join(' AND ')}

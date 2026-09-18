@@ -79,8 +79,9 @@ test('AI tokens are scoped, revocable and preserve revision history', async () =
   assert.deepEqual(await status.json(), { account: 'tester', integration: '测试 AI', access: 'read-write' });
 
   const id = randomUUID();
+  const longQuery = '跨设备检索'.repeat(5);
   const aiCreate = await request(`/api/integrations/notes/${id}`, 'POST', {
-    ...base, title: 'AI 创建', content: '## 影响\n\n法兰克福 AI 上下文', revision: 0, operationId: randomUUID(),
+    ...base, title: 'AI 创建', content: `## 影响\n\n法兰克福 AI 上下文\n${longQuery}`, revision: 0, operationId: randomUUID(),
   }, bearer);
   assert.equal(aiCreate.status, 201, await aiCreate.clone().text());
   const note = (await aiCreate.json() as any).note;
@@ -93,6 +94,14 @@ test('AI tokens are scoped, revocable and preserve revision history', async () =
   const titleSearch = await (await request('/api/integrations/notes?q=AI&limit=10', 'GET', undefined, bearer)).json() as any;
   assert.ok(titleSearch.notes.find((item: any) => item.id === id).matches.some((match: any) =>
     match.field === 'title' && match.line === null && match.heading === null && match.snippet.includes('AI')));
+  const longSearch = await request(
+    `/api/integrations/notes?q=${encodeURIComponent(longQuery)}&view=all&limit=10`,
+    'GET',
+    undefined,
+    bearer,
+  );
+  assert.equal(longSearch.status, 200, await longSearch.clone().text());
+  assert.ok((await longSearch.json() as any).notes.some((item: any) => item.id === id));
   assert.equal((await request('/api/integrations/notes?limit=21', 'GET', undefined, bearer)).status, 400);
   assert.equal((await request('/api/integrations/notes?sort=invalid', 'GET', undefined, bearer)).status, 400);
 
@@ -330,9 +339,11 @@ test('two devices cannot silently overwrite the same revision', async () => {
 
 test('Chinese search, tags, pin order and archive filters work', async () => {
   const marker = randomUUID().slice(0, 8);
+  const longQuery = '完整中文搜索'.repeat(5);
   await create({ title: `${marker}-普通`, content: '中文没有空格也可查询', tags: ['验收标签'] });
   await create({ title: `${marker}-置顶`, content: '中文没有空格也可查询', tags: ['验收标签'], pinned: true });
   await create({ title: `${marker}-归档`, content: '中文没有空格也可查询', tags: ['仅归档标签'], archived: true });
+  const longSearchNote = await create({ title: '长查询', content: longQuery });
   const trashed = await create({ title: `${marker}-回收站`, tags: ['仅回收站标签'] });
   await save(trashed.id, 1, { title: `${marker}-回收站`, tags: ['仅回收站标签'], deletedAt: Date.now() });
   const response = await request(`/api/notes?q=${encodeURIComponent(marker)}&view=all`);
@@ -340,6 +351,9 @@ test('Chinese search, tags, pin order and archive filters work', async () => {
   assert.deepEqual(data.notes.map((note: any) => note.title), [`${marker}-置顶`, `${marker}-普通`]);
   const archive = await (await request(`/api/notes?q=${encodeURIComponent(marker)}&view=archive&tag=${encodeURIComponent('仅归档标签')}`)).json() as any;
   assert.deepEqual(archive.notes.map((note: any) => note.title), [`${marker}-归档`]);
+  const longSearch = await request(`/api/notes?q=${encodeURIComponent(longQuery)}&view=all`);
+  assert.equal(longSearch.status, 200, await longSearch.clone().text());
+  assert.ok((await longSearch.json() as any).notes.some((note: any) => note.id === longSearchNote.id));
   const allTags = (await (await request('/api/tags?view=all')).json() as any).tags;
   assert.ok(allTags.includes('验收标签'));
   assert.ok(!allTags.includes('仅归档标签'));
@@ -397,6 +411,23 @@ test('validation rejects malformed notes, missing images and oversized content',
     ...base, revision: 0, operationId: randomUUID(), createVersion: 'yes',
   })).status, 400);
   assert.equal((await save(randomUUID(), 0, { content: `![missing](/api/images/${randomUUID()})` })).status, 409);
+});
+
+test('a note can reference the documented maximum of 80 stored files', async () => {
+  const ids = Array.from({ length: 80 }, () => randomUUID());
+  const now = Date.now();
+  await instance.db.prepare(`INSERT INTO images
+    (id,user_id,filename,mime,size,width,height,sha256,status,created_at,last_used_at)
+    SELECT value,?,value||'.txt','text/plain',1,0,0,?,'ready',?,? FROM json_each(?)`)
+    .bind(testUserId, '0'.repeat(64), now, now, JSON.stringify(ids)).run();
+  const id = randomUUID();
+  const response = await save(id, 0, {
+    content: ids.map((fileId) => `[附件](/api/files/${fileId})`).join('\n'),
+  });
+  assert.equal(response.status, 201, await response.clone().text());
+  const refs = await instance.db.prepare('SELECT COUNT(*) AS count FROM image_refs WHERE note_id=?')
+    .bind(id).first<{ count: number }>();
+  assert.equal(refs?.count, 80);
 });
 
 test('private images validate media type, have no public cache, and survive history references', async () => {
@@ -554,6 +585,40 @@ test('administrators manage isolated tenant accounts and registration approval',
   await cleanup({ DB: instance.db, IMAGES: instance.bucket, IMAGE_GRACE_HOURS: '24' } as any);
   assert.equal(await instance.db.prepare('SELECT id FROM users WHERE id=?').bind(pending.id).first(), null);
   assert.equal((await request('/api/admin/settings/registration', 'PATCH', { enabled: false })).status, 200);
+});
+
+test('concurrent administrator changes always preserve one enabled administrator', async () => {
+  const username = `admin-${randomUUID().slice(0, 8)}`;
+  const password = 'Concurrent-Admin-Password-684!';
+  const created = await request('/api/admin/users', 'POST', { username, password, role: 'admin' });
+  assert.equal(created.status, 201, await created.clone().text());
+  const other = (await created.json() as any).user;
+  const login = await request('/api/login', 'POST', { username, password });
+  assert.equal(login.status, 200, await login.clone().text());
+  const session = await login.json() as any;
+  const otherHeaders = {
+    Cookie: login.headers.get('Set-Cookie')!.split(';')[0],
+    'X-CSRF-Token': session.csrf,
+  };
+
+  try {
+    const responses = await Promise.all([
+      request(`/api/admin/users/${other.id}`, 'PATCH', { role: 'user' }),
+      request(`/api/admin/users/${testUserId}`, 'PATCH', { role: 'user' }, otherHeaders),
+    ]);
+    const statuses = responses.map((response) => response.status);
+    const remaining = await instance.db.prepare(`SELECT COUNT(*) AS count FROM users
+      WHERE role='admin' AND enabled=1 AND deletion_requested_at IS NULL`).first<{ count: number }>();
+    assert.equal(remaining?.count, 1, `unexpected statuses: ${statuses.join(',')}`);
+    assert.ok(statuses.some((status) => status === 200));
+    assert.ok(statuses.some((status) => [401, 403, 409].includes(status)), `unexpected statuses: ${statuses.join(',')}`);
+  } finally {
+    await instance.db.prepare(`UPDATE users SET role='admin',enabled=1,deletion_requested_at=NULL WHERE id=?`)
+      .bind(testUserId).run();
+    await instance.db.prepare('INSERT OR REPLACE INTO sessions VALUES(?,?,?,?)')
+      .bind(await digest(testToken), testUserId, testCsrf, Date.now() + 86400_000).run();
+    await instance.db.prepare('DELETE FROM users WHERE id=?').bind(other.id).run();
+  }
 });
 
 test('task center aggregates unfinished tasks with source positions', async () => {

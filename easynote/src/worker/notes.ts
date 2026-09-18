@@ -129,11 +129,12 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   }
   const ids = storedFileIds(input.content);
   if (ids.length > 80) throw new ApiError(400, 'A note can reference at most 80 stored files.');
-  const placeholders = ids.map(() => '?').join(',');
+  const idsJson = JSON.stringify(ids);
   const readyCondition = ids.length
-    ? `(SELECT COUNT(*) FROM images WHERE user_id=? AND status='ready' AND id IN (${placeholders}))=?`
+    ? `(SELECT COUNT(*) FROM images WHERE user_id=? AND status='ready'
+        AND id IN (SELECT value FROM json_each(?)))=?`
     : '1=1';
-  const readyBinds = ids.length ? [user.id, ...ids, ids.length] : [];
+  const readyBinds = ids.length ? [user.id, idsJson, ids.length] : [];
   const time = Date.now();
   const revision = Number(data.revision) + 1;
   const mutation = data.operationId;
@@ -171,11 +172,13 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
     statements.push(env.DB.prepare(`DELETE FROM note_shares WHERE note_id=? AND ${guard}`)
       .bind(id, ...guardBinds));
   }
-  for (const imageId of ids) {
-    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO image_refs SELECT ?,?,? WHERE ${guard}`)
-      .bind(id, imageId, revision, ...guardBinds));
-    statements.push(env.DB.prepare(`UPDATE images SET last_used_at=? WHERE id=? AND user_id=? AND ${guard}`)
-      .bind(time, imageId, user.id, ...guardBinds));
+  if (ids.length) {
+    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO image_refs(note_id,image_id,revision)
+      SELECT ?,value,? FROM json_each(?) WHERE ${guard}`)
+      .bind(id, revision, idsJson, ...guardBinds));
+    statements.push(env.DB.prepare(`UPDATE images SET last_used_at=? WHERE user_id=?
+      AND id IN (SELECT value FROM json_each(?)) AND ${guard}`)
+      .bind(time, user.id, idsJson, ...guardBinds));
   }
   const keep = numberSetting(env, 'VERSIONS_KEPT', 1, 100);
   statements.push(env.DB.prepare(`DELETE FROM note_versions WHERE note_id=? AND revision NOT IN
@@ -232,6 +235,9 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
   }
   if (path === '/api/notes' && request.method === 'GET') {
     const q = (url.searchParams.get('q') ?? '').slice(0, 200);
+    const ftsQuery = Array.from(q).length >= 3 && /\S/.test(q)
+      ? `"${q.replaceAll('"', '""')}"`
+      : null;
     const view = url.searchParams.get('view') ?? 'all';
     if (!['all', 'archive', 'trash', 'export'].includes(view)) throw new ApiError(400, 'Invalid note view.');
     const offset = Number(url.searchParams.get('offset') ?? 0);
@@ -245,7 +251,13 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     if (view === 'trash') filters.push('deleted_at IS NOT NULL');
     else if (view === 'archive') filters.push('deleted_at IS NULL', 'archived=1');
     else if (view === 'all') filters.push('deleted_at IS NULL', 'archived=0');
-    if (q) { filters.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')"); binds.push(`%${escape(q)}%`, `%${escape(q)}%`); }
+    if (ftsQuery) {
+      filters.push('notes.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?)');
+      binds.push(ftsQuery);
+    } else if (q) {
+      filters.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')");
+      binds.push(`%${escape(q)}%`, `%${escape(q)}%`);
+    }
     if (tag) { filters.push('EXISTS(SELECT 1 FROM json_each(notes.tags) WHERE value=?)'); binds.push(tag); }
     const excerpt = q
       ? `(CASE WHEN instr(lower(content),lower(?))>61 THEN '…' ELSE '' END) ||

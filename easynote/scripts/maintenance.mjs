@@ -203,6 +203,7 @@ async function writeRestoreData(source, destination) {
   const included = new Set(applicationTables);
   async function* statements() {
     yield 'PRAGMA foreign_keys=ON;\n';
+    yield 'DELETE FROM app_state;\n';
     const reader = createInterface({ input: createReadStream(source), crlfDelay: Infinity });
     for await (const line of reader) {
       const table = /^INSERT INTO "?([^" (]+)"?/.exec(line)?.[1];
@@ -336,7 +337,10 @@ async function targetState(options, config) {
   const names = response.flatMap((entry) => entry.results ?? []).map((entry) => entry.name);
   if (!names.length) return { schema: false, rows: 0 };
   if (!applicationTables.every((name) => names.includes(name))) fail('Target D1 schema is incomplete.');
-  const countSql = applicationTables.map((name) => `(SELECT COUNT(*) FROM ${name})`).join('+');
+  const countSql = applicationTables
+    .filter((name) => name !== 'app_state')
+    .map((name) => `(SELECT COUNT(*) FROM ${name})`)
+    .join('+');
   const countsOutput = runWrangler([
     'd1', 'execute', 'DB', ...modeArgs(options),
     '--command', `SELECT ${countSql} AS rows;`,

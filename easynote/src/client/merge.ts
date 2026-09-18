@@ -10,6 +10,7 @@ export interface NoteMergeResult {
 }
 
 const inputFields: NoteConflictField[] = ['title', 'content', 'tags', 'pinned', 'archived', 'deletedAt'];
+const maxLineMergeWork = 250_000;
 
 function sameTags(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((tag) => right.includes(tag));
@@ -56,7 +57,13 @@ function mergeText(
 ): { value: string; conflict: boolean } {
   if (local === remote || remote === base) return { value: local, conflict: false };
   if (local === base) return { value: remote, conflict: false };
-  const regions = diff3Merge(textTokens(local), textTokens(base), textTokens(remote), {
+  const localTokens = textTokens(local);
+  const baseTokens = textTokens(base);
+  const remoteTokens = textTokens(remote);
+  if (baseTokens.length * Math.max(localTokens.length, remoteTokens.length) > maxLineMergeWork) {
+    return { value: preference === 'local' ? local : remote, conflict: true };
+  }
+  const regions = diff3Merge(localTokens, baseTokens, remoteTokens, {
     excludeFalseConflicts: true,
   });
   let conflict = false;

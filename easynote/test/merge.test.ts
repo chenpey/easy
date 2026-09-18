@@ -72,3 +72,15 @@ test('deletion overlapping another device edit requires an explicit choice', () 
   assert.equal(merged.note.deletedAt, null);
   assert.equal(mergeNoteChanges(base, local, remote, 'remote').note.deletedAt, 100);
 });
+
+test('large line-based merges fall back to an explicit conflict without expensive diffing', () => {
+  const lines = Array.from({ length: 1000 }, (_, index) => `重复段落 ${index % 3}`);
+  const base = baseNote({ content: `${lines.join('\n')}\n` });
+  const local = baseNote({ content: `本机修改\n${lines.slice(1).join('\n')}\n` });
+  const remote = baseNote({ content: `${lines.slice(0, -1).join('\n')}\n云端修改\n`, revision: 2 });
+
+  const merged = mergeNoteChanges(base, local, remote);
+  assert.deepEqual(merged.conflicts, ['content']);
+  assert.equal(merged.note.content, local.content);
+  assert.equal(mergeNoteChanges(base, local, remote, 'remote').note.content, remote.content);
+});

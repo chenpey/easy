@@ -180,19 +180,27 @@ test('restore preflight verifies empty D1 and missing R2 keys without writing', 
       r2_buckets: [{ binding: 'IMAGES', bucket_name: 'test-files' }],
     }));
     await writeFile(join(directory, 'node_modules/wrangler/bin/wrangler.js'), `
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(join(directory, 'calls.jsonl'))}, JSON.stringify(args) + '\\n');
 if (args[0] === 'd1' && args[1] === 'execute' && args.some((value) => value.includes('sqlite_master'))) {
-  console.log(JSON.stringify([{results:${JSON.stringify([
+  const tables = process.env.NEW_DATABASE === '1' && !existsSync(${JSON.stringify(join(directory, 'migrated'))}) ? [] : ${JSON.stringify([
     'users', 'sessions', 'integration_tokens', 'login_attempts', 'account_attempts', 'app_state',
     'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
-  ].map((name) => ({ name })))}}]));
-} else if (args[0] === 'd1' && args[1] === 'execute') {
+  ].map((name) => ({ name })))};
+  console.log(JSON.stringify([{results:tables}]));
+} else if (args[0] === 'd1' && args[1] === 'execute' && args.includes('--command')) {
+  if (args[args.indexOf('--command') + 1].includes('COUNT(*) FROM app_state')) process.exit(21);
   console.log(JSON.stringify([{results:[{rows:process.env.NONEMPTY === '1' ? 1 : 0}]}]));
+} else if (args[0] === 'd1' && args[1] === 'execute' && args.includes('--file')) {
+  copyFileSync(args[args.indexOf('--file') + 1], ${JSON.stringify(join(directory, 'applied.sql'))});
+} else if (args[0] === 'd1' && args[1] === 'migrations') {
+  writeFileSync(${JSON.stringify(join(directory, 'migrated'))}, 'yes');
 } else if (args[0] === 'r2' && args[2] === 'get') {
   console.error('The specified key does not exist.');
   process.exit(1);
+} else if (args[0] === 'r2' && args[2] === 'put') {
+  // Accept the restore write.
 } else {
   process.exit(20);
 }
@@ -205,6 +213,21 @@ if (args[0] === 'd1' && args[1] === 'execute' && args.some((value) => value.incl
     assert.match(valid.stdout, /Restore preflight passed/);
     const calls = (await readFile(join(directory, 'calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.ok(calls.every((args) => !(args[0] === 'r2' && args[2] === 'put')));
+
+    const restored = spawnSync(process.execPath, command.filter((value) => value !== '--check'), {
+      cwd: directory, encoding: 'utf8',
+    });
+    assert.equal(restored.status, 0, restored.stderr);
+    assert.match(restored.stdout, /Restore completed/);
+    const applied = await readFile(join(directory, 'applied.sql'), 'utf8');
+    assert.match(applied, /^PRAGMA foreign_keys=ON;\nDELETE FROM app_state;\n/);
+    assert.ok(applied.indexOf('DELETE FROM app_state;') < applied.indexOf('INSERT INTO app_state'));
+
+    const newDatabase = spawnSync(process.execPath, command.filter((value) => value !== '--check'), {
+      cwd: directory, encoding: 'utf8', env: { ...process.env, NEW_DATABASE: '1' },
+    });
+    assert.equal(newDatabase.status, 0, newDatabase.stderr);
+    assert.match(newDatabase.stdout, /new database without schema/);
 
     const nonempty = spawnSync(process.execPath, command, {
       cwd: directory, encoding: 'utf8', env: { ...process.env, NONEMPTY: '1' },

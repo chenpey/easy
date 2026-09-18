@@ -157,11 +157,26 @@ function requireAdmin(user: Identity): void {
   if (user.role !== 'admin') throw new ApiError(403, 'Administrator access required.');
 }
 
-async function requireAnotherAdmin(env: Env, id: string): Promise<void> {
-  const remaining = await env.DB.prepare(`SELECT COUNT(*) AS count FROM users
-    WHERE id<>? AND role='admin' AND enabled=1 AND deletion_requested_at IS NULL`)
-    .bind(id).first<{ count: number }>();
-  if (!remaining?.count) throw new ApiError(409, 'At least one enabled administrator is required.');
+const anotherEnabledAdmin = `EXISTS(SELECT 1 FROM users AS other
+  WHERE other.id<>? AND other.role='admin' AND other.enabled=1 AND other.deletion_requested_at IS NULL)`;
+
+async function softDeleteUser(env: Env, id: string, protectAdmin: boolean, now: number): Promise<boolean> {
+  const applied = 'EXISTS(SELECT 1 FROM users WHERE id=? AND enabled=0 AND deletion_requested_at=?)';
+  const appliedBinds = [id, now];
+  const results = await env.DB.batch([
+    env.DB.prepare(`UPDATE users SET enabled=0,deletion_requested_at=?,updated_at=?
+      WHERE id=? AND deletion_requested_at IS NULL${protectAdmin ? ` AND ${anotherEnabledAdmin}` : ''}
+      RETURNING id`)
+      .bind(now, now, id, ...(protectAdmin ? [id] : [])),
+    env.DB.prepare(`UPDATE images SET status='deleting' WHERE user_id=? AND ${applied}`)
+      .bind(id, ...appliedBinds),
+    env.DB.prepare(`DELETE FROM sessions WHERE user_id=? AND ${applied}`)
+      .bind(id, ...appliedBinds),
+    env.DB.prepare(`UPDATE integration_tokens SET revoked_at=?
+      WHERE user_id=? AND revoked_at IS NULL AND ${applied}`)
+      .bind(now, id, ...appliedBinds),
+  ]);
+  return results[0].results.length > 0;
 }
 
 const userView = (row: Pick<UserRow, 'id' | 'username' | 'role' | 'enabled' | 'approved_at' | 'created_at' | 'updated_at'>) => ({
@@ -324,30 +339,42 @@ async function adminRoutes(request: Request, env: Env, user: Identity, path: str
     if (id === user.id && (role !== 'admin' || !enabled)) {
       throw new ApiError(409, 'The current administrator cannot disable or demote itself.');
     }
-    if (target.role === 'admin' && target.enabled && (role !== 'admin' || !enabled)) await requireAnotherAdmin(env, id);
+    const protectAdmin = target.role === 'admin' && !!target.enabled && (role !== 'admin' || !enabled);
     const password = data.password === undefined ? null : validatePassword(data.password);
     if (username === target.username && role === target.role && Number(enabled) === target.enabled && !password) {
       return json({ user: userView(target), signedOut: false });
     }
     const verifier = password ? JSON.stringify(await passwordVerifier(password)) : target.password_verifier;
     const now = Date.now();
+    const applied = `EXISTS(SELECT 1 FROM users
+      WHERE id=? AND username=? AND password_verifier=? AND role=? AND enabled=? AND updated_at=?)`;
+    const appliedBinds = [id, username, verifier, role, Number(enabled), now];
+    let updated = false;
     try {
-      await env.DB.batch([
+      const results = await env.DB.batch([
         env.DB.prepare(`UPDATE users SET username=?,password_verifier=?,role=?,enabled=?,
-          recovery_code_hash=?,recovery_code_created_at=?,approved_at=?,updated_at=? WHERE id=?`)
+          recovery_code_hash=?,recovery_code_created_at=?,approved_at=?,updated_at=?
+          WHERE id=? AND deletion_requested_at IS NULL${protectAdmin ? ` AND ${anotherEnabledAdmin}` : ''}
+          RETURNING id`)
           .bind(username, verifier, role, Number(enabled),
             password ? null : target.recovery_code_hash,
             password ? null : target.recovery_code_created_at,
-            enabled ? target.approved_at ?? now : target.approved_at, now, id),
-        env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(id),
+            enabled ? target.approved_at ?? now : target.approved_at, now, id,
+            ...(protectAdmin ? [id] : [])),
+        env.DB.prepare(`DELETE FROM sessions WHERE user_id=? AND ${applied}`)
+          .bind(id, ...appliedBinds),
         ...(password || !enabled
-          ? [env.DB.prepare('UPDATE integration_tokens SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL').bind(now, id)]
+          ? [env.DB.prepare(`UPDATE integration_tokens SET revoked_at=?
+              WHERE user_id=? AND revoked_at IS NULL AND ${applied}`)
+              .bind(now, id, ...appliedBinds)]
           : []),
       ]);
+      updated = results[0].results.length > 0;
     } catch (error) {
       if (String(error).includes('UNIQUE')) throw new ApiError(409, 'Username already exists.');
       throw error;
     }
+    if (!updated) throw new ApiError(409, 'At least one enabled administrator is required.');
     return json({ user: userView({
       id, username, role, enabled: Number(enabled),
       approved_at: enabled ? target.approved_at ?? now : target.approved_at,
@@ -356,14 +383,10 @@ async function adminRoutes(request: Request, env: Env, user: Identity, path: str
   }
   if (request.method === 'DELETE') {
     if (id === user.id) throw new ApiError(409, 'The current administrator cannot delete itself.');
-    if (target.role === 'admin' && target.enabled) await requireAnotherAdmin(env, id);
     const now = Date.now();
-    await env.DB.batch([
-      env.DB.prepare('UPDATE users SET enabled=0,deletion_requested_at=?,updated_at=? WHERE id=?').bind(now, now, id),
-      env.DB.prepare("UPDATE images SET status='deleting' WHERE user_id=?").bind(id),
-      env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(id),
-      env.DB.prepare('UPDATE integration_tokens SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL').bind(now, id),
-    ]);
+    if (!await softDeleteUser(env, id, target.role === 'admin' && !!target.enabled, now)) {
+      throw new ApiError(409, 'At least one enabled administrator is required.');
+    }
     return json({ ok: true }, 202);
   }
   return null;
@@ -464,14 +487,10 @@ export async function authRoute(request: Request, env: Env, path: string): Promi
         data.username !== user.username || typeof data.currentPassword !== 'string' ||
         data.currentPassword.length > 128) throw new ApiError(400, 'Username and current password confirmation are required.');
     await requireCurrentPassword(env, user, data.currentPassword);
-    if (user.role === 'admin') await requireAnotherAdmin(env, user.id);
     const now = Date.now();
-    await env.DB.batch([
-      env.DB.prepare('UPDATE users SET enabled=0,deletion_requested_at=?,updated_at=? WHERE id=?').bind(now, now, user.id),
-      env.DB.prepare("UPDATE images SET status='deleting' WHERE user_id=?").bind(user.id),
-      env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(user.id),
-      env.DB.prepare('UPDATE integration_tokens SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL').bind(now, user.id),
-    ]);
+    if (!await softDeleteUser(env, user.id, user.role === 'admin', now)) {
+      throw new ApiError(409, 'At least one enabled administrator is required.');
+    }
     return json({ ok: true }, 202, { 'Set-Cookie': cookie(request, env, '', 0) });
   }
   return null;
