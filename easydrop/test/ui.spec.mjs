@@ -714,3 +714,47 @@ test("polling refreshes expanded pages, preserves position and recovers after fa
   await expect(page.getByText("new from another device", { exact: true })).toHaveCount(0, { timeout: 10000 });
   await expect(page.locator(".history-item")).toHaveCount(18);
 });
+
+test("selected deletion, partial failure and transient notices", async ({ page, context }) => {
+  await context.request.post(`${preview.url}/api/login`, {
+    headers: { Origin: preview.url },
+    data: { username: preview.username, password: preview.password },
+  });
+  let items = [1, 2, 3].map((id) => ({ id: String(id), type: "text", content: `batch-${id}`, created_at: 1700000000 }));
+  let failSecond = true;
+  const deleted = [];
+  await page.route("**/api/history**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      const id = route.request().url().split("/").at(-1);
+      if (id === "2" && failSecond) return route.fulfill({ status: 503, json: { message: "Please retry" } });
+      deleted.push(id);
+      items = items.filter((item) => item.id !== id);
+      return route.fulfill({ json: { ok: true } });
+    }
+    await route.fulfill({ json: { items, nextCursor: null, revision: 1 } });
+  });
+  await page.route("**/api/revision", (route) => route.fulfill({ json: { revision: 1 } }));
+  await page.goto(preview.url);
+  await expect(page.locator(".history-item")).toHaveCount(3);
+  await page.getByLabel("全选已加载记录").check();
+  await page.getByLabel("选择记录：batch-3", { exact: true }).uncheck();
+  await page.getByRole("button", { name: "删除所选 2 条记录", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(page.locator("#notice")).toHaveText("Please retry");
+  await expect(page.locator(".history-item")).toHaveCount(2);
+  expect(deleted).toEqual(["1"]);
+  await expect(page.getByLabel("选择记录：batch-2", { exact: true })).toBeChecked();
+  failSecond = false;
+  await page.getByRole("button", { name: "删除所选 1 条记录", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(page.locator("#notice")).toHaveText("已删除 1 条记录");
+  await expect(page.locator("#error-details")).toBeHidden();
+  await expect(page.locator(".history-item")).toHaveCount(1);
+  await expect(page.locator("#notice")).toBeEmpty({ timeout: 2500 });
+  expect(deleted).toEqual(["1", "2"]);
+  await expect(page.getByRole("button", { name: "清空历史", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "删除记录", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(page.locator(".history-item")).toHaveCount(0);
+  await expect(page.locator("#notice")).toBeEmpty({ timeout: 2500 });
+});

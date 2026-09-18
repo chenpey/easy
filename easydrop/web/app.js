@@ -8,6 +8,8 @@ const $ = (id) => document.getElementById(id);
 const isLogin = document.body.dataset.page === "login";
 if ($("app-version")) $("app-version").textContent = `v${APP_VERSION}`;
 let session;
+let noticeTimer;
+let clearCopyFeedback;
 let nextCursor = null;
 let currentRevision = -1;
 let loading = false;
@@ -56,9 +58,17 @@ function requestedDownloadPath() {
 }
 
 function notice(message, error = false) {
+  clearTimeout(noticeTimer);
+  clearCopyFeedback?.();
   $("notice").textContent = message;
   $("notice").classList.toggle("error", error);
   $("error-details").hidden = true;
+  $("error-details").open = false;
+  if (message) noticeTimer = setTimeout(() => {
+    if ($("error-details").open) return;
+    $("notice").textContent = "";
+    $("error-details").hidden = true;
+  }, error ? 8000 : 1600);
 }
 
 function report(error) {
@@ -254,18 +264,23 @@ async function loadUsers() {
 
 function showCopyFeedback(button, status, popover) {
   if (!button) return;
+  clearCopyFeedback?.();
+  notice("");
   clearTimeout(copyFeedbackTimers.get(button));
   status.textContent = "已复制";
   if (popover) {
     button.dataset.copyFeedback = "已复制";
     button.classList.add("copy-confirmed");
   }
-  copyFeedbackTimers.set(button, setTimeout(() => {
+  clearCopyFeedback = () => {
+    clearTimeout(copyFeedbackTimers.get(button));
     button.classList.remove("copy-confirmed");
     delete button.dataset.copyFeedback;
     status.textContent = "";
     copyFeedbackTimers.delete(button);
-  }, 1600));
+    clearCopyFeedback = null;
+  };
+  copyFeedbackTimers.set(button, setTimeout(clearCopyFeedback, 1600));
 }
 
 async function copy(value, button, status) {
@@ -507,11 +522,35 @@ function historyRow(item) {
   actions.append(actionButton("删除记录", "trash-2", async () => {
     if (!await confirmDelete("删除这条记录？")) return;
     await api(`/api/history/${item.id}`, { method: "DELETE" });
+    row.remove();
+    updateHistorySelection();
     notice("已删除");
     await loadHistory();
   }, true));
-  row.append(icon(item.type === "text" ? "file-text" : item.media_type ? "image" : "files"), content, actions);
+  const selection = document.createElement("div");
+  selection.className = "item-selection";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.className = "history-select";
+  checkbox.setAttribute("aria-label", `选择记录：${item.name || item.content}`);
+  checkbox.addEventListener("change", updateHistorySelection);
+  selection.append(checkbox, icon(item.type === "text" ? "file-text" : item.media_type ? "image" : "files"));
+  row.append(selection, content, actions);
   return row;
+}
+
+function updateHistorySelection() {
+  const boxes = [...$("history-list").querySelectorAll(".history-select")];
+  const count = boxes.filter((box) => box.checked).length;
+  $("select-all").disabled = !boxes.length;
+  $("select-all").checked = boxes.length > 0 && count === boxes.length;
+  $("select-all").indeterminate = count > 0 && count < boxes.length;
+  $("selection-count").textContent = count ? `已选 ${count} 条` : "";
+  const label = count ? `删除所选 ${count} 条记录` : "清空历史";
+  $("clear").title = label;
+  $("clear").setAttribute("aria-label", label);
+  const total = boxes.length;
+  $("history-count").textContent = total ? `${total}${nextCursor ? "+" : ""}` : "";
 }
 
 function historyItemSnapshot(item) {
@@ -540,6 +579,7 @@ function cachedHistoryRow(item) {
   const cached = historyRowCache.get(item.id);
   if (cached && sameHistoryItem(cached.item, item)) return cached.row;
   const row = historyRow(item);
+  row.querySelector(".history-select").checked = cached?.row.querySelector(".history-select").checked || false;
   historyRowCache.set(item.id, { item: historyItemSnapshot(item), row });
   return row;
 }
@@ -586,6 +626,7 @@ async function loadHistory(more = false) {
       list.append(empty);
     }
     $("load-more").hidden = !nextCursor;
+    updateHistorySelection();
     if (!retainHistoryRows) pruneHistoryRowCache();
     renderIcons();
   } finally {
@@ -1084,12 +1125,33 @@ async function initializeApp() {
     schedulePoll();
   }));
   $("load-more").addEventListener("click", () => loadHistory(true).catch(report));
+  $("select-all").addEventListener("change", () => {
+    for (const box of $("history-list").querySelectorAll(".history-select")) box.checked = $("select-all").checked;
+    updateHistorySelection();
+  });
   $("clear").addEventListener("click", () => busy($("clear"), async () => {
     if (uploading) return;
-    if (!await confirmDelete("清空所有分享记录和文件？")) return;
-    await api("/api/clear_history", { method: "POST" });
-    await loadHistory();
-    notice("已清空");
+    const rows = [...$("history-list").querySelectorAll(".history-item")]
+      .filter((row) => row.querySelector(".history-select").checked);
+    if (!await confirmDelete(rows.length ? `删除所选 ${rows.length} 条记录？` : "清空所有分享记录和文件？")) return;
+    try {
+      if (rows.length) {
+        for (const row of rows) {
+          await api(`/api/history/${row.dataset.id}`, { method: "DELETE" });
+          row.remove();
+          historyRowCache.delete(row.dataset.id);
+          updateHistorySelection();
+        }
+      } else {
+        await api("/api/clear_history", { method: "POST" });
+        $("history-list").replaceChildren();
+        historyRowCache.clear();
+        updateHistorySelection();
+      }
+      notice(rows.length ? `已删除 ${rows.length} 条记录` : "已清空");
+    } finally {
+      await loadHistory();
+    }
   }));
   $("logout").addEventListener("click", () => busy($("logout"), async () => {
     await api("/api/logout", { method: "POST" });

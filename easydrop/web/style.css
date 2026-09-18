@@ -346,12 +346,17 @@ progress {
   border-bottom: 1px solid var(--hairline);
 }
 
-.history-item > .lucide {
+.history-selection { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; font-size: 13px; }
+.history-selection label { display: flex; align-items: center; gap: 6px; }
+.history-selection input, .history-select { width: 18px; height: 18px; accent-color: var(--blue); cursor: pointer; }
+.item-selection { display: grid; justify-items: center; gap: 12px; }
+
+.item-selection > .lucide {
   color: var(--label-secondary);
   margin-top: 3px;
 }
 
-.history-item > .lucide-image { color: var(--blue); }
+.item-selection > .lucide-image { color: var(--blue); }
 
 .item-content { min-width: 0; }
 
