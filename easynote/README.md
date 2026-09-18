@@ -66,7 +66,6 @@ easynote/
 │   ├── common.sh             # 环境、锁定依赖、构建与端口检查
 │   ├── setup.mjs             # 强制交互式账号初始化
 │   ├── maintenance.mjs       # 密码恢复与 D1/R2 灾备
-│   ├── migrate.mjs           # 已有数据库的一次性结构迁移
 │   ├── cloudflare.mjs        # Cloudflare API、资源检查与创建
 │   └── deploy.mjs            # 交互式生产部署编排
 ├── test/                     # API / UI 集成测试及隔离运行时
@@ -106,8 +105,6 @@ bash dev.sh
 | `bash backup.sh --remote` | 创建并校验完整 D1/R2 灾备 |
 | `bash restore.sh <目录> --remote --check` | 只执行恢复预检 |
 | `bash restore.sh <目录> --remote` | 恢复至空的 D1/R2 资源 |
-| `npm run migrate -- --local` | 迁移已有本地数据库以支持永久分享 |
-| `npm run migrate -- --remote` | 迁移已有生产数据库以支持永久分享 |
 | `npm run ai:setup` | 交互式配置 MCP 地址和令牌 |
 | `npm run ai:mcp` | 启动本地 MCP stdio 服务 |
 
@@ -132,7 +129,6 @@ git commit -m "发布：EasyNote v0.3.0"
 | `backup.sh --local`、`restore.sh --local`、`deploy.sh --check` | 无 Cloudflare 凭据 | 只操作本地资源；写操作仍要求确认 |
 | `reset-password.sh --local` | 新的本地账号密码 | 交互式选择账号并隐藏输入 |
 | `deploy.sh` | Cloudflare 自定义 API Token | 构建通过后隐藏输入，用于资源发现、创建和部署 |
-| `npm run migrate -- --remote` | Cloudflare 自定义 API Token | 交互式隐藏输入，仅用于本次数据库迁移 |
 | `../reset.sh easynote --remote` | Cloudflare 自定义 API Token | 用户确认清空后隐藏输入，Token 仅用于本次进程 |
 | `backup.sh --remote`、`restore.sh --remote`、`reset-password.sh --remote` | Cloudflare 自定义 API Token | 每次运行重新隐藏输入 |
 | `npm run ai:setup` | EasyNote AI 集成令牌 | 由已登录用户在应用内创建，与 Cloudflare Token 无关 |
@@ -376,14 +372,10 @@ bash deploy.sh
 ```bash
 git pull --ff-only
 cd easynote
-npm ci --include=dev
-npm run migrate -- --remote
 bash deploy.sh
 ```
 
-升级到 `0.3.0` 时，先运行独立迁移脚本，将分享的到期时间字段调整为可空；脚本会保留已有分享记录。远程迁移会隐藏读取一次 Cloudflare API Token，迁移成功后再运行部署脚本更新 Worker；部署时需要再次输入 Token，并使用 `deploy <Worker 名称>` 确认。
-
-新安装直接使用已经更新的 `0001_initial.sql`，不需要运行独立迁移脚本。
+部署脚本会构建并检查项目，然后更新 Worker。数据库结构统一定义在 `0001_initial.sql`，分享数据只使用 `note_shares` 表。按终端提示输入 Cloudflare API Token，并使用 `deploy <Worker 名称>` 确认即可。
 
 官方参考：[Wrangler API Token 环境变量](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)、[Workers 权限](https://developers.cloudflare.com/workers/authorization/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[创建 D1 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/create/)、[创建 R2 bucket API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/create/)、[workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)、[List Routes API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)。
 
