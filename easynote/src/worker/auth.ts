@@ -394,8 +394,8 @@ async function adminRoutes(request: Request, env: Env, user: Identity, path: str
 
 export async function authRoute(request: Request, env: Env, path: string): Promise<Response | null> {
   if (path === '/api/session' && request.method === 'GET') {
-    const configured = await ensureOwner(env);
-    const user = await identity(request, env);
+    const [user, registration] = await Promise.all([identity(request, env), registrationEnabled(env)]);
+    const configured = user ? true : await ensureOwner(env);
     return json({
       user: user ? {
         id: user.id,
@@ -405,7 +405,7 @@ export async function authRoute(request: Request, env: Env, path: string): Promi
       } : null,
       csrf: user?.csrf ?? null,
       configured,
-      registrationEnabled: await registrationEnabled(env),
+      registrationEnabled: registration,
       config: clientConfig(env),
       expiresAt: user?.sessionExpiresAt ?? null,
     });

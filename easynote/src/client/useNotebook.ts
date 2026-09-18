@@ -54,15 +54,21 @@ const noteExcerpt = (content: string, query: string) => {
 async function prepareOfflineResources(): Promise<void> {
   if (!('serviceWorker' in navigator)) return;
   let timeout = 0;
+  let controlled: (() => void) | undefined;
   try {
     await Promise.race([
-      navigator.serviceWorker.ready,
+      new Promise<void>((resolve) => {
+        if (navigator.serviceWorker.controller) { resolve(); return; }
+        controlled = () => resolve();
+        navigator.serviceWorker.addEventListener('controllerchange', controlled, { once: true });
+      }),
       new Promise<never>((_, reject) => {
         timeout = window.setTimeout(() => reject(new Error('离线资源准备超时，请稍后重试。')), 20_000);
       }),
     ]);
   } finally {
     window.clearTimeout(timeout);
+    if (controlled) navigator.serviceWorker.removeEventListener('controllerchange', controlled);
   }
   await preparePdfExport();
 }
@@ -81,6 +87,7 @@ export function useNotebook(session: Session) {
   const pollInFlight = useRef(false);
   const pollQueued = useRef(false);
   const pollAbort = useRef<AbortController | null>(null);
+  const fileCacheAbort = useRef<AbortController | null>(null);
   const selectionAbort = useRef<AbortController | null>(null);
   const pollError = useRef('');
   const [tick, bump] = useState(0);
@@ -97,6 +104,7 @@ export function useNotebook(session: Session) {
     fields: NoteConflictField[];
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [initialized, setInitialized] = useState(false);
   const [online, setOnline] = useState(navigator.onLine && !session.offline);
   const [offlineLibrary, setOfflineLibrary] = useState(false);
   const [offlineCount, setOfflineCount] = useState(0);
@@ -144,27 +152,43 @@ export function useNotebook(session: Session) {
     setOfflineCount(mirror.current.size);
   }, [query, tag, view]);
 
-  const cacheReferencedFiles = useCallback(async (changed: Note[]) => {
-    const ids = new Set(changed.flatMap((item) => storedFileIds(item.content)));
-    for (const id of ids) {
-      if (await loadCachedFile(userId, id)) continue;
-      const response = await fetch(filePath(id), { credentials: 'same-origin' });
-      if (!response.ok) throw new Error(`GET ${filePath(id)} [${response.status}]\n${await response.text()}`);
-      const disposition = response.headers.get('Content-Disposition') ?? '';
-      const encodedName = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
-      let filename = id;
-      try { if (encodedName) filename = decodeURIComponent(encodedName); } catch { /* Keep the stable ID as fallback. */ }
-      await cacheFile(userId, id, {
-        blob: await response.blob(),
-        mime: response.headers.get('Content-Type') ?? 'application/octet-stream',
-        filename,
-      });
-    }
+  const cacheReferencedFiles = useCallback(() => {
+    if (fileCacheAbort.current || !alive.current || !offlineLibraryRef.current) return;
+    const controller = new AbortController();
+    fileCacheAbort.current = controller;
+    void (async () => {
+      const ids = new Set([...mirror.current.values()].flatMap((item) => storedFileIds(item.content)));
+      for (const id of ids) {
+        controller.signal.throwIfAborted();
+        if (await loadCachedFile(userId, id)) continue;
+        const response = await fetch(filePath(id), {
+          credentials: 'same-origin',
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
+        });
+        if (!response.ok) throw new Error(`GET ${filePath(id)} [${response.status}]\n${await response.text()}`);
+        const disposition = response.headers.get('Content-Disposition') ?? '';
+        const encodedName = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+        let filename = id;
+        try { if (encodedName) filename = decodeURIComponent(encodedName); } catch { /* Keep the stable ID as fallback. */ }
+        const blob = await response.blob();
+        controller.signal.throwIfAborted();
+        await cacheFile(userId, id, { blob, mime: response.headers.get('Content-Type') ?? 'application/octet-stream', filename }, controller.signal);
+      }
+      controller.signal.throwIfAborted();
+      const referenced = new Set([
+        ...[...mirror.current.values()].flatMap((item) => storedFileIds(item.content)),
+        ...[...drafts.current.values()].flatMap((draft) => storedFileIds(draft.note.content)),
+      ]);
+      await pruneCachedFiles(userId, referenced);
+    })().catch((error: unknown) => {
+      if (alive.current && !controller.signal.aborted) setError(`离线附件缓存失败，将在后续同步时重试。\n${String(error)}`);
+    }).finally(() => {
+      if (fileCacheAbort.current === controller) fileCacheAbort.current = null;
+    });
   }, [userId]);
 
   const syncOfflineMirror = useCallback(async (signal?: AbortSignal) => {
     let cursor = await syncCursor(userId);
-    const changed: Note[] = [];
     let hasMore = true;
     while (hasMore) {
       const page = await api.sync(cursor, signal);
@@ -172,7 +196,6 @@ export function useNotebook(session: Session) {
       for (const change of page.changes) {
         if (change.note) {
           mirror.current.set(change.noteId, change.note);
-          changed.push(change.note);
           if (current.current?.id === change.noteId && !drafts.current.has(change.noteId) &&
               change.note.revision > current.current.revision) show(change.note);
         } else {
@@ -183,12 +206,7 @@ export function useNotebook(session: Session) {
       cursor = page.cursor;
       hasMore = page.hasMore;
     }
-    await cacheReferencedFiles(changed.length ? changed : [...mirror.current.values()]);
-    const referenced = new Set([
-      ...[...mirror.current.values()].flatMap((item) => storedFileIds(item.content)),
-      ...[...drafts.current.values()].flatMap((draft) => storedFileIds(draft.note.content)),
-    ]);
-    await pruneCachedFiles(userId, referenced);
+    cacheReferencedFiles();
     if (alive.current) {
       setOnline(true);
       setOfflineCount(mirror.current.size);
@@ -733,6 +751,7 @@ export function useNotebook(session: Session) {
 
   const configureOffline = async (enabled: boolean): Promise<void> => {
     if (enabled) await prepareOfflineResources();
+    if (!enabled) fileCacheAbort.current?.abort();
     await setOfflineEnabled(userId, enabled, session);
     offlineLibraryRef.current = enabled;
     setOfflineLibrary(enabled);
@@ -766,7 +785,9 @@ export function useNotebook(session: Session) {
       setOfflineLibrary(enabled);
       if (enabled) {
         mirror.current = await loadMirroredNotes(userId);
+        if (!alive.current) return;
         setOfflineCount(mirror.current.size);
+        if (mirror.current.size) { renderMirror(); setLoading(false); }
         if (!session.offline) await cacheSession(session);
       } else if (navigator.onLine && !session.offline) {
         onlineCursor.current = (await api.syncHead()).cursor;
@@ -785,11 +806,7 @@ export function useNotebook(session: Session) {
         renderMirror();
       }
       ready.current = true;
-      if (enabled && !session.offline) {
-        void prepareOfflineResources().catch((e: unknown) => {
-          if (alive.current) setError(`离线 PDF 资源准备失败。\n${String(e)}`);
-        });
-      }
+      setInitialized(true);
     }).catch((e: unknown) => { if (alive.current) setError(String(e)); }).finally(() => {
       if (alive.current) { setLoading(false); notify(); }
     });
@@ -797,9 +814,17 @@ export function useNotebook(session: Session) {
       alive.current = false;
       ready.current = false;
       selectionAbort.current?.abort();
+      fileCacheAbort.current?.abort();
       for (const timer of pendingTimers.current.values()) clearTimeout(timer);
     };
   }, [userId, show]);
+
+  useEffect(() => {
+    if (!initialized || !offlineLibrary || session.offline) return;
+    void prepareOfflineResources().catch((e: unknown) => {
+      if (alive.current) setError(`离线 PDF 资源准备失败。\n${String(e)}`);
+    });
+  }, [initialized, offlineLibrary, session.offline]);
 
   useEffect(() => {
     if (!ready.current) return;
@@ -811,7 +836,7 @@ export function useNotebook(session: Session) {
       else void refreshRef.current().catch((e: unknown) => setError(String(e)));
     }, 200);
     return () => clearTimeout(timer);
-  }, [loading, view, query, tag, renderMirror]);
+  }, [initialized, view, query, tag, renderMirror]);
 
   useEffect(() => {
     setOnline(navigator.onLine && !session.offline);
@@ -925,7 +950,7 @@ export function useNotebook(session: Session) {
       window.removeEventListener('offline', network);
       window.removeEventListener('beforeunload', beforeUnload);
     };
-  }, [loading, session.config.pollSeconds, session.offline, show]);
+  }, [initialized, session.config.pollSeconds, session.offline, show]);
 
   const pending = [...drafts.current.values()].map((draft) => draft.note);
   const visible = notes.map((item) => {

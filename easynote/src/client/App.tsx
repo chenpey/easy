@@ -216,6 +216,7 @@ function PrivateApp() {
   const [session, updateSession] = useState<Session | null>(null);
   const [booting, setBooting] = useState(true);
   const [bootError, setBootError] = useState('');
+  const bootGeneration = useRef(0);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
@@ -229,21 +230,39 @@ function PrivateApp() {
     updateSession(value);
     if (value.user && !value.offline) void cacheSession(value);
   };
+  const restoreSession = async (value: Session, cached: Session | null) => {
+    applySession(value);
+    if (!cached?.user || cached.user.id === value.user?.id) return;
+    setPassword('');
+    setBootError(value.user ? '' : '登录已过期，请重新登录。');
+    try { await clearAccountStorage(cached.user.id); }
+    catch (error) { setBootError((message) => `${message}\n${String(error)}`.trim()); }
+  };
   const boot = () => {
+    const generation = ++bootGeneration.current;
     setBooting(true);
     setBootError('');
-    void api.session().then(applySession).catch(async (error: unknown) => {
-      try {
-        const cached = await loadOfflineSession();
-        if (cached?.user) applySession(cached);
-        else setBootError(String(error));
-      } catch (cacheError) {
-        setBootError(`${String(error)}\n${String(cacheError)}`);
-      }
-    }).finally(() => setBooting(false));
+    let cached: Session | null = null;
+    const local = loadOfflineSession().then((value) => {
+      if (generation !== bootGeneration.current) return;
+      cached = value;
+      if (cached?.user) applySession(cached);
+    }).catch(() => { /* A cache failure must not block online login. */ });
+    void api.session().then(async (value) => {
+      await local;
+      if (generation === bootGeneration.current) return restoreSession(value, cached);
+    }).catch(async (error: unknown) => {
+      await local;
+      if (generation === bootGeneration.current && !cached?.user) setBootError(String(error));
+    }).finally(() => {
+      if (generation === bootGeneration.current) setBooting(false);
+    });
+    return () => { bootGeneration.current++; };
   };
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      bootGeneration.current++;
+      setBooting(false);
       setPassword('');
       setBootError('登录已过期，请重新登录。');
       updateSession((current) => {
@@ -268,33 +287,26 @@ function PrivateApp() {
   }, []);
   useEffect(boot, []);
   useEffect(() => {
-    if (!session?.offline) return;
+    if (!session?.offline || booting) return;
     let running = false;
+    let cancelled = false;
     const reconnect = async () => {
       if (running || !navigator.onLine) return;
       running = true;
       try {
         const value = await api.session();
-        if (value.user?.id === session.user?.id) {
-          applySession(value);
-        } else {
-          let storageError = '';
-          try { await clearAccountStorage(session.user!.id); }
-          catch (error) { storageError = `\n${String(error)}`; }
-          setPassword('');
-          setBootError(value.user ? storageError.trim() : `登录已过期，请重新登录。${storageError}`);
-          applySession(value);
-        }
+        if (!cancelled) await restoreSession(value, session);
       } catch { /* Keep the cached library available until the server returns. */ }
       finally { running = false; }
     };
     const timer = setInterval(() => void reconnect(), 5_000);
     window.addEventListener('online', reconnect);
     return () => {
+      cancelled = true;
       clearInterval(timer);
       window.removeEventListener('online', reconnect);
     };
-  }, [session?.offline, session?.user?.id]);
+  }, [booting, session?.offline, session?.user?.id]);
   if (booting && !session) return <main className="login">
     <div className="login-form" role="status" aria-live="polite">
       <div className="brand login-brand"><BrandIcon size={32} /><h1>EasyNote</h1></div>
@@ -312,6 +324,8 @@ function PrivateApp() {
       await prompt.userChoice;
     } : undefined}
     logout={async () => {
+      bootGeneration.current++;
+      setBooting(false);
       let storageError = '';
       try { await clearAccountStorage(session.user!.id); }
       catch (error) { storageError = `本机离线数据清理失败：${String(error)}`; }

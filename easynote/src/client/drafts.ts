@@ -207,9 +207,12 @@ export async function applyMirrorChanges(userId: string, changes: SyncChange[], 
   } finally { db.close(); }
 }
 
-export async function cacheFile(userId: string, id: string, file: CachedFile): Promise<void> {
+export async function cacheFile(userId: string, id: string, file: CachedFile, signal?: AbortSignal): Promise<void> {
   const db = await database();
-  try { await db.put('files', file, accountKey(userId, id)); }
+  try {
+    signal?.throwIfAborted();
+    await db.put('files', file, accountKey(userId, id));
+  }
   finally { db.close(); }
 }
 

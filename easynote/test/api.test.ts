@@ -66,6 +66,28 @@ test('login uses HttpOnly secure cookie; logout revokes the session', async () =
   assert.equal((await (await request('/api/session', 'GET', undefined, { Cookie: cookie.split(';')[0] })).json() as any).expiresAt, null);
 });
 
+test('session bootstrap preserves authenticated, anonymous and first-install behavior', async () => {
+  const authenticated = await (await request('/api/session')).json() as any;
+  assert.equal(authenticated.user.username, 'tester');
+  assert.equal(authenticated.configured, true);
+  assert.equal(authenticated.csrf, testCsrf);
+  const anonymous = await (await request('/api/session', 'GET', undefined, { Cookie: '' })).json() as any;
+  assert.equal(anonymous.user, null);
+  assert.equal(anonymous.configured, true);
+  assert.equal(anonymous.registrationEnabled, authenticated.registrationEnabled);
+
+  const fresh = await createRuntime();
+  try {
+    await fresh.db.batch(['DELETE FROM sessions', 'DELETE FROM users'].map((sql) => fresh.db.prepare(sql)));
+    const response = await fresh.runtime.dispatchFetch(`${origin}/api/session`);
+    assert.equal(response.status, 200);
+    const session = await response.json() as any;
+    assert.equal(session.configured, true);
+    assert.equal(session.user, null);
+    assert.equal((await fresh.db.prepare('SELECT username FROM users').first())?.username, 'tester');
+  } finally { await fresh.runtime.dispose(); }
+});
+
 test('AI tokens are scoped, revocable and preserve revision history', async () => {
   const created = await request('/api/integrations/tokens', 'POST', {
     name: '测试 AI', access: 'read-write', expiresInDays: null,

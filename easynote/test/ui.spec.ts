@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
-import { testToken, testCsrf, testPassword } from './runtime';
+import { testToken, testCsrf, testPassword, testUserId } from './runtime';
 
 const origin = 'http://127.0.0.1:8792';
 const headers = { Origin: origin, 'X-CSRF-Token': testCsrf };
@@ -56,6 +56,137 @@ test('does not render the login form while the initial session is loading', asyn
   await navigation;
   await expect(page.getByRole('main').getByRole('button', { name: '新建笔记', exact: true })).toBeVisible();
 });
+
+test('cached startup remains usable while session verification and text sync are delayed', async ({ page }) => {
+  await page.goto('/');
+  const title = `启动缓存-${randomUUID()}`;
+  await newNote(page, title, '本地正文');
+  let releaseSession!: () => void;
+  let releaseSync!: () => void;
+  const sessionGate = new Promise<void>((resolve) => { releaseSession = resolve; });
+  const syncGate = new Promise<void>((resolve) => { releaseSync = resolve; });
+  let sessions = 0;
+  let syncStarted = false;
+  await page.route('**/api/session', async (route) => {
+    sessions++;
+    await sessionGate;
+    await route.continue();
+  });
+  await page.route('**/api/sync?*', async (route) => {
+    syncStarted = true;
+    await syncGate;
+    await route.continue();
+  });
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    const row = page.locator('[data-note-row]').filter({ hasText: title });
+    await expect(row).toBeVisible();
+    await row.click();
+    await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('本地正文');
+    await expect(page.getByText('离线', { exact: true })).toBeVisible();
+    expect(sessions).toBe(1);
+    expect(syncStarted).toBe(false);
+    await page.getByRole('textbox', { name: '笔记标题' }).fill(`${title}-修改`);
+    releaseSession();
+    await expect.poll(() => syncStarted).toBe(true);
+    await expect(row).toBeVisible();
+    releaseSync();
+    await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+    expect(sessions).toBe(1);
+  } finally { releaseSession(); releaseSync(); }
+});
+
+for (const switched of [false, true]) {
+  test(`cached startup clears the old account after ${switched ? 'account switching' : 'session expiration'}`, async ({ page }) => {
+    await page.goto('/');
+    const title = `旧账号-${randomUUID()}`;
+    await newNote(page, title, '旧账号正文');
+    const session = await (await page.request.get('/api/session')).json();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await page.route('**/api/session', async (route) => {
+      await gate;
+      await route.fulfill({ json: {
+        ...session, user: switched ? { ...session.user, id: randomUUID(), username: '切换账号' } : null,
+        csrf: switched ? session.csrf : null,
+      } });
+    });
+    // The replacement account must never receive the previous account's notes.
+    await page.route('**/api/sync?*', (route) => route.fulfill({ json: { changes: [], cursor: 0, hasMore: false } }));
+    try {
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      const row = page.locator('[data-note-row]').filter({ hasText: title });
+      await expect(row).toBeVisible();
+      release();
+      await expect(row).toBeHidden();
+      if (!switched) await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible();
+      await expect.poll(() => page.evaluate(async (userId) => {
+        const db = await new Promise<IDBDatabase>((resolve) => {
+          const request = indexedDB.open('easynote');
+          request.onsuccess = () => resolve(request.result);
+        });
+        try {
+          return await new Promise<boolean>((resolve) => {
+            const request = db.transaction('meta').objectStore('meta').get(`session:${userId}`);
+            request.onsuccess = () => resolve(request.result === undefined);
+          });
+        } finally { db.close(); }
+      }, testUserId)).toBe(true);
+    } finally { release(); }
+  });
+}
+
+for (const cancel of [false, true]) {
+  test(`first text sync renders notes while attachment caching ${cancel ? 'is cancelled' : 'is delayed'}`, async ({ page }) => {
+    const id = randomUUID();
+    const fileId = randomUUID();
+    const title = `慢附件-${id}`;
+    const uploaded = await page.request.put(`/api/files/${fileId}`, {
+      headers: { ...headers, 'Content-Type': 'text/plain', 'X-Filename': 'slow.txt' }, data: '附件正文',
+    });
+    expect(uploaded.status()).toBe(201);
+    expect((await page.request.post(`/api/notes/${id}`, {
+      headers, data: { title, content: `[附件](/api/files/${fileId})`, tags: [], pinned: false,
+        archived: false, deletedAt: null, revision: 0, operationId: randomUUID() },
+    })).status()).toBe(201);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let downloading = false;
+    await page.route(`**/api/files/${fileId}`, async (route) => {
+      downloading = true;
+      await gate;
+      await route.continue();
+    });
+    try {
+      await page.goto('/');
+      await expect.poll(() => downloading).toBe(true);
+      const row = page.locator('[data-note-row]').filter({ hasText: title });
+      await expect(row).toBeVisible();
+      await row.click();
+      await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(title);
+      if (cancel) {
+        await disableOfflineLibrary(page);
+        release();
+        await expect.poll(() => page.evaluate(async (key) => {
+          const db = await new Promise<IDBDatabase>((resolve) => {
+            const request = indexedDB.open('easynote');
+            request.onsuccess = () => resolve(request.result);
+          });
+          try {
+            return await new Promise<boolean>((resolve) => {
+              const request = db.transaction('files').objectStore('files').get(key);
+              request.onsuccess = () => resolve(request.result === undefined);
+            });
+          } finally { db.close(); }
+        }, `${testUserId}:${fileId}`)).toBe(true);
+      } else {
+        const downloaded = page.waitForResponse((response) => response.url().endsWith(`/api/files/${fileId}`));
+        release();
+        await downloaded;
+      }
+    } finally { release(); }
+  });
+}
 
 test('PWA metadata, install action, app-shell cache and API exclusion work', async ({ page, context }) => {
   await page.goto('/');
