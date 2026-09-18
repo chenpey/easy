@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronRight, ClipboardList, Command, Download, FileText, FolderOpen, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Menu, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
 import type { ManagedNoteShare, Note, NoteInput, NoteSummary, NoteTask, Session, SharedNote, Version } from '../shared/types';
 import { api, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
@@ -36,12 +37,23 @@ function BrandIcon({ size }: { size: number }) {
   return <img className="brand-icon" src="/easynote-icon.svg" width={size} height={size} alt="" aria-hidden="true" />;
 }
 
+const DialogFeedbackContext = createContext<((target: HTMLElement, mounted: boolean) => void) | null>(null);
+
 function Modal({ title, children, close, className }: { title: string; children: ReactNode; close(): void; className?: string }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const feedbackRef = useRef<HTMLDivElement>(null);
+  const registerFeedback = useContext(DialogFeedbackContext);
   useEffect(() => { ref.current?.showModal(); }, []);
+  useLayoutEffect(() => {
+    const target = feedbackRef.current;
+    if (!target || !registerFeedback) return;
+    registerFeedback(target, true);
+    return () => registerFeedback(target, false);
+  }, [registerFeedback]);
   return <dialog className={className} ref={ref}
     onCancel={(e) => { e.preventDefault(); close(); }} onClick={(e) => { if (e.target === ref.current) close(); }}>
     <header className="dialog-header"><h2>{title}</h2><IconButton label="关闭" onClick={close}><X size={18} /></IconButton></header>
+    <div className="dialog-feedback-anchor" ref={feedbackRef} />
     {children}
   </dialog>;
 }
@@ -458,6 +470,13 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const attachmentInput = useRef<HTMLInputElement>(null);
   const importInput = useRef<HTMLInputElement>(null);
   const importFolderInput = useRef<HTMLInputElement>(null);
+  const dialogFeedbackTargets = useRef<HTMLElement[]>([]);
+  const [dialogFeedbackTarget, setDialogFeedbackTarget] = useState<HTMLElement | null>(null);
+  const registerDialogFeedback = useCallback((target: HTMLElement, mounted: boolean) => {
+    const remaining = dialogFeedbackTargets.current.filter((item) => item !== target);
+    dialogFeedbackTargets.current = mounted ? [...remaining, target] : remaining;
+    setDialogFeedbackTarget(dialogFeedbackTargets.current.at(-1) ?? null);
+  }, []);
   const note = book.note;
   const outline = useMemo(() => headings(note?.content ?? ''), [note?.content]);
   const updateNoteListWidth = (value: number) => {
@@ -1014,10 +1033,17 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     const buttons = [...(commandList.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
     buttons[edge === 'first' ? 0 : buttons.length - 1]?.focus();
   };
-  return <div
-    className={`app-shell ${sidebar ? '' : 'sidebar-hidden'} ${mobileNote ? 'mobile-note' : ''} ${resizingList ? 'resizing-list' : ''} ${inspector ? 'inspector-open' : ''}`}
-    style={{ '--note-list-width': `${noteListWidth}px` } as CSSProperties}
-  >
+  const errorFeedback = book.error && <div className="error-strip" role="alert">
+    <details><summary>操作未完成</summary><pre>{book.error}</pre></details>
+    <button onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? '正在重试…' : '重试'}</button>
+    <IconButton label="关闭错误" onClick={() => book.setError('')}><X size={15} /></IconButton>
+  </div>;
+  const noticeFeedback = notice && <div className="toast" role="status"><Check size={16} />{notice.text}</div>;
+  return <DialogFeedbackContext.Provider value={registerDialogFeedback}>
+    <div
+      className={`app-shell ${sidebar ? '' : 'sidebar-hidden'} ${mobileNote ? 'mobile-note' : ''} ${resizingList ? 'resizing-list' : ''} ${inspector ? 'inspector-open' : ''}`}
+      style={{ '--note-list-width': `${noteListWidth}px` } as CSSProperties}
+    >
     <aside className="sidebar">
       <div className="brand"><BrandIcon size={25} /><span>EasyNote</span>
         <IconButton label="收起侧栏" onClick={() => setSidebar(false)}><PanelLeftClose size={16} /></IconButton>
@@ -1140,7 +1166,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           </>}
         </div>
       </header>
-      {book.error && <div className="error-strip" role="alert"><details><summary>操作未完成</summary><pre>{book.error}</pre></details><button onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? '正在重试…' : '重试'}</button><IconButton label="关闭错误" onClick={() => book.setError('')}><X size={15} /></IconButton></div>}
+      {!dialogFeedbackTarget && errorFeedback}
       {note ? <>
         {note.deletedAt && <div className="trash-banner"><span>已移入回收站</span><button onClick={() => setConfirmAction('purge')} disabled={disabled || book.pending.some((n) => n.id === note.id)}>永久删除</button></div>}
         <div className="workspace-body">
@@ -1196,7 +1222,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         </footer>
       </> : <div className="workspace-empty"><PenLine size={36} /><h2>你的笔记</h2><button className="primary" disabled={book.loading || !!transfer} onClick={() => void createNote()}><Plus size={16} />新建笔记</button></div>}
     </main>
-    {notice && <div className="toast" role="status"><Check size={16} />{notice.text}</div>}
+    {!dialogFeedbackTarget && noticeFeedback}
+    {dialogFeedbackTarget && createPortal(<>{errorFeedback}{noticeFeedback}</>, dialogFeedbackTarget)}
     <input hidden ref={importInput} type="file" accept=".zip,.md,.markdown,.txt" multiple onChange={(e) => {
       const files = Array.from(e.target.files ?? []);
       if (files.length) void transferAction(() =>
@@ -1497,5 +1524,6 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       <Preview content={printNote.content} onImage={() => undefined}
         resolveFile={book.offlineLibrary ? book.cachedFile : undefined} dark={false} eagerImages />
     </section>}
-  </div>;
+    </div>
+  </DialogFeedbackContext.Provider>;
 }

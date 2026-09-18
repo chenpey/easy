@@ -205,6 +205,13 @@ test('a note share can be created, extended and cancelled from share management'
   const url = await page.getByLabel('只读分享链接').inputValue();
   expect(url).toMatch(/\/shared\/[a-f0-9]{64}$/);
   const sharingDialog = page.locator('dialog[open]');
+  const creationNotice = sharingDialog.locator('.dialog-feedback-anchor > .toast');
+  await expect(creationNotice).toHaveText('只读分享链接已创建');
+  expect(await creationNotice.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const topmost = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return topmost === element || element.contains(topmost);
+  })).toBe(true);
   const copyButton = sharingDialog.locator('.share-url button');
   const inputWidth = await page.getByLabel('只读分享链接').evaluate((element) => element.getBoundingClientRect().width);
   await copyButton.click();
@@ -246,6 +253,26 @@ test('a note share can be created, extended and cancelled from share management'
   await expect(page.getByRole('status')).toHaveText('分享已取消');
   await expect(manager.getByText('暂无正在分享的笔记', { exact: true })).toBeVisible();
   expect((await page.request.get(url.replace('/shared/', '/api/public/shares/'))).status()).toBe(404);
+});
+
+test('dialog errors remain visible above the backdrop on desktop and mobile', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '管理标签', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('来源标签').fill('不存在的标签');
+  await dialog.getByRole('button', { name: '应用', exact: true }).click();
+  const alert = dialog.locator('.dialog-feedback-anchor > [role="alert"]');
+  await expect(alert).toContainText('请选择来源标签并填写');
+  expect(await alert.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const topmost = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return topmost === element || element.contains(topmost);
+  })).toBe(true);
+
+  await page.setViewportSize({ width: 320, height: 740 });
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await expect(alert).toBeVisible();
+  await dialog.screenshot({ path: 'test-results/mobile-dialog-error-feedback.png' });
 });
 
 test('an external PWA launch restores the session through the same-origin bootstrap request', async ({ page }) => {

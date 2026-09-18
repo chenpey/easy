@@ -649,6 +649,26 @@ dialog {
 dialog::backdrop { background: rgba(0, 0, 0, .34); backdrop-filter: blur(3px); }
 .dialog-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
 .dialog-header h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.dialog-feedback-anchor:not(:empty) {
+  display: grid;
+  gap: 8px;
+  margin: -6px 0 16px;
+}
+.dialog-feedback-anchor .toast {
+  position: static;
+  width: 100%;
+  max-width: none;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 8%, var(--paper));
+  border-color: color-mix(in srgb, var(--success) 40%, var(--line));
+  box-shadow: none;
+}
+.dialog-feedback-anchor .error-strip {
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--danger) 7%, var(--paper));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+  border-radius: 7px;
+}
 dialog.pdf-export-dialog {
   width: min(1080px, calc(100% - 28px));
   height: min(780px, calc(100dvh - 28px));
