@@ -26,6 +26,18 @@ async function disableOfflineLibrary(page: Page) {
   await expect(offline).toHaveAttribute('aria-checked', 'false');
   await page.getByRole('button', { name: '关闭', exact: true }).click();
 }
+async function openMobileNavigation(page: Page) {
+  await page.getByRole('button', { name: '打开导航菜单', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: 'EasyNote', exact: true })).toBeVisible();
+  return dialog;
+}
+async function openMobileNoteActions(page: Page) {
+  await page.getByRole('button', { name: '更多笔记操作', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: '笔记操作', exact: true })).toBeVisible();
+  return dialog;
+}
 
 test('does not render the login form while the initial session is loading', async ({ page }) => {
   let release!: () => void;
@@ -142,7 +154,8 @@ test('mobile note list exposes the task center and opens a task source', async (
   await page.goto('/');
   await newNote(page, title, '开头\n\n- [ ] 移动端待办\n\n结尾');
   await page.getByRole('button', { name: '返回笔记列表' }).click();
-  await page.getByRole('button', { name: '任务中心', exact: true }).click();
+  const navigation = await openMobileNavigation(page);
+  await navigation.getByRole('button', { name: '任务中心', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('移动端待办', { exact: true })).toBeVisible();
   const task = dialog.getByRole('button').filter({ hasText: '移动端待办' });
@@ -749,29 +762,44 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   await page.goto('/');
   const title = `手机笔记-${randomUUID().slice(0, 6)}`;
   await newNote(page, title, '手机上的简短记录');
-  await page.getByRole('button', { name: '置顶', exact: true }).click();
+  let actions = await openMobileNoteActions(page);
+  await actions.screenshot({ path: 'test-results/mobile-note-actions.png' });
+  await actions.getByRole('button', { name: '置顶', exact: true }).click();
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '归档', exact: true }).click();
-  await expect(page.getByRole('button', { name: '取消归档', exact: true })).toBeVisible();
+  actions = await openMobileNoteActions(page);
+  await actions.getByRole('button', { name: '归档', exact: true }).click();
+  actions = await openMobileNoteActions(page);
+  await expect(actions.getByRole('button', { name: '取消归档', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('button', { name: '返回笔记列表' }).click();
   await expect(page.getByRole('button').filter({ hasText: title })).toBeHidden();
-  await page.getByRole('combobox', { name: '笔记分类' }).selectOption('archive');
+  let navigation = await openMobileNavigation(page);
+  await navigation.screenshot({ path: 'test-results/mobile-navigation.png' });
+  await navigation.getByRole('button', { name: '归档笔记', exact: true }).click();
   await page.getByRole('button').filter({ hasText: title }).click();
-  await page.getByRole('button', { name: '取消归档', exact: true }).click();
+  actions = await openMobileNoteActions(page);
+  await actions.getByRole('button', { name: '取消归档', exact: true }).click();
   await page.getByRole('button', { name: '返回笔记列表' }).click();
   await expect(page.getByRole('button').filter({ hasText: title })).toBeHidden();
-  await page.getByRole('combobox', { name: '笔记分类' }).selectOption('all');
+  navigation = await openMobileNavigation(page);
+  await navigation.getByRole('button', { name: '全部笔记', exact: true }).click();
   await page.getByRole('button').filter({ hasText: title }).click();
-  await page.getByRole('button', { name: '移入回收站', exact: true }).click();
+  actions = await openMobileNoteActions(page);
+  await actions.getByRole('button', { name: '移入回收站', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: '移入回收站', exact: true }).click();
-  await expect(page.getByText('已移入回收站', { exact: true })).toBeVisible();
+  await expect(page.locator('.trash-banner').getByText('已移入回收站', { exact: true })).toBeVisible();
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '恢复笔记' }).click();
+  actions = await openMobileNoteActions(page);
+  await actions.getByRole('button', { name: '恢复笔记', exact: true }).click();
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   await page.screenshot({ path: 'test-results/mobile.png', fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('button', { name: '返回笔记列表' }).click();
+  await expect(page.getByRole('button', { name: '打开导航菜单', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新建笔记', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '搜索笔记', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '搜索笔记' })).toBeVisible();
+  await page.screenshot({ path: 'test-results/mobile-list.png', fullPage: true });
 });
 
 test('single and batch deletion persist and appear in trash', async ({ page }) => {
@@ -1056,7 +1084,8 @@ test('a second tab cannot overwrite this browser profile local drafts', async ({
 test('dark theme persists and the narrow mobile layout has no horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 });
   await page.goto('/');
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  const navigation = await openMobileNavigation(page);
+  await navigation.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('switch', { name: '深色外观' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await page.getByRole('button', { name: '关闭', exact: true }).click();
@@ -1306,7 +1335,8 @@ test('mobile browsers receive a real PDF through share or download', async ({ pa
     });
   });
 
-  const exportButton = page.locator('.mobile-pdf-action');
+  const actions = await openMobileNoteActions(page);
+  const exportButton = actions.locator('.mobile-pdf-action');
   await expect(exportButton).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await exportButton.click();
@@ -1333,7 +1363,8 @@ test('mobile browsers receive a real PDF through share or download', async ({ pa
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => false });
   });
-  await exportButton.click();
+  const fallbackActions = await openMobileNoteActions(page);
+  await fallbackActions.locator('.mobile-pdf-action').click();
   await expect(page.getByRole('heading', { name: '导出为 PDF' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'PDF 分页预览' })
     .getByRole('img', { name: 'PDF 第 1 页' })).toBeVisible({ timeout: 20_000 });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronRight, ClipboardList, Command, Download, FileText, FolderOpen, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronRight, ClipboardList, Command, Download, FileText, FolderOpen, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Menu, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
 import type { Note, NoteInput, NoteSummary, NoteTask, Session, SharedNote, Version } from '../shared/types';
 import { api, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
 import { AccountSecurity } from './AccountSecurity';
@@ -337,6 +337,9 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const book = useNotebook(session);
   const [layout, setLayout] = useState<'edit' | 'preview'>('edit');
   const [mobileNote, setMobileNote] = useState(false);
+  const [mobileNavigation, setMobileNavigation] = useState(false);
+  const [mobileSearch, setMobileSearch] = useState(false);
+  const [mobileNoteActions, setMobileNoteActions] = useState(false);
   const [sidebar, setSidebar] = useState(true);
   const [resizingList, setResizingList] = useState(false);
   const [noteListWidth, setNoteListWidth] = useState(() => {
@@ -529,6 +532,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   };
   const createNote = () => run(async () => {
     await book.create();
+    setMobileNavigation(false);
+    setMobileNoteActions(false);
     setMobileNote(true);
     setLayout('edit');
   });
@@ -561,6 +566,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const chooseView = (view: string, tag = '') => {
     book.setView(view);
     book.setTag(tag);
+    setMobileNavigation(false);
     setMobileNote(false);
     setSelectionMode(false);
     setSelected(new Set());
@@ -582,6 +588,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   };
   const openNote = async (id: string) => {
     await book.select(id);
+    setMobileNavigation(false);
+    setMobileNoteActions(false);
     setMobileNote(true);
     setVersionList(null);
     setCommandPalette(false);
@@ -937,17 +945,22 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     <section className="note-list">
       <header className="list-header">
         <div className="list-heading">
+          <IconButton label="打开导航菜单" className="icon-button mobile-menu-trigger" onClick={() => setMobileNavigation(true)}><Menu size={21} /></IconButton>
           {!sidebar && <IconButton label="展开侧栏" onClick={() => setSidebar(true)}><MoreHorizontal size={18} /></IconButton>}
           <h1>{activeView}</h1>
-          <IconButton label="快速跳转" onClick={() => { setCommandQuery(''); setCommandPalette(true); }}><Command size={16} /></IconButton>
-          {book.view !== 'trash' && <IconButton label={selectionMode ? '退出批量选择' : '批量选择'} aria-pressed={selectionMode} onClick={() => {
+          <IconButton label="搜索笔记" className="icon-button mobile-search-trigger" onClick={() => {
+            setMobileSearch(true);
+            requestAnimationFrame(() => searchInput.current?.focus());
+          }}><Search size={20} /></IconButton>
+          <IconButton label="快速跳转" className="icon-button list-command-action" onClick={() => { setCommandQuery(''); setCommandPalette(true); }}><Command size={16} /></IconButton>
+          {book.view !== 'trash' && <IconButton label={selectionMode ? '退出批量选择' : '批量选择'} className="icon-button list-bulk-action" aria-pressed={selectionMode} onClick={() => {
             setSelectionMode((value) => !value);
             setSelected(new Set());
           }}>{selectionMode ? <CheckSquare size={16} /> : <Square size={16} />}</IconButton>}
-          <IconButton label={syncing ? '正在同步并更新历史版本' : '同步并更新历史版本'} onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
+          <IconButton label={syncing ? '正在同步并更新历史版本' : '同步并更新历史版本'} className="icon-button list-sync-action" onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
           {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) &&
-            <IconButton label="全部永久删除" className="icon-button danger-icon" onClick={() => setConfirmAction('purge-all')} disabled={disabled || book.pending.length > 0}><Trash2 size={17} /></IconButton>}
-          <IconButton label="新建笔记" onClick={() => void createNote()} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
+            <IconButton label="全部永久删除" className="icon-button danger-icon list-purge-action" onClick={() => setConfirmAction('purge-all')} disabled={disabled || book.pending.length > 0}><Trash2 size={17} /></IconButton>}
+          <IconButton label="新建笔记" className="icon-button list-create-action" onClick={() => void createNote()} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
         </div>
         {selectionMode && <div className="bulk-toolbar">
           <span>已选 {selected.size} 篇</span>
@@ -955,14 +968,10 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <button disabled={!selected.size || disabled} onClick={() => setBulkTagOpen(true)}><Tag size={14} />加标签</button>
           <button className="danger" disabled={!selected.size || disabled} onClick={() => setConfirmAction('bulk-trash')}><Trash2 size={14} />删除</button>
         </div>}
-        <label className="search-field"><Search size={15} /><input ref={searchInput} aria-label="搜索笔记" placeholder="搜索笔记" value={book.query} onChange={(e) => book.setQuery(e.target.value)} /></label>
-        <div className="mobile-filters">
-          <select aria-label="笔记分类" value={book.view} onChange={(e) => chooseView(e.target.value)}><option value="all">全部笔记</option><option value="archive">归档笔记</option><option value="trash">回收站</option></select>
-          <div className="mobile-filter-actions">
-            <IconButton label="任务中心" onClick={() => void openTaskCenter()}><ClipboardList size={17} /></IconButton>
-            <IconButton label="设置" onClick={() => setSettings(true)}><Settings size={17} /></IconButton>
-          </div>
-        </div>
+        <label className={`search-field ${mobileSearch || book.query ? 'mobile-open' : ''}`}><Search size={15} /><input ref={searchInput} aria-label="搜索笔记" placeholder="搜索笔记" value={book.query}
+          onChange={(e) => book.setQuery(e.target.value)}
+          onBlur={() => { if (!book.query) setMobileSearch(false); }}
+          onKeyDown={(e) => { if (e.key === 'Escape') { book.setQuery(''); setMobileSearch(false); } }} /></label>
       </header>
       <div className="list-scroll" onKeyDown={(event) => moveButtonFocus(event, '.note-row')}>
         {book.loading ? <div className="empty-state">正在加载…</div> : !book.notes.length ? <div className="empty-state"><FileText size={28} /><span>{book.query ? '没有匹配的笔记' : '暂无笔记'}</span></div> : book.notes.map((item) =>
@@ -978,6 +987,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       <footer className="list-footer">{book.notes.length} 篇{book.nextOffset !== null ? '+' : ''}
         <span>{book.online && !session.offline ? `EasyNote ${__EASYNOTE_VERSION__}` : <><WifiOff size={11} />离线</>}</span>
       </footer>
+      <button className="mobile-compose" aria-label="新建笔记" disabled={!!transfer || book.loading} onClick={() => void createNote()}><PenLine size={23} /></button>
     </section>
     <div
       className="note-list-resizer"
@@ -1017,6 +1027,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
             <IconButton label="历史版本" className="icon-button toolbar-history-action" disabled={disabled || note.revision === 0} onClick={openHistory}><History size={17} /></IconButton>
             {!note.deletedAt ? <IconButton label="移入回收站" disabled={disabled} onClick={() => setConfirmAction('trash')}><Trash2 size={17} /></IconButton> :
               <IconButton label="恢复笔记" disabled={disabled} onClick={() => setNoteFields({ deletedAt: null })}><RotateCcw size={17} /></IconButton>}
+            <IconButton label="更多笔记操作" className="icon-button mobile-note-menu-trigger" onClick={() => setMobileNoteActions(true)}><MoreHorizontal size={20} /></IconButton>
           </>}
         </div>
       </header>
@@ -1090,6 +1101,48 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         imported ? `已导入 ${imported} 篇${skipped ? `，跳过 ${skipped} 篇重复笔记` : '笔记'}` : `未导入：${skipped} 篇笔记已存在`);
       e.target.value = '';
     }} />
+    {mobileNavigation && <Modal title="EasyNote" className="mobile-navigation-dialog" close={() => setMobileNavigation(false)}>
+      <nav className="mobile-navigation-list" aria-label="移动端笔记分类">
+        <button className={book.view === 'all' && !book.tag ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={18} />全部笔记</button>
+        <button className={book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={18} />归档笔记</button>
+        <button className={book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={18} />回收站</button>
+        <button onClick={() => { setMobileNavigation(false); void openTaskCenter(); }}><ClipboardList size={18} />任务中心</button>
+      </nav>
+      {book.tags.length > 0 && <>
+        <div className="mobile-navigation-label">标签</div>
+        <nav className="mobile-navigation-list" aria-label="移动端标签">{book.tags.map((tag) =>
+          <button key={tag} className={book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className="tag-dot" />{tag}</button>)}
+        </nav>
+      </>}
+      <div className="mobile-navigation-actions">
+        <button onClick={() => { setMobileNavigation(false); setCommandQuery(''); setCommandPalette(true); }}><Command size={18} />快速跳转</button>
+        {book.view !== 'trash' && <button onClick={() => {
+          setMobileNavigation(false);
+          setSelectionMode(true);
+          setSelected(new Set());
+        }}><CheckSquare size={18} />批量选择</button>}
+        <button disabled={book.busy || syncing} onClick={() => { setMobileNavigation(false); void syncNow(); }}><RefreshCw size={18} />同步并更新历史版本</button>
+        {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) &&
+          <button className="danger" disabled={disabled || book.pending.length > 0} onClick={() => { setMobileNavigation(false); setConfirmAction('purge-all'); }}><Trash2 size={18} />全部永久删除</button>}
+        <button onClick={() => { setMobileNavigation(false); setSettings(true); }}><Settings size={18} />设置</button>
+      </div>
+    </Modal>}
+    {mobileNoteActions && note && <Modal title="笔记操作" className="mobile-actions-dialog" close={() => setMobileNoteActions(false)}>
+      <div className="mobile-action-list">
+        <button disabled={disabled} onClick={() => { setMobileNoteActions(false); void syncNow(); }}><Save size={18} />同步笔记</button>
+        <button disabled={!!note.deletedAt || !!transfer} onClick={() => { setMobileNoteActions(false); beginLinkInsertion(); }}><Link2 size={18} />插入内部链接</button>
+        <button onClick={() => { setMobileNoteActions(false); setInspector((value) => !value); }}><ListTree size={18} />大纲与反向链接</button>
+        <button disabled={!!note.deletedAt || !!transfer} onClick={() => { setMobileNoteActions(false); setNoteFields({ pinned: !note.pinned }); }}><Pin size={18} fill={note.pinned ? 'currentColor' : 'none'} />{note.pinned ? '取消置顶' : '置顶'}</button>
+        <button disabled={!!note.deletedAt || !!transfer} onClick={() => { setMobileNoteActions(false); setNoteFields({ archived: !note.archived }); }}>{note.archived ? <ArchiveRestore size={18} /> : <Archive size={18} />}{note.archived ? '取消归档' : '归档'}</button>
+        <button className="mobile-share-action" disabled={disabled || note.revision === 0 || !!note.deletedAt || book.pending.some((item) => item.id === note.id)}
+          onClick={() => { setMobileNoteActions(false); setSharing(true); }}><Share2 size={18} />只读分享</button>
+        <button className="mobile-pdf-action" disabled={printing} onClick={() => { setMobileNoteActions(false); exportCurrentNote(); }}><Printer size={18} />导出为 PDF</button>
+        <button disabled={disabled || note.revision === 0} onClick={() => { setMobileNoteActions(false); openHistory(); }}><History size={18} />历史版本</button>
+        {!note.deletedAt
+          ? <button className="danger" disabled={disabled} onClick={() => { setMobileNoteActions(false); setConfirmAction('trash'); }}><Trash2 size={18} />移入回收站</button>
+          : <button onClick={() => { setMobileNoteActions(false); setNoteFields({ deletedAt: null }); }}><RotateCcw size={18} />恢复笔记</button>}
+      </div>
+    </Modal>}
     {settings && <Modal title="设置" close={() => { if (!transfer) setSettings(false); }}>
       <div className="setting-row"><span>深色外观</span><button role="switch" aria-checked={dark} aria-label="深色外观" className={`switch ${dark ? 'on' : ''}`} onClick={() => setDark(!dark)}>{dark ? <Moon size={14} /> : <Sun size={14} />}</button></div>
       <div className="setting-row"><span>离线笔记库{book.offlineLibrary ? ` · ${book.offlineCount} 篇` : ''}</span><button role="switch" aria-checked={book.offlineLibrary} aria-label="离线笔记库" className={`switch ${book.offlineLibrary ? 'on' : ''}`} disabled={disabled || session.offline} onClick={() => void run(() => book.configureOffline(!book.offlineLibrary))}>{book.offlineLibrary ? <Check size={14} /> : <WifiOff size={14} />}</button></div>
