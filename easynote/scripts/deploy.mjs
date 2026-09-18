@@ -217,7 +217,7 @@ async function main() {
     url,
   }, null, 2));
 
-  await askExactConfirmation('deploy easynote', 'create/update resources and apply migrations');
+  await askExactConfirmation(`deploy ${config.name}`, 'create/update resources and apply migrations');
 
   const deployedUrl = await withProgress(
     'Preparing Cloudflare D1, R2 and public entrypoint',

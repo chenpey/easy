@@ -61,6 +61,12 @@ function protectedDownloadPath(value) {
   return match && validId(match[1]) && name ? { path: match[0], id: match[1], name } : null;
 }
 
+function protectedImagePath(value) {
+  const match = /^\/images\/([^/?#]+)\/([^/?#]+)$/.exec(value || "");
+  const name = match && decodeFilename(match[2]);
+  return match && validId(match[1]) && name ? { id: match[1], name } : null;
+}
+
 function safeDownloadPath(value) {
   return protectedDownloadPath(value)?.path || "/";
 }
@@ -837,6 +843,32 @@ async function download(request, env, id, expectedName, ownerUserId, knownItem =
   return new Response(request.method === "HEAD" ? null : object.body, { status: range ? 206 : 200, headers });
 }
 
+async function viewImage(request, env, id, expectedName, ownerUserId) {
+  if (!validId(id)) throw new HttpError(404, "Image not found.");
+  const item = await env.DB.prepare(
+    `SELECT name, size, media_type FROM items
+     WHERE id = ? AND owner_user_id = ? AND type = 'file' AND state = 'ready'`,
+  ).bind(id, ownerUserId).first();
+  const contentType = item && storedImageMediaType(item.media_type);
+  if (!contentType || item.name !== expectedName) throw new HttpError(404, "Image not found.");
+  const range = request.method === "HEAD" ? null : rangeFor(request.headers.get("Range"), item.size);
+  const object = request.method === "HEAD"
+    ? await env.FILES.head(objectKey(id))
+    : await env.FILES.get(objectKey(id), range ? { range } : {});
+  if (!object) throw new HttpError(404, "Image not found.");
+  const encoded = encodeURIComponent(item.name).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  const headers = {
+    "Content-Type": contentType,
+    "Content-Disposition": `inline; filename="image"; filename*=UTF-8''${encoded}`,
+    "Content-Length": String(range ? range.length : item.size),
+    "Accept-Ranges": "bytes",
+  };
+  if (object.httpEtag) headers.ETag = object.httpEtag;
+  if (object.uploaded) headers["Last-Modified"] = object.uploaded.toUTCString();
+  if (range) headers["Content-Range"] = `bytes ${range.offset}-${range.offset + range.length - 1}/${item.size}`;
+  return new Response(request.method === "HEAD" ? null : object.body, { status: range ? 206 : 200, headers });
+}
+
 async function temporaryDownload(request, env, token, expectedName) {
   if (!temporaryShareToken.test(token || "") || !expectedName) {
     throw new HttpError(404, "Temporary file link not found or expired.");
@@ -1146,6 +1178,11 @@ async function route(request, env, ctx, responseState) {
   }
   if ((method === "GET" || method === "HEAD") && path.startsWith("/previews/")) {
     return previewImage(request, env, path.slice(10), session);
+  }
+  if ((method === "GET" || method === "HEAD") && path.startsWith("/images/")) {
+    const target = protectedImagePath(path);
+    if (!target) throw new HttpError(404, "Image not found.");
+    return viewImage(request, env, target.id, target.name, session.user_id);
   }
   if ((method === "GET" || method === "HEAD") && path.startsWith("/uploads/")) {
     const target = protectedDownloadPath(path);

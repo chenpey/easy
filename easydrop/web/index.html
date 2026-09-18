@@ -76,6 +76,20 @@
     <button id="copy-url" class="secondary"><i data-lucide="copy"></i>复制地址</button>
     <p id="site-copy-notice" class="copy-notice" role="status" aria-live="polite"></p>
   </dialog>
+  <dialog id="image-preview-dialog" aria-labelledby="image-preview-title">
+    <div class="section-heading">
+      <h2 id="image-preview-title">图片预览</h2>
+      <button id="image-preview-close" class="icon-button" title="关闭" aria-label="关闭图片预览"><i data-lucide="x"></i></button>
+    </div>
+    <div class="image-preview-stage">
+      <img id="image-preview-content" alt="" hidden>
+      <p id="image-preview-status" class="muted" role="status">正在加载图片...</p>
+    </div>
+    <div class="image-preview-footer">
+      <p id="image-preview-name"></p>
+      <a id="image-preview-download" class="secondary button-link"><i data-lucide="download"></i>下载原图</a>
+    </div>
+  </dialog>
   <dialog id="temporary-share-dialog">
     <div class="section-heading">
       <h2>临时访问</h2>

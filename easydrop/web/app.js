@@ -1,7 +1,7 @@
-import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound } from "lucide";
+import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound } from "lucide";
 import QRCode from "qrcode";
 
-const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Pause, Play, RefreshCw, Trash2, X, Copy, Link, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound };
+const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound };
 const APP_VERSION = __EASYDROP_VERSION__;
 const renderIcons = () => createIcons({ icons });
 const $ = (id) => document.getElementById(id);
@@ -395,6 +395,29 @@ function openTemporaryShare(item) {
   $("temporary-share-dialog").showModal();
 }
 
+function openImagePreview(item, fileUrl) {
+  const image = $("image-preview-content");
+  const status = $("image-preview-status");
+  $("image-preview-name").textContent = item.name;
+  $("image-preview-download").href = fileUrl;
+  $("image-preview-download").download = item.name;
+  image.hidden = true;
+  image.alt = item.name;
+  status.hidden = false;
+  status.textContent = "正在加载图片...";
+  image.onload = () => {
+    image.hidden = false;
+    status.hidden = true;
+  };
+  image.onerror = () => {
+    image.hidden = true;
+    status.hidden = false;
+    status.textContent = "图片加载失败";
+  };
+  image.src = `/images/${item.id}/${encodeURIComponent(item.name)}`;
+  $("image-preview-dialog").showModal();
+}
+
 function historyRow(item) {
   const row = document.createElement("article");
   row.className = "history-item";
@@ -417,13 +440,12 @@ function historyRow(item) {
   } else {
     const fileUrl = new URL(`/uploads/${item.id}/${encodeURIComponent(item.name)}`, location.origin).href;
     if (item.media_type) {
-      const thumbnailLink = document.createElement("a");
+      const thumbnailLink = document.createElement("button");
+      thumbnailLink.type = "button";
       thumbnailLink.className = "thumbnail-link";
-      thumbnailLink.href = fileUrl;
-      thumbnailLink.target = "_blank";
-      thumbnailLink.rel = "noopener";
-      thumbnailLink.title = "下载图片";
-      thumbnailLink.setAttribute("aria-label", `下载图片 ${item.name}`);
+      thumbnailLink.title = "预览图片";
+      thumbnailLink.setAttribute("aria-label", `点击预览图片 ${item.name}`);
+      thumbnailLink.addEventListener("click", () => openImagePreview(item, fileUrl));
       const thumbnail = document.createElement("img");
       thumbnail.className = "file-thumbnail";
       thumbnail.src = `/previews/${item.id}`;
@@ -439,11 +461,10 @@ function historyRow(item) {
     const link = document.createElement("a");
     link.className = "icon-button";
     link.href = fileUrl;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.title = "打开文件链接";
-    link.setAttribute("aria-label", "打开文件链接");
-    link.append(icon("link"));
+    link.download = item.name;
+    link.title = "下载文件";
+    link.setAttribute("aria-label", `下载文件 ${item.name}`);
+    link.append(icon("download"));
     const qr = document.createElement("div");
     qr.className = "qr-popover file-link-qr";
     const canvas = document.createElement("canvas");
@@ -464,6 +485,9 @@ function historyRow(item) {
       () => openTemporaryShare(item),
     );
     temporaryShare.classList.toggle("active-share", temporaryShareActive(item));
+    if (item.media_type) {
+      actions.append(actionButton(`预览图片 ${item.name}`, "eye", () => openImagePreview(item, fileUrl)));
+    }
     actions.append(preview, actionButton("复制文件链接", "copy", (button) => copy(fileUrl, button)), temporaryShare);
   }
   actions.append(actionButton("删除记录", "trash-2", async () => {
@@ -1129,6 +1153,17 @@ async function initializeApp() {
   $("qr-close").addEventListener("click", () => $("qr-dialog").close());
   $("copy-url").addEventListener("click", () => busy($("copy-url"), () =>
     copy(location.origin, $("copy-url"), $("site-copy-notice"))));
+  const imagePreviewDialog = $("image-preview-dialog");
+  $("image-preview-close").addEventListener("click", () => imagePreviewDialog.close());
+  imagePreviewDialog.addEventListener("click", (event) => {
+    if (event.target === imagePreviewDialog) imagePreviewDialog.close();
+  });
+  imagePreviewDialog.addEventListener("close", () => {
+    const image = $("image-preview-content");
+    image.removeAttribute("src");
+    image.onload = null;
+    image.onerror = null;
+  });
   $("temporary-share-close").addEventListener("click", () => $("temporary-share-dialog").close());
   $("temporary-share-form").addEventListener("submit", (event) => {
     event.preventDefault();

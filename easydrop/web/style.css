@@ -356,13 +356,18 @@ progress {
 .thumbnail-link {
   display: block;
   width: min(160px, 100%);
+  min-height: 0;
   aspect-ratio: 4 / 3;
   margin-top: 10px;
+  padding: 0;
   border: 1px solid var(--hairline);
   border-radius: 8px;
   overflow: hidden;
   background: #fff;
+  cursor: zoom-in;
 }
+
+.thumbnail-link:not(:disabled):hover { background: #fff; }
 
 .file-thumbnail {
   display: block;
@@ -684,6 +689,68 @@ dialog::backdrop {
   margin: 0 auto;
 }
 
+#image-preview-dialog {
+  width: min(1000px, calc(100% - 32px));
+  max-width: 1000px;
+  max-height: calc(100dvh - 32px);
+  padding: 16px;
+  overflow: hidden;
+}
+
+.image-preview-stage {
+  display: grid;
+  width: 100%;
+  height: min(70dvh, 720px);
+  min-height: 240px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #111113;
+}
+
+#image-preview-content {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+#image-preview-status { color: #c7c7cc; }
+
+.image-preview-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+#image-preview-name {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.button-link {
+  min-height: 40px;
+  padding: 8px 15px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  font-weight: 500;
+  line-height: 1.2;
+  text-decoration: none;
+}
+
+.button-link:hover { background: var(--fill-hover); }
+
 #temporary-share-dialog { max-width: 460px; }
 
 #temporary-share-file {
@@ -891,6 +958,13 @@ dialog::backdrop {
   .user-options { grid-template-columns: auto minmax(0, 1fr) auto; }
   .temporary-share-duration { grid-template-columns: minmax(0, 1fr); }
   .temporary-share-duration button { width: 100%; }
+  #image-preview-dialog {
+    width: calc(100% - 20px);
+    max-height: calc(100dvh - 20px);
+    padding: 12px;
+  }
+  .image-preview-stage { height: 62dvh; min-height: 200px; }
+  .image-preview-footer { align-items: flex-start; }
 }
 
 @media (max-width: 340px) {

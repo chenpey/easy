@@ -352,7 +352,7 @@ Token secret 只显示一次，应存入密码管理器。部署、远程备份�
 bash deploy.sh
 ```
 
-脚本自动准备依赖、检查并构建，然后隐藏输入一次 API Token。首次部署时自动发现账号、询问 Worker 名和公开入口，检查同名资源、Active Zone、Routes 与 Custom Domain；确认变更后创建缺少的 D1、私有 R2 bucket 和账号级子域名，再执行 migrations、部署 Worker，并检查 `INITIAL_OWNER`：存在则保留，缺少才交互式初始化。
+脚本自动准备依赖、检查并构建，然后隐藏输入一次 API Token。首次部署时自动发现账号、询问 Worker 名和公开入口，检查同名资源、Active Zone、Routes 与 Custom Domain；输入 `deploy <Worker 名称>` 确认变更后，创建缺少的 D1、私有 R2 bucket 和账号级子域名，再执行 migrations、部署 Worker，并检查 `INITIAL_OWNER`：存在则保留，缺少才交互式初始化。
 
 - 后续部署自动复用已保存的 Worker、Account、D1 和 R2，并校验远端绑定一致。
 - 首次发现同名 D1 或 R2 时，必须明确确认它们专用于当前 EasyNote；已有同名 Worker 不会被接管。

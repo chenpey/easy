@@ -411,7 +411,7 @@ test('deployment reuses resource IDs, refreshes template settings and preserves 
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
     ['Custom domain [workers.dev] (Enter keeps it; type a hostname or workers.dev): ', ''],
     ['Confirmation: ', 'easynote'],
-    ['Confirmation: ', 'deploy easynote'],
+    ['Confirmation: ', 'deploy easynote-saved'],
   ], { FAKE_REMOTE_WORKER: '1', FAKE_EXISTING_RESOURCES: '1' });
   assert.match(result.output, /Remote owner verifier already exists/);
   assert.match(result.output, /Confirmation did not match/);
@@ -440,7 +440,7 @@ test('new deployments create D1 and private R2 before initializing a missing own
     ['Worker name [easynote]: ', 'easynote-test'],
     ['Custom domain (blank for workers.dev): ', ''],
     ['workers.dev account subdomain [easynote-test]: ', 'personal-notes'],
-    ['Confirmation: ', 'deploy easynote'],
+    ['Confirmation: ', 'deploy easynote-test'],
     ...setupSteps,
   ], { FAKE_SECRETS: '[]', FAKE_NO_SUBDOMAIN: '1' });
   assert.match(result.output, /Owner verifier installed/);
@@ -469,7 +469,7 @@ test('new deployments bind a custom domain and verify its public DNS and HTTPS a
     ['Cloudflare API token (hidden, used only for this run): ', apiToken],
     ['Worker name [easynote]: ', 'easynote-test'],
     ['Custom domain (blank for workers.dev): ', 'share.example.test'],
-    ['Confirmation: ', 'deploy easynote'],
+    ['Confirmation: ', 'deploy easynote-test'],
     ...setupSteps,
   ]);
   assert.match(result.output, /https:\/\/share\.example\.test/);

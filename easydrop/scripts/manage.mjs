@@ -173,7 +173,7 @@ async function main() {
     administrator: initialAdmin ? "initialize" : "preserve existing users and sessions",
   };
   console.log(JSON.stringify(summary, null, 2));
-  await askExactConfirmation(name, "create/update resources and apply pending D1 migrations");
+  await askExactConfirmation(`deploy ${name}`, "create/update resources and apply pending D1 migrations");
   await withProgress("Building static assets", () => import("./build.mjs"));
   await withProgress("Preparing D1 and R2 resources",
     () => provisionDeployment(api, config, inspection, saveConfig));
