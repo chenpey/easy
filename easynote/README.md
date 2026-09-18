@@ -61,12 +61,12 @@ easynote/
 │   │   └── config.ts         # 交互式本地令牌配置
 │   └── shared/types.ts
 ├── docs/AI_INTEGRATION.md    # 用户与 AI 接入指南
-├── migrations/               # 版本化 D1 Schema
+├── migrations/               # 新安装使用的 D1 Schema 基线
 ├── scripts/
 │   ├── common.sh             # 环境、锁定依赖、构建与端口检查
 │   ├── setup.mjs             # 强制交互式账号初始化
 │   ├── maintenance.mjs       # 密码恢复与 D1/R2 灾备
-│   ├── migrate.mjs           # 独立执行 D1 migrations
+│   ├── migrate.mjs           # 已有数据库的一次性结构迁移
 │   ├── cloudflare.mjs        # Cloudflare API、资源检查与创建
 │   └── deploy.mjs            # 交互式生产部署编排
 ├── test/                     # API / UI 集成测试及隔离运行时
@@ -106,8 +106,8 @@ bash dev.sh
 | `bash backup.sh --remote` | 创建并校验完整 D1/R2 灾备 |
 | `bash restore.sh <目录> --remote --check` | 只执行恢复预检 |
 | `bash restore.sh <目录> --remote` | 恢复至空的 D1/R2 资源 |
-| `npm run migrate -- --local` | 单独执行本地 D1 migrations |
-| `npm run migrate -- --remote` | 单独执行生产 D1 migrations |
+| `npm run migrate -- --local` | 迁移已有本地数据库以支持永久分享 |
+| `npm run migrate -- --remote` | 迁移已有生产数据库以支持永久分享 |
 | `npm run ai:setup` | 交互式配置 MCP 地址和令牌 |
 | `npm run ai:mcp` | 启动本地 MCP stdio 服务 |
 
@@ -132,6 +132,7 @@ git commit -m "发布：EasyNote v0.3.0"
 | `backup.sh --local`、`restore.sh --local`、`deploy.sh --check` | 无 Cloudflare 凭据 | 只操作本地资源；写操作仍要求确认 |
 | `reset-password.sh --local` | 新的本地账号密码 | 交互式选择账号并隐藏输入 |
 | `deploy.sh` | Cloudflare 自定义 API Token | 构建通过后隐藏输入，用于资源发现、创建和部署 |
+| `npm run migrate -- --remote` | Cloudflare 自定义 API Token | 交互式隐藏输入，仅用于本次数据库迁移 |
 | `../reset.sh easynote --remote` | Cloudflare 自定义 API Token | 用户确认清空后隐藏输入，Token 仅用于本次进程 |
 | `backup.sh --remote`、`restore.sh --remote`、`reset-password.sh --remote` | Cloudflare 自定义 API Token | 每次运行重新隐藏输入 |
 | `npm run ai:setup` | EasyNote AI 集成令牌 | 由已登录用户在应用内创建，与 Cloudflare Token 无关 |
@@ -365,7 +366,7 @@ bash deploy.sh
 - `wrangler.deploy.json` 使用 `0600` 权限保存目标资源标识和公开应用配置。
 - 应用参数在 `wrangler.json` 维护。复用部署时重新从模板生成生产配置，仅继承已保存的账号和资源标识。
 - 更换 Cloudflare 账号或存储资源时，先核对资源归属并完成备份，再更新部署配置。
-- 更新部署会应用 D1 migrations，并保留已有初始账号验证器和账号密码。
+- 部署会为新数据库应用 Schema 基线，并保留已有初始账号验证器和账号密码。
 - D1 创建成功后立即保存 UUID；Token 权限不足或后续步骤失败时，修正原因后可复用已创建资源继续部署。
 
 ### 5. 更新已有部署
@@ -375,12 +376,14 @@ bash deploy.sh
 ```bash
 git pull --ff-only
 cd easynote
+npm ci --include=dev
+npm run migrate -- --remote
 bash deploy.sh
 ```
 
-部署脚本会先构建并检查项目，再自动应用尚未执行的 D1 migrations，最后更新 Worker。升级到 `0.3.0` 时会应用 `0002_permanent_note_shares.sql`；已有分享记录保持不变，无需手工修改数据库。按终端提示输入 Cloudflare API Token，并使用 `deploy <Worker 名称>` 确认即可。
+升级到 `0.3.0` 时，先运行独立迁移脚本，将分享的到期时间字段调整为可空；脚本会保留已有分享记录。远程迁移会隐藏读取一次 Cloudflare API Token，迁移成功后再运行部署脚本更新 Worker；部署时需要再次输入 Token，并使用 `deploy <Worker 名称>` 确认。
 
-只需单独处理数据库时，可在 `easynote` 目录执行 `npm run migrate -- --local` 或 `npm run migrate -- --remote`。正常生产更新优先使用 `bash deploy.sh`，确保数据库和 Worker 代码同步升级。
+新安装直接使用已经更新的 `0001_initial.sql`，不需要运行独立迁移脚本。
 
 官方参考：[Wrangler API Token 环境变量](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)、[Workers 权限](https://developers.cloudflare.com/workers/authorization/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[创建 D1 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/create/)、[创建 R2 bucket API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/create/)、[workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)、[List Routes API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)。
 

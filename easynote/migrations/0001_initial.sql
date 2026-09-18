@@ -121,7 +121,7 @@ CREATE INDEX note_changes_note ON note_changes(user_id, note_id, sequence);
 CREATE TABLE note_shares (
   token_hash TEXT PRIMARY KEY,
   note_id TEXT NOT NULL UNIQUE REFERENCES notes(id) ON DELETE CASCADE,
-  expires_at INTEGER NOT NULL,
+  expires_at INTEGER,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX note_shares_expiry ON note_shares(expires_at);

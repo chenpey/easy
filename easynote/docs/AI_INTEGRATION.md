@@ -11,7 +11,7 @@ MCP 桥接器实时访问 EasyNote API，写入工具复用 PWA 的 revision、o
 
 ## 快速接入
 
-`migrations/` 按编号维护账号、AI 令牌、笔记、版本审计、同步、分享和全文索引所需的 D1 结构。`bash dev.sh` 和 `bash deploy.sh` 会按顺序自动应用尚未执行的迁移。
+`0001_initial.sql` 建立新安装所需的完整 D1 结构，包括账号、AI 令牌、笔记、版本审计、同步、分享和全文索引。已有数据库的结构调整使用 `scripts/` 下对应的独立迁移脚本。
 
 ### 1. 创建令牌
 
