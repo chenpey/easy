@@ -244,13 +244,13 @@ nav button.active svg { color: var(--accent); }
 .section-label .icon-button { width: 24px; height: 24px; flex-basis: 24px; }
 .tag-nav { overflow-y: auto; }
 .tag-nav button { font-size: 13px; }
-.tag-dot {
-  width: 6px;
-  height: 6px;
-  margin: 0 4px;
-  flex: 0 0 6px;
-  background: var(--accent);
-  border-radius: 50%;
+.tag-prefix {
+  width: 12px;
+  margin-right: 2px;
+  flex: 0 0 12px;
+  color: var(--subtle);
+  font-weight: 600;
+  text-align: center;
 }
 .sidebar-bottom {
   height: var(--footer-height);
@@ -872,6 +872,44 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
   background: color-mix(in srgb, var(--success) 8%, var(--paper));
   border-color: color-mix(in srgb, var(--success) 40%, var(--line));
 }
+dialog.share-management-dialog { width: min(720px, calc(100% - 28px)); }
+.share-management > .panel-empty {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.share-management-list { max-height: 62dvh; overflow-y: auto; }
+.share-management-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 74px;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.share-management-row:last-child { border-bottom: 0; }
+.share-management-main { display: grid; min-width: 0; gap: 4px; }
+.share-management-note {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 3px 5px;
+  justify-content: flex-start;
+  overflow: hidden;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.share-management-note:hover { color: var(--accent-text); background: var(--hover); border-color: transparent; }
+.share-management-note strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.share-management-main > span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.share-management-actions { display: flex; align-items: center; gap: 7px; }
+.share-management-actions select { height: 32px; padding: 5px 8px; font-size: 12px; }
+.share-management-actions button { min-height: 32px; padding: 5px 8px; white-space: nowrap; }
+.share-permanent { display: inline-flex; align-items: center; gap: 5px; color: var(--success); font-size: 12px; }
 .user-create-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 110px auto; gap: 8px; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .user-create-form h3 { grid-column: 1 / -1; margin: 0; font-size: 14px; }
 .user-list { max-height: 48dvh; overflow-y: auto; }
@@ -1158,6 +1196,10 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
   .token-form { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
   .user-create-form, .user-edit-grid { grid-template-columns: 1fr; }
+  dialog.share-management-dialog { width: calc(100% - 16px); padding: 18px 14px; }
+  .share-management-row { grid-template-columns: 1fr; gap: 10px; padding: 14px 2px; }
+  .share-management-actions { justify-content: flex-end; flex-wrap: wrap; }
+  .share-management-actions select { min-width: 128px; flex: 1; }
   .shared-document { width: calc(100% - 36px); padding-top: 34px; }
   .shared-document > h1 { font-size: 27px; }
   dialog.pdf-export-dialog { width: calc(100% - 12px); height: calc(100dvh - 12px); max-height: calc(100dvh - 12px); padding: 14px; }

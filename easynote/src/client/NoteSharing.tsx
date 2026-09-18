@@ -45,7 +45,7 @@ export function NoteSharing({ noteId, disabled, notify, reportError }: Props) {
   const create = async () => {
     setWorking(true);
     try {
-      const result = await api.createNoteShare(noteId, Number(expiresInHours));
+      const result = await api.createNoteShare(noteId, expiresInHours === 'permanent' ? null : Number(expiresInHours));
       setCopied(false);
       setShare(result.share);
       setUrl(result.url);
@@ -75,7 +75,9 @@ export function NoteSharing({ noteId, disabled, notify, reportError }: Props) {
   return <div className="note-sharing">
     {share && <div className="share-status">
       <Link2 size={17} />
-      <div><strong>分享有效</strong><span>截止 {new Date(share.expiresAt).toLocaleString('zh-CN')}</span></div>
+      <div><strong>分享有效</strong><span>{share.expiresAt === null
+        ? '永久有效'
+        : `截止 ${new Date(share.expiresAt).toLocaleString('zh-CN')}`}</span></div>
     </div>}
     {url && <div className="share-url" role="status">
       <input readOnly aria-label="只读分享链接" value={url} onFocus={(event) => event.currentTarget.select()} />
@@ -88,6 +90,7 @@ export function NoteSharing({ noteId, disabled, notify, reportError }: Props) {
       <option value="24">1 天</option>
       <option value="168">7 天</option>
       <option value="720">30 天</option>
+      <option value="permanent">永久</option>
     </select></label>
     <div className="dialog-actions">
       {share && <button className="danger" disabled={disabled || working} onClick={() => void revoke()}>

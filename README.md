@@ -8,7 +8,7 @@ Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专
 | 项目 | 当前版本 |
 | --- | --- |
 | [EasyDrop](easydrop/) | `1.0.4` |
-| [EasyNote](easynote/) | `0.2.2` |
+| [EasyNote](easynote/) | `0.3.0` |
 <!-- versions:end -->
 
 ## 项目目录
@@ -25,7 +25,7 @@ Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专
 
 ### [EasyNote](easynote/)
 
-基于 Cloudflare Workers 的多用户自托管 Markdown 图片笔记应用。用户即租户，笔记、附件、离线缓存和 AI 令牌完全隔离；管理员可管理用户及审批注册。提供自动保存、任务中心、Obsidian/Markdown 导入、带逐页预览的跨平台 PDF 导出、可撤销限时只读分享、私有图片、搜索、回收站、版本历史、默认开启的完整离线笔记库和并发冲突保护，并适配桌面与移动端。
+基于 Cloudflare Workers 的多用户自托管 Markdown 图片笔记应用。用户即租户，笔记、附件、离线缓存和 AI 令牌完全隔离；管理员可管理用户及审批注册。提供自动保存、任务中心、Obsidian/Markdown 导入、带逐页预览的跨平台 PDF 导出、限时或永久只读分享及集中管理、私有图片、搜索、回收站、版本历史、默认开启的完整离线笔记库和并发冲突保护，并适配桌面与移动端。
 
 技术栈：React、TypeScript、CodeMirror、pdfmake、PDF.js、Cloudflare Workers、D1、R2。
 
@@ -60,7 +60,7 @@ node scripts/version.mjs bump easynote patch
 node scripts/version.mjs check
 ```
 
-脚本会同步项目的 `package.json`、锁文件、运行时版本、README 和根目录版本表。`patch` 适合兼容性修复，`minor` 适合新增功能，`major` 适合不兼容变更。随后使用带版本号的提交信息，例如 `发布：EasyNote v0.2.2`。
+脚本会同步项目的 `package.json`、锁文件、运行时版本、README 和根目录版本表。`patch` 适合兼容性修复，`minor` 适合新增功能，`major` 适合不兼容变更。随后使用带版本号的提交信息，例如 `发布：EasyNote v0.3.0`。
 
 ## 清空重建
 

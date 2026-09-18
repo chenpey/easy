@@ -1,6 +1,6 @@
 # EasyNote
 
-当前版本：`0.2.2`
+当前版本：`0.3.0`
 
 一个面向个人或小团队的自托管 Markdown 笔记应用。React + TypeScript 前端，pdfmake 生成 PDF、PDF.js 分页预览，Cloudflare Worker API，D1 保存账号与笔记，私有 R2 保存图片与附件。
 
@@ -23,7 +23,7 @@
 - 标签重命名、合并、删除，以及笔记批量归档和加标签。
 - AI 读写分离接入：受限令牌、FTS5 相关度搜索、最近笔记、批量读取、MCP Resources 和写入工具；AI 修改进入正常版本历史。
 - 桌面/手机布局、深浅主题、EasyNote ZIP 导出恢复，以及 Obsidian 目录、通用 Markdown/TXT ZIP、`.md` / `.markdown` / `.txt` 导入和本地链接转换。
-- 可撤销、最长 30 天的只读笔记分享链接；分享 Token 只保存哈希，附件访问绑定到分享笔记的当前修订。
+- 可撤销的限时或永久只读分享链接；桌面端和移动端均可集中查看、延期或取消分享，分享 Token 只保存哈希，附件访问绑定到分享笔记的当前修订。
 - 定时清理过期会话、分享、登录计数、未引用文件、失败上传和已申请删除的租户数据。
 - 基于 Miniflare 的真实 Worker/D1/R2 API 测试，以及 Playwright 浏览器测试。
 
@@ -42,14 +42,15 @@ easynote/
 │   │   ├── pdf.ts            # 结构化 PDF 生成、分页预览与平台导出
 │   │   ├── transfer.ts       # ZIP 导出、校验、文件重映射及导入
 │   │   ├── UserManagement.tsx # 管理员用户与注册设置
-│   │   ├── NoteSharing.tsx    # 限时只读分享管理
+│   │   ├── NoteSharing.tsx    # 单篇笔记只读分享
+│   │   ├── ShareManagement.tsx # 分享列表、延期与取消
 │   │   ├── styles.css
 │   │   └── main.tsx
 │   ├── worker/
 │   │   ├── index.ts          # 请求入口与 Cron
 │   │   ├── auth.ts           # 多用户、会话、恢复、管理与登录限流
 │   │   ├── events.ts         # Durable Object WebSocket 变更通知
-│   │   ├── features.ts       # 任务中心与限时只读分享
+│   │   ├── features.ts       # 任务中心与只读分享
 │   │   ├── integrations.ts   # AI 令牌、快照、增量同步和受控写入
 │   │   ├── notes.ts          # 笔记、标签、版本、软删除和清除
 │   │   ├── images.ts         # 私有文件、配额预留、状态及清理
@@ -60,11 +61,12 @@ easynote/
 │   │   └── config.ts         # 交互式本地令牌配置
 │   └── shared/types.ts
 ├── docs/AI_INTEGRATION.md    # 用户与 AI 接入指南
-├── migrations/               # 完整 D1 Schema 基线
+├── migrations/               # 版本化 D1 Schema
 ├── scripts/
 │   ├── common.sh             # 环境、锁定依赖、构建与端口检查
 │   ├── setup.mjs             # 强制交互式账号初始化
 │   ├── maintenance.mjs       # 密码恢复与 D1/R2 灾备
+│   ├── migrate.mjs           # 独立执行 D1 migrations
 │   ├── cloudflare.mjs        # Cloudflare API、资源检查与创建
 │   └── deploy.mjs            # 交互式生产部署编排
 ├── test/                     # API / UI 集成测试及隔离运行时
@@ -104,6 +106,8 @@ bash dev.sh
 | `bash backup.sh --remote` | 创建并校验完整 D1/R2 灾备 |
 | `bash restore.sh <目录> --remote --check` | 只执行恢复预检 |
 | `bash restore.sh <目录> --remote` | 恢复至空的 D1/R2 资源 |
+| `npm run migrate -- --local` | 单独执行本地 D1 migrations |
+| `npm run migrate -- --remote` | 单独执行生产 D1 migrations |
 | `npm run ai:setup` | 交互式配置 MCP 地址和令牌 |
 | `npm run ai:mcp` | 启动本地 MCP stdio 服务 |
 
@@ -115,7 +119,7 @@ bash dev.sh
 node scripts/version.mjs bump easynote patch
 node scripts/version.mjs check
 git add .
-git commit -m "发布：EasyNote v0.2.2"
+git commit -m "发布：EasyNote v0.3.0"
 ```
 
 `minor` 用于新增功能，`major` 用于不兼容变更。脚本会同步本 README、根 README、`package.json`、锁文件和应用显示版本。
@@ -364,6 +368,20 @@ bash deploy.sh
 - 更新部署会应用 D1 migrations，并保留已有初始账号验证器和账号密码。
 - D1 创建成功后立即保存 UUID；Token 权限不足或后续步骤失败时，修正原因后可复用已创建资源继续部署。
 
+### 5. 更新已有部署
+
+在仓库根目录拉取最新代码，再进入 EasyNote 执行部署：
+
+```bash
+git pull --ff-only
+cd easynote
+bash deploy.sh
+```
+
+部署脚本会先构建并检查项目，再自动应用尚未执行的 D1 migrations，最后更新 Worker。升级到 `0.3.0` 时会应用 `0002_permanent_note_shares.sql`；已有分享记录保持不变，无需手工修改数据库。按终端提示输入 Cloudflare API Token，并使用 `deploy <Worker 名称>` 确认即可。
+
+只需单独处理数据库时，可在 `easynote` 目录执行 `npm run migrate -- --local` 或 `npm run migrate -- --remote`。正常生产更新优先使用 `bash deploy.sh`，确保数据库和 Worker 代码同步升级。
+
 官方参考：[Wrangler API Token 环境变量](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)、[Workers 权限](https://developers.cloudflare.com/workers/authorization/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[创建 D1 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/create/)、[创建 R2 bucket API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/create/)、[workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)、[List Routes API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)。
 
 ## 关键行为
@@ -409,11 +427,11 @@ bash deploy.sh
 
 侧栏“任务中心”汇总当前租户全部未删除笔记中的未完成事项，包括归档笔记，并忽略 fenced code block 中的示例语法。每项显示来源笔记和源码行号，点击后切换到编辑模式并将 CodeMirror 光标定位到对应列表行。
 
-### 限时只读分享
+### 只读分享
 
-已保存的正常笔记可创建 1 小时、1 天、7 天或 30 天的只读链接。每篇笔记同时只有一个有效链接；创建新链接会替换旧链接，用户也可随时撤销。复制成功后，弹窗内的复制按钮会直接显示“已复制”，不会被对话框遮罩遮挡。将笔记移入回收站、禁用/删除所属账号或链接过期都会立即阻止访问。
+已保存的正常笔记可创建 1 小时、1 天、7 天、30 天或永久有效的只读链接。每篇笔记同时只有一个有效链接；创建新链接会替换旧链接。侧栏“分享管理”在桌面端和移动端集中列出当前分享，可按当前截止时间继续延期、改为永久有效，或直接取消分享。复制成功后，弹窗内的复制按钮会直接显示“已复制”，不会被对话框遮罩遮挡。将笔记移入回收站、禁用/删除所属账号、取消分享或限时链接过期都会立即阻止访问。
 
-原始分享 Token 只在创建时返回，D1 仅保存 SHA-256。公开读取接口只返回标题、正文、标签、更新时间和到期时间；图片与附件必须同时满足 Token 有效、文件属于该笔记当前 revision、文件仍为 ready。响应统一 `no-store`，分享页没有编辑、历史、反向链接或租户浏览入口。
+原始分享 Token 只在创建时返回，D1 仅保存 SHA-256，因此分享管理不会重新显示旧链接。公开读取接口只返回标题、正文、标签、更新时间和到期时间；永久分享的到期时间为 `null`。图片与附件必须同时满足 Token 有效、文件属于该笔记当前 revision、文件仍为 ready。响应统一 `no-store`，分享页没有编辑、历史、反向链接或租户浏览入口。
 
 ### 文档宽度
 
@@ -519,7 +537,8 @@ ZIP v2 包含 `manifest.json`、`notes/*.md` 和所引用的 `files/*`。Markdow
 | `DELETE /api/notes/:id` | 永久删除指定 revision 的回收站笔记 |
 | `GET /api/notes/:id/versions` | 历史版本，恢复通过普通更新提交 |
 | `GET /api/notes/:id/backlinks` | 查询未删除笔记中的反向链接 |
-| `GET/POST/DELETE /api/notes/:id/share` | 查询、创建/替换或撤销限时分享 |
+| `GET /api/shares` | 列出当前账号全部有效分享 |
+| `GET/POST/PATCH/DELETE /api/notes/:id/share` | 查询、创建/替换、延期或撤销分享 |
 | `GET /api/public/shares/:token` | 无需登录读取有效只读分享 |
 | `GET /api/public/shares/:token/(images\|files)/:id` | 读取分享笔记当前版本引用的文件 |
 | `GET /api/tags` | 标签列表 |
@@ -551,7 +570,7 @@ API 测试使用内存 D1 / R2；浏览器测试自动在 `127.0.0.1:8792` 启�
 
 脚本流程测试使用临时目录和模拟 npm / Wrangler，不登录 Cloudflare、不修改本地账号、不访问真实云端资源。交互测试通过系统 `expect` 创建伪终端，macOS 通常自带；Linux 运行这组测试前需安装 `expect`。日常初始化、启动和部署不依赖它。
 
-测试覆盖多用户租户隔离、注册审批、恢复与账号删除、任务定位、限时分享、Obsidian ZIP、账号改密与全端登出、离线冷启动和回传、AI 令牌、真实 MCP、幂等与并发、搜索、批量标签、双链、删除墓碑、历史、私有文件、灾备校验、移动布局和编辑锁。
+测试覆盖多用户租户隔离、注册审批、恢复与账号删除、任务定位、限时/永久分享及集中管理、Obsidian ZIP、账号改密与全端登出、离线冷启动和回传、AI 令牌、真实 MCP、幂等与并发、搜索、批量标签、双链、删除墓碑、历史、私有文件、灾备校验、移动布局和编辑锁。
 
 ## 适用范围
 

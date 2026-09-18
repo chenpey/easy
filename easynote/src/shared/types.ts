@@ -60,7 +60,14 @@ export interface UserAccount {
 
 export interface NoteShare {
   createdAt: number;
-  expiresAt: number;
+  expiresAt: number | null;
+}
+
+export interface ManagedNoteShare extends NoteShare {
+  noteId: string;
+  title: string;
+  noteUpdatedAt: number;
+  archived: boolean;
 }
 
 export interface SharedNote {
@@ -68,7 +75,7 @@ export interface SharedNote {
   content: string;
   tags: string[];
   updatedAt: number;
-  expiresAt: number;
+  expiresAt: number | null;
 }
 
 export interface ClientConfig {

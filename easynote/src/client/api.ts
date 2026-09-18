@@ -1,6 +1,7 @@
 import type {
   ImageRecord,
   IntegrationToken,
+  ManagedNoteShare,
   Note,
   NoteInput,
   NoteShare,
@@ -123,9 +124,12 @@ export const api = {
   versions: (id: string) => request<{ versions: Version[] }>(`/api/notes/${id}/versions`),
   backlinks: (id: string) => request<{ notes: NoteSummary[] }>(`/api/notes/${id}/backlinks`),
   tasks: () => request<{ tasks: NoteTask[] }>('/api/tasks'),
+  noteShares: () => request<{ shares: ManagedNoteShare[] }>('/api/shares'),
   noteShare: (id: string) => request<{ share: NoteShare | null }>(`/api/notes/${id}/share`),
-  createNoteShare: (id: string, expiresInHours: number) =>
+  createNoteShare: (id: string, expiresInHours: number | null) =>
     request<{ share: NoteShare; url: string }>(`/api/notes/${id}/share`, 'POST', { expiresInHours }),
+  extendNoteShare: (id: string, expiresInHours: number | null) =>
+    request<{ share: NoteShare }>(`/api/notes/${id}/share`, 'PATCH', { expiresInHours }),
   revokeNoteShare: (id: string) => request<{ ok: true }>(`/api/notes/${id}/share`, 'DELETE', {}),
   sharedNote: (shareToken: string) =>
     request<{ note: SharedNote }>(`/api/public/shares/${shareToken}`),

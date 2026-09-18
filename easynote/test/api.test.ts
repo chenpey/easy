@@ -637,21 +637,61 @@ test('task center aggregates unfinished tasks with source positions', async () =
   assert.equal(tasks.find((item: any) => item.noteId === archived.id).archived, true);
 });
 
-test('read-only note shares expire, revoke and remain scoped to current note files', async () => {
+test('read-only note shares can be listed, extended, made permanent and revoked', async () => {
   const note = await create({ title: '公开只读笔记', content: '仅可阅读' });
   const created = await request(`/api/notes/${note.id}/share`, 'POST', { expiresInHours: 24 });
   assert.equal(created.status, 201, await created.clone().text());
   const share = await created.json() as any;
   assert.match(share.url, /^https:\/\/easynote\.example\.test\/shared\/[a-f0-9]{64}$/);
   const rawToken = share.url.split('/').at(-1);
+  const listed = await (await request('/api/shares')).json() as any;
+  assert.deepEqual(
+    listed.shares.find((item: any) => item.noteId === note.id),
+    {
+      noteId: note.id,
+      title: '公开只读笔记',
+      noteUpdatedAt: note.updatedAt,
+      archived: false,
+      createdAt: share.share.createdAt,
+      expiresAt: share.share.expiresAt,
+    },
+  );
+
+  const extendedResponse = await request(`/api/notes/${note.id}/share`, 'PATCH', { expiresInHours: 24 });
+  assert.equal(extendedResponse.status, 200, await extendedResponse.clone().text());
+  const extended = await extendedResponse.json() as any;
+  assert.equal(extended.share.createdAt, share.share.createdAt);
+  assert.equal(extended.share.expiresAt, share.share.expiresAt + 24 * 3600_000);
+
   const publicResponse = await request(`/api/public/shares/${rawToken}`, 'GET', undefined, {
     Cookie: '', 'X-CSRF-Token': '',
   });
   assert.equal(publicResponse.status, 200);
   assert.deepEqual((await publicResponse.json() as any).note.title, '公开只读笔记');
   assert.equal(publicResponse.headers.get('Cache-Control'), 'no-store');
-  assert.equal((await request(`/api/notes/${note.id}/share`, 'DELETE', {})).status, 200);
+
+  const permanentResponse = await request(`/api/notes/${note.id}/share`, 'POST', { expiresInHours: null });
+  assert.equal(permanentResponse.status, 201, await permanentResponse.clone().text());
+  const permanent = await permanentResponse.json() as any;
+  assert.equal(permanent.share.expiresAt, null);
+  const permanentToken = permanent.url.split('/').at(-1);
   assert.equal((await request(`/api/public/shares/${rawToken}`, 'GET', undefined, {
+    Cookie: '', 'X-CSRF-Token': '',
+  })).status, 404);
+  const permanentPublic = await request(`/api/public/shares/${permanentToken}`, 'GET', undefined, {
+    Cookie: '', 'X-CSRF-Token': '',
+  });
+  assert.equal(permanentPublic.status, 200);
+  assert.equal((await permanentPublic.json() as any).note.expiresAt, null);
+  assert.equal((await (await request(`/api/notes/${note.id}/share`)).json() as any).share.expiresAt, null);
+  assert.equal((await (await request('/api/shares')).json() as any).shares
+    .find((item: any) => item.noteId === note.id).expiresAt, null);
+
+  const permanentExtension = await request(`/api/notes/${note.id}/share`, 'PATCH', { expiresInHours: 24 });
+  assert.equal((await permanentExtension.json() as any).share.expiresAt, null);
+  assert.equal((await request(`/api/notes/${note.id}/share`, 'POST', { expiresInHours: 0 })).status, 400);
+  assert.equal((await request(`/api/notes/${note.id}/share`, 'DELETE', {})).status, 200);
+  assert.equal((await request(`/api/public/shares/${permanentToken}`, 'GET', undefined, {
     Cookie: '', 'X-CSRF-Token': '',
   })).status, 404);
 });

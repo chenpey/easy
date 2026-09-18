@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronRight, ClipboardList, Command, Download, FileText, FolderOpen, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Menu, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
-import type { Note, NoteInput, NoteSummary, NoteTask, Session, SharedNote, Version } from '../shared/types';
+import type { ManagedNoteShare, Note, NoteInput, NoteSummary, NoteTask, Session, SharedNote, Version } from '../shared/types';
 import { api, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
 import { AccountSecurity } from './AccountSecurity';
 import { AiAccess } from './AiAccess';
 import { Editor, Preview, toggleMarkdownTask, type EditorHandle } from './Editor';
 import { NoteSharing } from './NoteSharing';
+import { ShareManagement } from './ShareManagement';
 import { UserManagement } from './UserManagement';
 import { clearAccountStorage, forgetCachedSession, loadOfflineSession, cacheSession } from './drafts';
 import { headings, noteLink } from './knowledge';
@@ -187,7 +188,7 @@ function SharedPage({ token }: { token: string }) {
           <h1>{note.title || '未命名笔记'}</h1>
           <div className="document-meta">
             <time>更新于 {new Date(note.updatedAt).toLocaleString('zh-CN')}</time>
-            <span>有效至 {new Date(note.expiresAt).toLocaleString('zh-CN')}</span>
+            <span>{note.expiresAt === null ? '永久有效' : `有效至 ${new Date(note.expiresAt).toLocaleString('zh-CN')}`}</span>
           </div>
           <Preview content={note.content} onImage={(src) => window.open(src, '_blank', 'noopener,noreferrer')} />
         </article>}
@@ -406,6 +407,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [taskCenter, setTaskCenter] = useState(false);
   const [tasks, setTasks] = useState<NoteTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
+  const [shareManagement, setShareManagement] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [commandPalette, setCommandPalette] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
@@ -672,6 +674,11 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setLayout('edit');
     setTaskCenter(false);
     await openNote(task.noteId);
+  };
+  const openManagedShare = async (share: ManagedNoteShare) => {
+    setShareManagement(false);
+    chooseView(share.archived ? 'archive' : 'all');
+    await openNote(share.noteId);
   };
   const openHistory = () => {
     if (!note || note.revision === 0) return;
@@ -970,6 +977,11 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       action: () => { setCommandPalette(false); void openTaskCenter(); },
     },
     {
+      id: 'share-management', label: '打开分享管理', aliases: ['分享', '分享管理'], icon: <Share2 size={16} />,
+      shortcut: '', disabled: !book.online || !!session.offline,
+      action: () => { setCommandPalette(false); setShareManagement(true); },
+    },
+    {
       id: 'link', label: '插入内部链接', aliases: ['链接'], icon: <Link2 size={16} />,
       shortcut: '', disabled: !note || !!note.deletedAt || !!transfer,
       action: () => {
@@ -1012,14 +1024,16 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       </div>
       <button className="new-note" disabled={!!transfer || book.loading} onClick={() => void createNote()}><Plus size={17} />新建笔记</button>
       <nav aria-label="笔记分类">
-        <button className={book.view === 'all' && !book.tag ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={17} />全部笔记</button>
+        <button className={!shareManagement && book.view === 'all' && !book.tag ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={17} />全部笔记</button>
         <button onClick={() => void openTaskCenter()}><ClipboardList size={17} />任务中心</button>
-        <button className={book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={17} />归档笔记</button>
-        <button className={book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={17} />回收站</button>
+        <button className={!shareManagement && book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={17} />归档笔记</button>
+        <button className={shareManagement ? 'active' : ''} disabled={!book.online || !!session.offline}
+          onClick={() => setShareManagement(true)}><Share2 size={17} />分享管理</button>
+        <button className={!shareManagement && book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={17} />回收站</button>
       </nav>
       <div className="section-label"><span>标签</span><IconButton label="管理标签" onClick={() => setTagManager(true)}><Tags size={14} /></IconButton></div>
       <nav className="tag-nav" aria-label="标签">{book.tags.map((tag) =>
-        <button key={tag} className={book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className="tag-dot" />{tag}</button>)}
+        <button key={tag} className={!shareManagement && book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className="tag-prefix" aria-hidden="true">#</span>{tag}</button>)}
       </nav>
       <div className="sidebar-bottom">
         <button className="account" onClick={() => setSettings(true)}><span className="avatar">{session.user!.username[0].toUpperCase()}</span><span>{session.user!.username}</span><Settings size={16} /></button>
@@ -1199,15 +1213,17 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     }} />
     {mobileNavigation && <Modal title="EasyNote" className="mobile-navigation-dialog" close={() => setMobileNavigation(false)}>
       <nav className="mobile-navigation-list" aria-label="移动端笔记分类">
-        <button className={book.view === 'all' && !book.tag ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={18} />全部笔记</button>
+        <button className={!shareManagement && book.view === 'all' && !book.tag ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={18} />全部笔记</button>
         <button onClick={() => { setMobileNavigation(false); void openTaskCenter(); }}><ClipboardList size={18} />任务中心</button>
-        <button className={book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={18} />归档笔记</button>
-        <button className={book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={18} />回收站</button>
+        <button className={!shareManagement && book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={18} />归档笔记</button>
+        <button className={shareManagement ? 'active' : ''} disabled={!book.online || !!session.offline}
+          onClick={() => { setMobileNavigation(false); setShareManagement(true); }}><Share2 size={18} />分享管理</button>
+        <button className={!shareManagement && book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={18} />回收站</button>
       </nav>
       {book.tags.length > 0 && <>
         <div className="mobile-navigation-label">标签</div>
         <nav className="mobile-navigation-list" aria-label="移动端标签">{book.tags.map((tag) =>
-          <button key={tag} className={book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className="tag-dot" />{tag}</button>)}
+          <button key={tag} className={!shareManagement && book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className="tag-prefix" aria-hidden="true">#</span>{tag}</button>)}
         </nav>
       </>}
       <div className="mobile-navigation-actions">
@@ -1316,6 +1332,10 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
             <ChevronRight size={16} aria-hidden="true" />
           </button>)}
       </div>
+    </Modal>}
+    {shareManagement && <Modal title="分享管理" className="share-management-dialog" close={() => setShareManagement(false)}>
+      <ShareManagement disabled={disabled || !book.online || !!session.offline}
+        notify={showNotice} openNote={(share) => void openManagedShare(share)} reportError={book.setError} />
     </Modal>}
     {sharing && note && <Modal title="只读分享" close={() => setSharing(false)}>
       <NoteSharing noteId={note.id} disabled={disabled || !!note.deletedAt || book.pending.some((item) => item.id === note.id)}

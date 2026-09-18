@@ -180,7 +180,7 @@ test('mobile note list exposes the task center and opens a task source', async (
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test('a note can create and revoke an expiring read-only share', async ({ page, browser }) => {
+test('a note share can be created, extended and cancelled from share management', async ({ page, browser }) => {
   await page.addInitScript(() => {
     let copiedText = '';
     Object.defineProperty(navigator, 'clipboard', {
@@ -196,7 +196,10 @@ test('a note can create and revoke an expiring read-only share', async ({ page, 
   const content = ['公开正文', ...Array.from({ length: 40 }, (_, index) => `第 ${index + 1} 段内容`), bottomMarker].join('\n\n');
   await page.goto('/');
   await newNote(page, title, content);
+  expect(await page.getByRole('navigation', { name: '笔记分类' }).getByRole('button').allTextContents())
+    .toEqual(['全部笔记', '任务中心', '归档笔记', '分享管理', '回收站']);
   await page.getByRole('button', { name: '只读分享', exact: true }).click();
+  await expect(page.getByLabel('有效期').locator('option[value="permanent"]')).toHaveText('永久');
   await page.getByLabel('有效期').selectOption('24');
   await page.getByRole('button', { name: '创建链接' }).click();
   const url = await page.getByLabel('只读分享链接').inputValue();
@@ -227,8 +230,21 @@ test('a note can create and revoke an expiring read-only share', async ({ page, 
   await expect(shared.getByText(bottomMarker, { exact: true })).toBeVisible();
   await anonymous.close();
 
-  await page.getByRole('button', { name: '撤销' }).click();
-  await expect(page.getByText('分享链接已撤销', { exact: true })).toBeVisible();
+  await sharingDialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记列表', exact: true }).click();
+  const navigation = await openMobileNavigation(page);
+  await navigation.getByRole('button', { name: '分享管理', exact: true }).click();
+  const manager = page.getByRole('dialog');
+  await expect(manager.getByRole('heading', { name: '分享管理', exact: true })).toBeVisible();
+  await expect(manager.getByRole('button', { name: title, exact: true })).toBeVisible();
+  await manager.getByLabel(`${title} 延期时长`).selectOption('24');
+  await manager.getByRole('button', { name: `延期 ${title}`, exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('分享有效期已延长');
+  expect(await manager.evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth)).toBe(true);
+  await manager.screenshot({ path: 'test-results/mobile-share-management.png' });
+  await manager.getByRole('button', { name: `取消分享 ${title}`, exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('分享已取消');
+  await expect(manager.getByText('暂无正在分享的笔记', { exact: true })).toBeVisible();
   expect((await page.request.get(url.replace('/shared/', '/api/public/shares/'))).status()).toBe(404);
 });
 
@@ -877,7 +893,7 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   await expect(page.getByRole('button').filter({ hasText: title })).toBeHidden();
   let navigation = await openMobileNavigation(page);
   expect(await navigation.getByRole('navigation', { name: '移动端笔记分类' }).getByRole('button').allTextContents())
-    .toEqual(['全部笔记', '任务中心', '归档笔记', '回收站']);
+    .toEqual(['全部笔记', '任务中心', '归档笔记', '分享管理', '回收站']);
   await expect(navigation.getByRole('button', { name: '同步全部', exact: true })).toBeVisible();
   await expect(navigation.getByRole('button', { name: '同步并保存版本', exact: true })).toHaveCount(0);
   await navigation.screenshot({ path: 'test-results/mobile-navigation.png' });
@@ -1193,8 +1209,11 @@ test('tags are scoped to the current note category and preserve it when selected
 
   await page.getByRole('button', { name: '归档笔记', exact: true }).click();
   const tagNav = page.getByRole('navigation', { name: '标签' });
-  await expect(tagNav.getByRole('button', { name: archiveTag, exact: true })).toBeVisible();
-  await tagNav.getByRole('button', { name: archiveTag, exact: true }).click();
+  const tagButton = tagNav.getByRole('button', { name: archiveTag, exact: true });
+  await expect(tagButton).toBeVisible();
+  await expect(tagButton.locator('.tag-prefix')).toHaveText('#');
+  await expect(tagButton.locator('.tag-prefix')).toHaveAttribute('aria-hidden', 'true');
+  await tagButton.click();
   await expect(page.getByRole('heading', { name: `归档笔记 · #${archiveTag}` })).toBeVisible();
   await expect(page.getByRole('button').filter({ hasText: title })).toBeVisible();
   await page.screenshot({ path: 'test-results/desktop-archive-tags.png', fullPage: true });
