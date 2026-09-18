@@ -57,7 +57,7 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   const manifest = await manifestResponse.json();
   expect(manifest).toMatchObject({
     name: 'EasyNote', start_url: '/', scope: '/', display: 'standalone',
-    theme_color: '#3361cc', background_color: '#ffffff',
+    theme_color: '#0071e3', background_color: '#ffffff',
   });
   expect(manifest).not.toHaveProperty('share_target');
   expect(manifest.icons).toEqual(expect.arrayContaining([
@@ -250,6 +250,7 @@ test('create, autosave, reload, edit Markdown and preview safely', async ({ page
   const icon = await page.request.get('/easynote-icon.svg');
   expect(icon.status()).toBe(200);
   expect(icon.headers()['content-type']).toContain('image/svg+xml');
+  expect(await icon.text()).toContain('fill="#0071e3"');
   await newNote(page, title, '# 本周阅读\n\n记录一些值得留下的想法。\n\n- 保持简单\n- 定期整理\n\n<script>alert(1)</script>');
   const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
   const automaticHistory = await (await page.request.get(`/api/notes/${listed.notes[0].id}/versions`)).json();
