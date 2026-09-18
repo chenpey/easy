@@ -736,7 +736,8 @@ test("selected deletion, partial failure and transient notices", async ({ page, 
   await page.route("**/api/revision", (route) => route.fulfill({ json: { revision: 1 } }));
   await page.goto(preview.url);
   await expect(page.locator(".history-item")).toHaveCount(3);
-  await page.getByLabel("全选已加载记录").check();
+  await expect(page.locator(".history > .section-heading .tools").getByLabel("批量选择", { exact: true })).toBeVisible();
+  await page.getByLabel("批量选择", { exact: true }).check();
   await page.getByLabel("选择记录：batch-3", { exact: true }).uncheck();
   await page.getByRole("button", { name: "删除所选 2 条记录", exact: true }).click();
   await page.getByRole("button", { name: "确认删除", exact: true }).click();
