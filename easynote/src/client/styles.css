@@ -317,15 +317,16 @@ nav button.active svg { color: var(--accent); }
   font-weight: 700;
 }
 .bulk-toolbar {
-  display: flex;
+  display: grid;
   min-height: 34px;
-  align-items: center;
-  gap: 7px;
+  gap: 6px;
   margin-bottom: 7px;
   color: var(--muted);
   font-size: 12px;
 }
-.bulk-toolbar span { flex: 1; }
+.bulk-toolbar-header { display: flex; align-items: center; gap: 7px; }
+.bulk-toolbar-header span { flex: 1; }
+.bulk-toolbar-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .bulk-toolbar button { min-height: 28px; padding: 4px 9px; box-shadow: none; }
 .search-field {
   display: flex;
@@ -658,6 +659,7 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
 .pdf-export-dialog .dialog-header { flex-shrink: 0; }
 .setting-row { padding: 18px 0; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 14px; font-size: 14px; }
 .setting-row:last-child { border: 0; }
+.setting-value { color: var(--muted); font-size: 12px; }
 .button-group { display: flex; gap: 8px; flex-wrap: wrap; }
 .ai-access { border-bottom: 1px solid var(--line); }
 .ai-access-heading { padding-bottom: 12px; border: 0; }
@@ -1006,7 +1008,7 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
   .list-purge-action, .list-create-action { display: none; }
   .search-field { display: none; margin-top: 7px; background: var(--soft); }
   .search-field.mobile-open { display: flex; }
-  .bulk-toolbar { margin: 8px 0 0; flex-wrap: wrap; }
+  .bulk-toolbar { margin: 8px 0 0; }
   .list-scroll { padding: 5px 18px calc(88px + env(safe-area-inset-bottom)); }
   .note-row {
     min-height: 90px;

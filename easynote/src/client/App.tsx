@@ -807,11 +807,20 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     else next.add(id);
     return next;
   });
-  const finishBulk = (message: string) => {
+  const allVisibleSelected = book.notes.length > 0 &&
+    selected.size === book.notes.length &&
+    book.notes.every((item) => selected.has(item.id));
+  const toggleSelectAll = () => {
+    setSelected(allVisibleSelected ? new Set() : new Set(book.notes.map((item) => item.id)));
+  };
+  const exitSelectionMode = () => {
     setSelected(new Set());
     setSelectionMode(false);
     setBulkTag('');
     setBulkTagOpen(false);
+  };
+  const finishBulk = (message: string) => {
+    exitSelectionMode();
     showNotice(message);
   };
   const applyBulkArchive = () => void run(async () => {
@@ -1000,8 +1009,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           }}><Search size={20} /></IconButton>
           <IconButton label="快速跳转" className="icon-button list-command-action" onClick={() => { setCommandQuery(''); setCommandPalette(true); }}><Command size={16} /></IconButton>
           {book.view !== 'trash' && <IconButton label={selectionMode ? '退出批量选择' : '批量选择'} className="icon-button list-bulk-action" aria-pressed={selectionMode} onClick={() => {
-            setSelectionMode((value) => !value);
-            setSelected(new Set());
+            if (selectionMode) exitSelectionMode();
+            else setSelectionMode(true);
           }}>{selectionMode ? <CheckSquare size={16} /> : <Square size={16} />}</IconButton>}
           <IconButton label={syncing ? '正在同步全部' : '同步全部'} className="icon-button list-sync-action" onClick={() => void syncNow(false)} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
           {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) &&
@@ -1009,10 +1018,18 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <IconButton label="新建笔记" className="icon-button list-create-action" onClick={() => void createNote()} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
         </div>
         {selectionMode && <div className="bulk-toolbar">
-          <span>已选 {selected.size} 篇</span>
-          <button disabled={!selected.size || disabled} onClick={applyBulkArchive}>{book.view === 'archive' ? <ArchiveRestore size={14} /> : <Archive size={14} />}{book.view === 'archive' ? '取消归档' : '归档'}</button>
-          <button disabled={!selected.size || disabled} onClick={() => setBulkTagOpen(true)}><Tag size={14} />加标签</button>
-          <button className="danger" disabled={!selected.size || disabled} onClick={() => setConfirmAction('bulk-trash')}><Trash2 size={14} />删除</button>
+          <div className="bulk-toolbar-header">
+            <span>已选 {selected.size} 篇</span>
+            <button aria-label={allVisibleSelected ? '取消全选' : '全部选中'} disabled={!book.notes.length} onClick={toggleSelectAll}>
+              {allVisibleSelected ? <Square size={14} /> : <CheckSquare size={14} />}{allVisibleSelected ? '取消全选' : '全选'}
+            </button>
+            <button aria-label="退出批量选择" onClick={exitSelectionMode}><X size={14} />退出</button>
+          </div>
+          <div className="bulk-toolbar-actions">
+            <button disabled={!selected.size || disabled} onClick={applyBulkArchive}>{book.view === 'archive' ? <ArchiveRestore size={14} /> : <Archive size={14} />}{book.view === 'archive' ? '取消归档' : '归档'}</button>
+            <button disabled={!selected.size || disabled} onClick={() => setBulkTagOpen(true)}><Tag size={14} />加标签</button>
+            <button className="danger" disabled={!selected.size || disabled} onClick={() => setConfirmAction('bulk-trash')}><Trash2 size={14} />删除</button>
+          </div>
         </div>}
         <label className={`search-field ${mobileSearch || book.query ? 'mobile-open' : ''}`}><Search size={15} /><input ref={searchInput} aria-label="搜索笔记" placeholder="搜索笔记" value={book.query}
           onChange={(e) => book.setQuery(e.target.value)}
@@ -1031,7 +1048,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         {book.nextOffset !== null && <button className="load-more" onClick={() => void run(book.loadMore)}>加载更多<ChevronDown size={14} /></button>}
       </div>
       <footer className="list-footer">{book.notes.length} 篇{book.nextOffset !== null ? '+' : ''}
-        <span>{book.online && !session.offline ? `EasyNote ${__EASYNOTE_VERSION__}` : <><WifiOff size={11} />离线</>}</span>
+        {(!book.online || session.offline) && <span><WifiOff size={11} />离线</span>}
       </footer>
       <button className="mobile-compose" aria-label="新建笔记" disabled={!!transfer || book.loading} onClick={() => void createNote()}><PenLine size={23} /></button>
     </section>
@@ -1244,6 +1261,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         if (book.online && !session.offline) await api.logout();
         await logout();
       })}><LogOut size={16} />退出登录</button></div>
+      <div className="setting-row"><span>版本</span><span className="setting-value">EasyNote {__EASYNOTE_VERSION__}</span></div>
     </Modal>}
     {accountSecurity && <Modal title="账户安全" close={() => setAccountSecurity(false)}>
       <AccountSecurity username={session.user!.username} disabled={disabled || !!book.pending.length || !book.online || !!session.offline}

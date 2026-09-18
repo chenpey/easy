@@ -834,6 +834,54 @@ test('mobile list syncs all notes without creating history while note sync creat
   expect((await (await page.request.get(`/api/notes/${noteId}/versions`)).json()).versions).toHaveLength(1);
 });
 
+test('mobile bulk selection supports select all and exit while settings owns the version', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 740 });
+  const marker = `移动批量-${randomUUID().slice(0, 6)}`;
+  for (let index = 0; index < 2; index++) {
+    expect((await page.request.post(`${origin}/api/notes/${randomUUID()}`, {
+      headers,
+      data: {
+        title: `${marker}-${index}`,
+        content: `测试正文 ${index}`,
+        tags: [],
+        pinned: false,
+        archived: false,
+        deletedAt: null,
+        revision: 0,
+        operationId: randomUUID(),
+      },
+    })).status()).toBe(201);
+  }
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '搜索笔记', exact: true }).click();
+  await page.getByRole('textbox', { name: '搜索笔记' }).fill(marker);
+  const rows = page.locator('[data-note-row]');
+  await expect(rows).toHaveCount(2);
+  let navigation = await openMobileNavigation(page);
+  await navigation.getByRole('button', { name: '批量选择', exact: true }).click();
+
+  const toolbar = page.locator('.bulk-toolbar');
+  await toolbar.getByRole('button', { name: '全部选中', exact: true }).click();
+  await expect(toolbar).toContainText('已选 2 篇');
+  await expect(rows.nth(0)).toHaveAttribute('aria-pressed', 'true');
+  await expect(rows.nth(1)).toHaveAttribute('aria-pressed', 'true');
+  await page.screenshot({ path: 'test-results/mobile-bulk-selection.png', fullPage: true });
+  await toolbar.getByRole('button', { name: '取消全选', exact: true }).click();
+  await expect(toolbar).toContainText('已选 0 篇');
+  await toolbar.getByRole('button', { name: '退出批量选择', exact: true }).click();
+  await expect(toolbar).toBeHidden();
+
+  navigation = await openMobileNavigation(page);
+  await navigation.getByRole('button', { name: '设置', exact: true }).click();
+  const version = page.getByText(/^EasyNote \d+\.\d+\.\d+$/);
+  await version.scrollIntoViewIfNeeded();
+  await expect(version).toBeVisible();
+  await expect(page.locator('.list-footer')).not.toContainText('EasyNote');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/mobile-settings-version.png', fullPage: true });
+});
+
 test('search highlights title and a matching excerpt from deep in the note', async ({ page }) => {
   const marker = `高亮词-${randomUUID().slice(0, 6)}`;
   const title = `${marker} 标题`;
