@@ -4,6 +4,7 @@ export interface Env {
   DB: D1Database;
   IMAGES: R2Bucket;
   ASSETS: Fetcher;
+  NOTE_EVENTS: DurableObjectNamespace;
   INITIAL_OWNER?: string;
   ALLOW_LOCAL_HTTP: string;
   MAX_NOTE_BYTES: string;

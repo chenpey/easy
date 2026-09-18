@@ -18,6 +18,12 @@
       "migrations_dir": "migrations"
     }
   ],
+  "durable_objects": {
+    "bindings": [{ "name": "NOTE_EVENTS", "class_name": "NoteEvents" }]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["NoteEvents"] }
+  ],
   "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "easynote-images" }],
   "triggers": { "crons": ["17 * * * *"] },
   "vars": {

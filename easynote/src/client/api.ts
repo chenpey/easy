@@ -16,10 +16,17 @@ import type {
 
 const API_TIMEOUT_MS = 30_000;
 const UPLOAD_TIMEOUT_MS = 120_000;
+const clientId = crypto.randomUUID();
 let csrf: string | null = null;
 let unauthorizedHandler: (() => void) | null = null;
 export function setSession(session: Session) { csrf = session.csrf; }
 export function setUnauthorizedHandler(handler: (() => void) | null) { unauthorizedHandler = handler; }
+export function noteEventsUrl(): string {
+  const url = new URL('/api/events', window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('client', clientId);
+  return url.href;
+}
 
 function handleUnauthorized(status: number, requestCsrf: string | null): void {
   if (status !== 401 || !requestCsrf || csrf !== requestCsrf) return;
@@ -61,7 +68,11 @@ export async function request<T>(path: string, method = 'GET', body?: unknown, s
   const requestCsrf = csrf;
   const { response, raw } = await timedFetch(path, {
     method, credentials: 'same-origin', signal,
-    headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(requestCsrf ? { 'X-CSRF-Token': requestCsrf } : {}) },
+    headers: {
+      'X-EasyNote-Client': clientId,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...(requestCsrf ? { 'X-CSRF-Token': requestCsrf } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   }, API_TIMEOUT_MS);
   handleUnauthorized(response.status, requestCsrf);
@@ -120,6 +131,8 @@ export const api = {
     request<{ note: SharedNote }>(`/api/public/shares/${shareToken}`),
   sync: (after: number, signal?: AbortSignal) =>
     request<{ changes: SyncChange[]; cursor: number; hasMore: boolean }>(`/api/sync?after=${after}&limit=200`, 'GET', undefined, signal),
+  syncHead: (signal?: AbortSignal) =>
+    request<{ cursor: number }>('/api/sync/cursor', 'GET', undefined, signal),
   integrationTokens: () => request<{ tokens: IntegrationToken[] }>('/api/integrations/tokens'),
   createIntegrationToken: (name: string, access: IntegrationToken['access'], expiresInDays: number | null) =>
     request<{ token: IntegrationToken; secret: string }>('/api/integrations/tokens', 'POST', { name, access, expiresInDays }),
@@ -136,7 +149,12 @@ async function uploadStoredFile<T extends 'image' | 'file'>(
   const requestCsrf = csrf;
   const { response, raw } = await timedFetch(path, {
     method: 'PUT', credentials: 'same-origin',
-    headers: { 'Content-Type': file.type, 'X-Filename': encodeURIComponent(file.name), 'X-CSRF-Token': requestCsrf ?? '' },
+    headers: {
+      'Content-Type': file.type,
+      'X-Filename': encodeURIComponent(file.name),
+      'X-CSRF-Token': requestCsrf ?? '',
+      'X-EasyNote-Client': clientId,
+    },
     body: file,
   }, UPLOAD_TIMEOUT_MS);
   handleUnauthorized(response.status, requestCsrf);

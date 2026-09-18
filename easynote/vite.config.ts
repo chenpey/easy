@@ -62,12 +62,15 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8791',
         changeOrigin: true,
+        ws: true,
         configure(proxy) {
-          proxy.on('proxyReq', (outgoing, incoming) => {
+          const rewriteOrigin = (outgoing: { setHeader(name: string, value: string): void }, incoming: { headers: { origin?: string; host?: string } }) => {
             if (incoming.headers.origin === `http://${incoming.headers.host}`) {
               outgoing.setHeader('Origin', 'http://127.0.0.1:8791');
             }
-          });
+          };
+          proxy.on('proxyReq', rewriteOrigin);
+          proxy.on('proxyReqWs', rewriteOrigin);
         },
       },
     },

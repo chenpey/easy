@@ -4,6 +4,9 @@ import { cleanup, imageRoutes } from './images';
 import { integrationIdentity, integrationRoutes, integrationTokenRoutes } from './integrations';
 import { noteRoutes } from './notes';
 import { featureRoutes, publicShareRoutes } from './features';
+import { connectNoteEvents } from './events';
+
+export { NoteEvents } from './events';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -33,6 +36,9 @@ export default {
         throw new ApiError(404, 'Endpoint not found.');
       }
       const user = await requireIdentity(request, env);
+      if (path === '/api/events' && request.method === 'GET') {
+        return await connectNoteEvents(request, env, user.id);
+      }
       const response = await featureRoutes(request, env, user, path) ??
         await noteRoutes(request, env, user, path) ??
         await imageRoutes(request, env, user, path);

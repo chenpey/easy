@@ -611,23 +611,99 @@ test('unsaved local draft survives refresh and syncs only after explicit retry',
   expect(history.versions).toHaveLength(1);
 });
 
-test('conflicting remote edits create an explicit local copy', async ({ page }) => {
+test('non-overlapping edits from two devices merge automatically', async ({ page }) => {
+  const title = `自动合并-${randomUUID().slice(0, 6)}`;
+  const baseContent = '# 记录\n\n云端段落\n\n保持不变\n\n本机段落\n';
+  await page.goto('/');
+  await newNote(page, title, baseContent);
+  const list = await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`);
+  const note = (await list.json()).notes[0];
+  await page.getByRole('textbox', { name: '笔记正文' })
+    .fill('# 记录\n\n云端段落\n\n保持不变\n\n本机更新的段落\n');
+  const remote = await page.request.put(`/api/notes/${note.id}`, {
+    headers,
+    data: {
+      title,
+      content: '# 记录\n\n云端更新的段落\n\n保持不变\n\n本机段落\n',
+      tags: [],
+      pinned: false,
+      archived: false,
+      deletedAt: null,
+      revision: note.revision,
+      operationId: randomUUID(),
+    },
+  });
+  expect(remote.status()).toBe(200);
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '检测到版本冲突' })).toBeHidden();
+  await expect.poll(async () =>
+    (await (await page.request.get(`/api/notes/${note.id}`)).json()).note.content,
+  ).toBe('# 记录\n\n云端更新的段落\n\n保持不变\n\n本机更新的段落\n');
+});
+
+test('overlapping remote edits remain visible and can be preserved as a copy', async ({ page }) => {
   const title = `双端编辑-${randomUUID().slice(0, 6)}`;
   await page.goto('/');
   await newNote(page, title, '初始内容');
   const list = await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`);
   const note = (await list.json()).notes[0];
+  await page.getByRole('textbox', { name: '笔记正文' }).fill('当前设备的内容');
   const remote = await page.request.put(`/api/notes/${note.id}`, {
     headers, data: { title, content: '另一台设备的内容', tags: [], pinned: false, archived: false, deletedAt: null, revision: note.revision, operationId: randomUUID() },
   });
   expect(remote.status()).toBe(200);
-  await page.getByRole('textbox', { name: '笔记正文' }).fill('当前设备的内容');
   await expect(page.getByRole('heading', { name: '检测到版本冲突' })).toBeVisible();
-  await page.getByRole('button', { name: '另存冲突副本' }).click();
+  const conflict = page.getByRole('dialog');
+  await expect(conflict.getByText('当前设备的内容', { exact: true })).toBeVisible();
+  await expect(conflict.getByText('另一台设备的内容', { exact: true })).toBeVisible();
+  await conflict.screenshot({ path: 'test-results/desktop-conflict-resolution.png' });
+  await page.setViewportSize({ width: 320, height: 740 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/mobile-conflict-resolution.png', fullPage: true });
+  await conflict.getByRole('button', { name: '另存副本' }).click();
   await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(`${title} (冲突副本)`);
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   const original = await (await page.request.get(`/api/notes/${note.id}`)).json();
   expect(original.note.content).toBe('另一台设备的内容');
+});
+
+test('two clients receive create, trash and purge changes without waiting for polling', async ({ page, browser }) => {
+  const otherContext = await browser.newContext();
+  await otherContext.addCookies([{
+    name: 'easynote_dev',
+    value: testToken,
+    domain: '127.0.0.1',
+    path: '/',
+    httpOnly: true,
+    sameSite: 'Strict',
+  }]);
+  const other = await otherContext.newPage();
+  try {
+    const firstSocket = page.waitForEvent('websocket');
+    const secondSocket = other.waitForEvent('websocket');
+    await Promise.all([page.goto('/'), other.goto('/')]);
+    await Promise.all([firstSocket, secondSocket]);
+
+    const title = `实时同步-${randomUUID().slice(0, 6)}`;
+    await newNote(page, title, '由第一台设备创建');
+    await expect(other.getByRole('button').filter({ hasText: title })).toBeVisible({ timeout: 5000 });
+
+    await page.getByRole('button', { name: '移入回收站' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '移入回收站' }).click();
+    await expect(other.getByRole('button').filter({ hasText: title })).toBeHidden({ timeout: 5000 });
+
+    await other.getByRole('button', { name: '回收站', exact: true }).click();
+    await expect(other.getByRole('button').filter({ hasText: title })).toBeVisible();
+    const trash = await (await page.request.get(`/api/notes?view=trash&q=${encodeURIComponent(title)}`)).json();
+    const purged = await page.request.delete(`${origin}/api/notes/${trash.notes[0].id}`, {
+      headers,
+      data: { revision: trash.notes[0].revision },
+    });
+    expect(purged.status()).toBe(200);
+    await expect(other.getByRole('button').filter({ hasText: title })).toBeHidden({ timeout: 5000 });
+  } finally {
+    await otherContext.close();
+  }
 });
 
 test('images render, export includes bytes, and import creates a readable copy', async ({ page }) => {
@@ -1163,7 +1239,7 @@ test('a stalled save times out and remains retryable without reloading', async (
   await expect(page.getByRole('main').getByRole('button', { name: '同步并更新历史版本', exact: true })).toBeEnabled();
 });
 
-test('polling still refreshes the selected note after loading more than 50 notes', async ({ page }) => {
+test('incremental polling preserves pagination while refreshing a selected note', async ({ page }) => {
   const marker = randomUUID().slice(0, 8);
   const targetId = randomUUID();
   const targetTitle = `分页同步-${marker}`;
@@ -1184,19 +1260,20 @@ test('polling still refreshes the selected note after loading more than 50 notes
   const loadMore = page.getByRole('button', { name: '加载更多' });
   await loadMore.click();
   await expect(loadMore).toBeHidden();
+  const loadedRows = await page.locator('.note-row').count();
   await page.getByRole('button').filter({ hasText: targetTitle }).click();
   await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(targetTitle);
-  await page.route(`**/api/notes/${targetId}`, (route) => route.fulfill({
+  await page.route('**/api/sync?**', (route) => route.fulfill({
     status: 503,
     contentType: 'application/json',
     body: JSON.stringify({ error: { message: 'Temporary failure.' } }),
   }));
   const failedPoll = page.waitForResponse((response) =>
-    response.url().endsWith(`/api/notes/${targetId}`) && response.status() === 503);
+    new URL(response.url()).pathname === '/api/sync' && response.status() === 503);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await failedPoll;
   await expect(page.getByRole('alert')).toContainText('后台同步失败，将自动重试。');
-  await page.unroute(`**/api/notes/${targetId}`);
+  await page.unroute('**/api/sync?**');
   const remote = await page.request.put(`${origin}/api/notes/${targetId}`, {
     headers,
     data: {
@@ -1207,6 +1284,7 @@ test('polling still refreshes the selected note after loading more than 50 notes
   expect(remote.status()).toBe(200);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('另一台设备更新后的内容');
+  expect(await page.locator('.note-row').count()).toBe(loadedRows);
   await expect(page.getByRole('alert')).toBeHidden();
 });
 

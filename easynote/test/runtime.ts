@@ -44,6 +44,7 @@ export async function createRuntime(port?: number) {
       INITIAL_OWNER: JSON.stringify({ username: 'tester', verifier }),
       VERSIONS_KEPT: '3',
     },
+    durableObjects: { NOTE_EVENTS: 'NoteEvents' },
     d1Databases: ['DB'], r2Buckets: ['IMAGES'],
     host: '127.0.0.1', ...(port ? { port } : {}),
     assets: {

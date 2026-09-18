@@ -1,7 +1,11 @@
 import { openDB } from 'idb';
 import type { Note, Session, SyncChange } from '../shared/types';
 
-export interface Draft { note: Note; operationId: string }
+export interface Draft {
+  note: Note;
+  operationId: string;
+  base?: Note;
+}
 export interface CachedFile { blob: Blob; mime: string; filename: string }
 
 const database = () => openDB('easynote', 1, {

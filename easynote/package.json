@@ -1,6 +1,6 @@
 {
   "name": "easynote",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,7 +14,7 @@
     "build:ai": "node scripts/clean-ai.mjs && tsc -p tsconfig.ai.json",
     "check": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json && tsc --noEmit -p tsconfig.ai.json",
     "test": "npm run test:api && npm run test:ai",
-    "test:api": "node --import tsx --test test/api.test.ts",
+    "test:api": "node --import tsx --test test/api.test.ts test/merge.test.ts",
     "test:ai": "node --import tsx --test test/ai.test.ts",
     "test:scripts": "node --test test/deploy.test.mjs test/scripts.test.mjs test/maintenance.test.mjs",
     "test:ui": "playwright test",
@@ -42,6 +42,7 @@
     "markdown-it": "^14.1.0",
     "markdown-it-footnote": "^4.0.0",
     "mermaid": "^11.17.2",
+    "node-diff3": "^3.2.1",
     "pdfjs-dist": "^5.4.624",
     "pdfmake": "^0.3.11",
     "react": "^19.1.0",

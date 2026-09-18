@@ -41,6 +41,12 @@ after(async () => { await instance?.runtime.dispose(); });
 
 test('anonymous requests, cross-origin writes and missing CSRF are rejected', async () => {
   assert.equal((await request('/api/notes', 'GET', undefined, { Cookie: '' })).status, 401);
+  assert.equal((await request(`/api/events?client=${randomUUID()}`, 'GET', undefined, {
+    Cookie: '',
+  })).status, 401);
+  assert.equal((await request(`/api/events?client=${randomUUID()}`, 'GET', undefined, {
+    Origin: 'https://other.test',
+  })).status, 403);
   assert.equal((await request(`/api/notes/${randomUUID()}`, 'POST', {}, { Origin: 'https://other.test' })).status, 403);
   assert.equal((await request(`/api/notes/${randomUUID()}`, 'POST', {}, { 'X-CSRF-Token': '' })).status, 403);
   assert.equal((await instance.runtime.dispatchFetch('http://easynote.example.test/api/session')).status, 403);
@@ -588,9 +594,11 @@ test('read-only note shares expire, revoke and remain scoped to current note fil
 test('incremental sync emits current notes and purge tombstones', async () => {
   const created = await create({ title: `离线同步-${randomUUID().slice(0, 6)}`, content: '第一版' });
   const first = await (await request('/api/sync?after=0&limit=200')).json() as any;
+  const head = await (await request('/api/sync/cursor')).json() as any;
   const creation = first.changes.find((change: any) => change.noteId === created.id);
   assert.equal(creation.note.content, '第一版');
   assert.ok(first.cursor >= creation.sequence);
+  assert.ok(head.cursor >= first.cursor);
 
   const updatedResponse = await save(created.id, created.revision, { title: created.title, content: '第二版' });
   const updated = (await updatedResponse.json() as any).note;

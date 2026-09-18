@@ -13,6 +13,7 @@ import {
 } from '../shared/types';
 import { ApiError, clientConfig, digest, json, numberSetting, readJson, type Env } from './core';
 import type { Identity } from './auth';
+import { publishNoteChanges } from './events';
 
 export interface NoteRow {
   id: string; user_id: string; title: string; content: string; tags: string; pinned: number; archived: number;
@@ -196,11 +197,17 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
     if (saved) throw new ApiError(409, 'The note changed on another device.', { current: toNote(saved) });
     throw new ApiError(409, 'An image is unavailable, the note was purged, or the note limit was reached.');
   }
+  await publishNoteChanges(env, user.id, request);
   return json({ note: toNote(saved!) }, create ? 201 : 200);
 }
 
 export async function noteRoutes(request: Request, env: Env, user: Identity, path: string): Promise<Response | null> {
   const url = new URL(request.url);
+  if (path === '/api/sync/cursor' && request.method === 'GET') {
+    const head = await env.DB.prepare('SELECT COALESCE(MAX(sequence),0) AS cursor FROM note_changes WHERE user_id=?')
+      .bind(user.id).first<{ cursor: number }>();
+    return json({ cursor: head?.cursor ?? 0 });
+  }
   if (path === '/api/sync' && request.method === 'GET') {
     const after = Number(url.searchParams.get('after') ?? 0);
     const limit = Number(url.searchParams.get('limit') ?? 100);
@@ -299,6 +306,7 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
       env.DB.prepare(`DELETE FROM note_changes WHERE user_id=? AND sequence NOT IN
         (SELECT MAX(sequence) FROM note_changes WHERE user_id=? GROUP BY note_id)`).bind(user.id, user.id),
     ]);
+    if (count?.count) await publishNoteChanges(env, user.id, request);
     return json({ deleted: count?.count ?? 0 });
   }
   if (path === '/api/notes/blank' && request.method === 'GET') {
@@ -357,6 +365,7 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
         .bind(user.id, id, user.id, id),
     ]);
     if (!results[2].meta.changes) throw new ApiError(409, 'Only an unchanged note in trash can be permanently deleted.');
+    await publishNoteChanges(env, user.id, request);
     return json({ ok: true });
   }
   return null;

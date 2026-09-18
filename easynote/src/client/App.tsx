@@ -20,6 +20,7 @@ import {
 } from './pdf';
 import { useNotebook } from './useNotebook';
 import { exportArchive, exportLocalDrafts, importExternalFiles } from './transfer';
+import type { NoteConflictField } from './merge';
 
 interface InstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -110,6 +111,23 @@ function noteExcerptText(markdown: string, query: string) {
         : label;
     })
     .replace(/[#*`]/g, '');
+}
+
+const conflictFieldName: Record<NoteConflictField, string> = {
+  title: '标题',
+  content: '正文',
+  tags: '标签',
+  pinned: '置顶状态',
+  archived: '归档状态',
+  deletedAt: '删除状态',
+};
+
+function conflictFieldValue(note: Note, field: NoteConflictField): string {
+  if (field === 'tags') return note.tags.join('、') || '无标签';
+  if (field === 'pinned') return note.pinned ? '已置顶' : '未置顶';
+  if (field === 'archived') return note.archived ? '已归档' : '未归档';
+  if (field === 'deletedAt') return note.deletedAt ? '已移入回收站' : '正常笔记';
+  return note[field] || '（空）';
 }
 
 function nextFrame() {
@@ -1346,9 +1364,35 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       <label className="single-field">标签<input autoFocus maxLength={40} value={bulkTag} onChange={(event) => setBulkTag(event.target.value)} /></label>
       <div className="dialog-actions"><button onClick={() => setBulkTagOpen(false)}>取消</button><button className="primary" disabled={!bulkTag.trim() || disabled} onClick={applyBulkTag}>添加</button></div>
     </Modal>}
-    {book.conflict && <Modal title="检测到版本冲突" close={() => book.setConflict(null)}>
-      <div className="conflict-summary"><strong>{book.conflict.local.title || '未命名笔记'}</strong><span>本机修订 {book.conflict.local.revision} / 云端修订 {book.conflict.remote?.revision ?? '不可用'}</span></div>
-      <div className="dialog-actions"><button onClick={() => book.setConflict(null)}>稍后处理</button><button className="primary" onClick={() => void run(book.conflictCopy)}>另存冲突副本</button></div>
+    {book.conflict && <Modal title="检测到版本冲突" className="conflict-dialog" close={() => book.setConflict(null)}>
+      <div className="conflict-summary">
+        <strong>{book.conflict.local.title || '未命名笔记'}</strong>
+        <span>{book.conflict.remote
+          ? `本机基于修订 ${book.conflict.base?.revision ?? book.conflict.local.revision}，云端已到修订 ${book.conflict.remote.revision}`
+          : '云端笔记已永久删除，本机草稿仍然安全保留。'}</span>
+      </div>
+      {book.conflict.remote && <div className="conflict-fields">
+        {book.conflict.fields.map((field) => <section key={field}>
+          <h3>{conflictFieldName[field]}</h3>
+          <div className="conflict-versions">
+            <div><span>本机修改</span><pre>{conflictFieldValue(book.conflict!.local, field)}</pre></div>
+            <div><span>云端修改</span><pre>{conflictFieldValue(book.conflict!.remote!, field)}</pre></div>
+          </div>
+        </section>)}
+      </div>}
+      <div className="dialog-actions conflict-actions">
+        <button onClick={() => book.setConflict(null)}>稍后处理</button>
+        {book.conflict.remote
+          ? <>
+            <button onClick={() => void run(book.conflictCopy)}>另存副本</button>
+            <button onClick={() => void run(() => book.resolveConflict('remote'))}>采用云端</button>
+            <button className="primary" onClick={() => void run(() => book.resolveConflict('local'))}>采用本机</button>
+          </>
+          : <>
+            <button onClick={() => void run(book.discardConflict)}>放弃草稿</button>
+            <button className="primary" onClick={() => void run(book.conflictCopy)}>另存为新笔记</button>
+          </>}
+      </div>
     </Modal>}
     {versionList && versionNoteId === note?.id && <Modal title="历史版本" close={() => { setVersionList(null); setChosenVersion(null); }}>
       <div className="version-list">{versionList.map((version) => <button key={version.revision} className={chosenVersion?.revision === version.revision ? 'selected' : ''} onClick={() => setChosenVersion(version)}><span>修订 {version.revision} · {version.actorType === 'ai' ? `AI：${version.actorName}` : version.actorName}</span><time>{new Date(version.savedAt).toLocaleString('zh-CN')}</time></button>)}</div>
