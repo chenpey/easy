@@ -763,7 +763,9 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   const title = `手机笔记-${randomUUID().slice(0, 6)}`;
   await newNote(page, title, '手机上的简短记录');
   let actions = await openMobileNoteActions(page);
-  await expect(actions.getByRole('button', { name: '同步并更新历史版本', exact: true })).toBeVisible();
+  const syncVersion = actions.getByRole('button', { name: '同步并保存版本', exact: true });
+  await expect(syncVersion).toBeVisible();
+  expect(await syncVersion.evaluate((button) => button.scrollWidth <= button.clientWidth)).toBe(true);
   await actions.screenshot({ path: 'test-results/mobile-note-actions.png' });
   await actions.getByRole('button', { name: '置顶', exact: true }).click();
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
@@ -776,7 +778,7 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   await expect(page.getByRole('button').filter({ hasText: title })).toBeHidden();
   let navigation = await openMobileNavigation(page);
   await expect(navigation.getByRole('button', { name: '同步全部', exact: true })).toBeVisible();
-  await expect(navigation.getByRole('button', { name: '同步并更新历史版本', exact: true })).toHaveCount(0);
+  await expect(navigation.getByRole('button', { name: '同步并保存版本', exact: true })).toHaveCount(0);
   await navigation.screenshot({ path: 'test-results/mobile-navigation.png' });
   await navigation.getByRole('button', { name: '归档笔记', exact: true }).click();
   await page.getByRole('button').filter({ hasText: title }).click();
@@ -827,7 +829,7 @@ test('mobile list syncs all notes without creating history while note sync creat
 
   await page.getByRole('button').filter({ hasText: title }).click();
   const actions = await openMobileNoteActions(page);
-  await actions.getByRole('button', { name: '同步并更新历史版本', exact: true }).click();
+  await actions.getByRole('button', { name: '同步并保存版本', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('已保存并记录历史版本');
   expect((await (await page.request.get(`/api/notes/${noteId}/versions`)).json()).versions).toHaveLength(1);
 });
@@ -839,7 +841,7 @@ test('search highlights title and a matching excerpt from deep in the note', asy
     headers,
     data: {
       title,
-      content: `${'前置内容'.repeat(60)}${marker} 后续内容`,
+      content: `${'前置内容'.repeat(60)}![${marker} 图表](https://example.com/chart.png)\n\n正文再次出现 ${marker}`,
       tags: [],
       pinned: false,
       archived: false,
@@ -855,7 +857,11 @@ test('search highlights title and a matching excerpt from deep in the note', asy
   const row = page.locator('[data-note-row]').filter({ hasText: title });
   await expect(row).toBeVisible();
   await expect(row.locator('.note-row-title mark.search-highlight')).toHaveText(marker);
-  await expect(row.locator('.note-excerpt mark.search-highlight')).toHaveText(marker);
+  await expect(row.locator('.note-excerpt mark.search-highlight')).toHaveCount(2);
+  await row.click();
+  await expect(page.locator('.cm-search-highlight')).toHaveCount(2);
+  await page.getByRole('button', { name: '预览模式' }).click();
+  await expect(page.locator('.markdown mark.search-highlight')).toHaveText(marker);
 });
 
 test('deleting a note opens its next visible note or returns to all notes', async ({ page }) => {

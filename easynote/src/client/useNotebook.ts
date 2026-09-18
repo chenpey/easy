@@ -181,12 +181,12 @@ export function useNotebook(session: Session) {
   }, [cacheReferencedFiles, show, userId]);
 
   const refresh = useCallback(async (append = false, signal?: AbortSignal) => {
+    const generation = ++listGeneration.current;
     if (offlineLibraryRef.current) {
       if (navigator.onLine && !session.offline) await syncOfflineMirror(signal);
-      if (alive.current) renderMirror();
+      if (alive.current && generation === listGeneration.current) renderMirror();
       return;
     }
-    const generation = ++listGeneration.current;
     const result = await api.list({ q: query, view, tag, offset: append ? nextOffset ?? 0 : 0 }, signal);
     if (!alive.current || generation !== listGeneration.current) return;
     const existingBlank = result.notes.find(blankSummary);
@@ -638,11 +638,14 @@ export function useNotebook(session: Session) {
   useEffect(() => {
     if (!ready.current) return;
     const timer = setTimeout(() => {
-      if (offlineLibraryRef.current) renderMirror();
+      if (offlineLibraryRef.current) {
+        listGeneration.current++;
+        renderMirror();
+      }
       else void refreshRef.current().catch((e: unknown) => setError(String(e)));
     }, 200);
     return () => clearTimeout(timer);
-  }, [view, query, tag, renderMirror]);
+  }, [loading, view, query, tag, renderMirror]);
 
   useEffect(() => {
     setOnline(navigator.onLine && !session.offline);

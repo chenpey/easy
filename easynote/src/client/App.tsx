@@ -100,6 +100,18 @@ function highlightMatches(text: string, query: string): ReactNode {
   return parts;
 }
 
+function noteExcerptText(markdown: string, query: string) {
+  const needle = query.trim().toLocaleLowerCase();
+  return markdown
+    .replace(/!\[([^\]]*)\]\(([^)]*)\)/g, (source, alt: string, href: string) => {
+      const label = alt ? `[图片：${alt}]` : '[图片]';
+      return needle && !label.toLocaleLowerCase().includes(needle) && href.toLocaleLowerCase().includes(needle)
+        ? `${label} ${source}`
+        : label;
+    })
+    .replace(/[#*`]/g, '');
+}
+
 function nextFrame() {
   return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
@@ -1013,7 +1025,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
             aria-pressed={selectionMode ? selected.has(item.id) : undefined}
             onClick={() => selectionMode ? toggleSelected(item.id) : void openNote(item.id)}>
             <div className="note-row-title">{selectionMode && (selected.has(item.id) ? <CheckSquare size={14} /> : <Square size={14} />)}<span>{highlightMatches(item.title || '未命名笔记', book.query)}</span>{item.pinned && <Pin size={12} />}</div>
-            <div className="note-excerpt">{highlightMatches(item.excerpt.replace(/!\[[^\]]*\]\([^)]*\)/g, '[图片]').replace(/[#*`]/g, '') || '空白笔记', book.query)}</div>
+            <div className="note-excerpt">{highlightMatches(noteExcerptText(item.excerpt, book.query) || '空白笔记', book.query)}</div>
             <div className="note-row-meta"><time>{new Date(item.updatedAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}</time>{item.tags[0] && <span>#{item.tags[0]}</span>}{book.pending.some((n) => n.id === item.id) && <span className="local-dot" title="本机草稿" />}</div>
           </button>)}
         {book.nextOffset !== null && <button className="load-more" onClick={() => void run(book.loadMore)}>加载更多<ChevronDown size={14} /></button>}
@@ -1079,10 +1091,11 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
                     onTask={!note.deletedAt && !transfer ? (index, checked) =>
                       setNoteFields({ content: toggleMarkdownTask(note.content, index, checked) }) : undefined}
                     resolveFile={book.offlineLibrary ? book.cachedFile : undefined} dark={dark}
+                    searchQuery={book.query}
                     onEditLine={!note.deletedAt && !transfer ? (line) => editAt(sourceLineOffset(note.content, line)) : undefined} />
                 : <Editor ref={editor} key={note.id} value={note.content} onChange={(content) => setNoteFields({ content })}
                     onImages={(files, insertion) => void insertFiles(files, insertion)}
-                    onTogglePreview={toggleLayout} onShowShortcuts={showShortcutHelp} />}
+                    onTogglePreview={toggleLayout} onShowShortcuts={showShortcutHelp} searchQuery={book.query} />}
             </div>
           </div>
           {inspector && <aside className="knowledge-panel" aria-label="笔记导航">
@@ -1163,7 +1176,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     </Modal>}
     {mobileNoteActions && note && <Modal title="笔记操作" className="mobile-actions-dialog" close={() => setMobileNoteActions(false)}>
       <div className="mobile-action-list">
-        <button disabled={disabled} onClick={() => { setMobileNoteActions(false); void syncNow(); }}><Save size={18} />同步并更新历史版本</button>
+        <button disabled={disabled} onClick={() => { setMobileNoteActions(false); void syncNow(); }}><Save size={18} />同步并保存版本</button>
         <button disabled={!!note.deletedAt || !!transfer} onClick={() => { setMobileNoteActions(false); beginLinkInsertion(); }}><Link2 size={18} />插入内部链接</button>
         <button onClick={() => { setMobileNoteActions(false); setInspector((value) => !value); }}><ListTree size={18} />大纲与反向链接</button>
         <button disabled={!!note.deletedAt || !!transfer} onClick={() => { setMobileNoteActions(false); setNoteFields({ pinned: !note.pinned }); }}><Pin size={18} fill={note.pinned ? 'currentColor' : 'none'} />{note.pinned ? '取消置顶' : '置顶'}</button>

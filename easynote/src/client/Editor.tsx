@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
-import { EditorState } from '@codemirror/state';
-import { EditorView, keymap, placeholder } from '@codemirror/view';
+import { Compartment, EditorState, Facet } from '@codemirror/state';
+import { Decoration, EditorView, keymap, placeholder } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
 import MarkdownIt from 'markdown-it';
@@ -14,6 +14,7 @@ interface Props {
   onImages(files: File[], insertion: string): void;
   onTogglePreview(): void;
   onShowShortcuts(): void;
+  searchQuery?: string;
 }
 
 export interface EditorHandle {
@@ -24,6 +25,24 @@ export interface EditorHandle {
   goTo(offset: number): void;
   focus(): void;
 }
+
+const searchQueryFacet = Facet.define<string, string>({
+  combine: (values) => values.at(-1) ?? '',
+});
+const searchHighlights = EditorView.decorations.compute([searchQueryFacet, 'doc'], (state) => {
+  const query = state.facet(searchQueryFacet).trim();
+  if (!query) return Decoration.none;
+  const text = state.doc.toString();
+  const haystack = text.toLocaleLowerCase();
+  const needle = query.toLocaleLowerCase();
+  const ranges = [];
+  let match = haystack.indexOf(needle);
+  while (match >= 0) {
+    ranges.push(Decoration.mark({ class: 'cm-search-highlight' }).range(match, match + query.length));
+    match = haystack.indexOf(needle, match + query.length);
+  }
+  return Decoration.set(ranges);
+});
 
 function toggleEmphasis(marker: '*' | '**') {
   return (editor: EditorView): boolean => {
@@ -71,9 +90,11 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
   onImages,
   onTogglePreview,
   onShowShortcuts,
+  searchQuery = '',
 }, ref) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
+  const search = useRef(new Compartment());
   const callbacks = useRef({ onChange, onImages, onTogglePreview, onShowShortcuts });
   const insertions = useRef(new Map<string, number>());
   callbacks.current = { onChange, onImages, onTogglePreview, onShowShortcuts };
@@ -133,6 +154,8 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
             ...historyKeymap,
           ]),
           EditorView.lineWrapping, placeholder('开始记录…'),
+          search.current.of(searchQueryFacet.of(searchQuery)),
+          searchHighlights,
           EditorView.contentAttributes.of({
             'aria-label': '笔记正文',
             'aria-keyshortcuts': 'Meta+B Control+B Meta+I Control+I Meta+E Control+E Meta+Enter Control+Enter Meta+/ Control+/',
@@ -177,6 +200,9 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
     editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } });
     external.current = false;
   }, [value]);
+  useEffect(() => {
+    view.current?.dispatch({ effects: search.current.reconfigure(searchQueryFacet.of(searchQuery)) });
+  }, [searchQuery]);
   return <div className="code-editor" ref={host} />;
 });
 
@@ -257,7 +283,39 @@ export function toggleMarkdownTask(content: string, taskIndex: number, checked: 
   });
 }
 
-function renderMarkdown(content: string, interactiveTasks: boolean): string {
+function highlightRenderedText(root: HTMLElement, query: string) {
+  const needle = query.trim();
+  if (!needle) return;
+  const normalizedNeedle = needle.toLocaleLowerCase();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const matches: Text[] = [];
+  let current = walker.nextNode();
+  while (current) {
+    const text = current as Text;
+    if (text.parentElement && !text.parentElement.closest('svg, .search-highlight') &&
+        text.data.toLocaleLowerCase().includes(normalizedNeedle)) matches.push(text);
+    current = walker.nextNode();
+  }
+  for (const text of matches) {
+    const haystack = text.data.toLocaleLowerCase();
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    let match = haystack.indexOf(normalizedNeedle);
+    while (match >= 0) {
+      if (match > offset) fragment.append(text.data.slice(offset, match));
+      const mark = document.createElement('mark');
+      mark.className = 'search-highlight';
+      mark.textContent = text.data.slice(match, match + needle.length);
+      fragment.append(mark);
+      offset = match + needle.length;
+      match = haystack.indexOf(normalizedNeedle, offset);
+    }
+    if (offset < text.data.length) fragment.append(text.data.slice(offset));
+    text.replaceWith(fragment);
+  }
+}
+
+function renderMarkdown(content: string, interactiveTasks: boolean, searchQuery: string): string {
   const clean = DOMPurify.sanitize(renderer.render(content), {
     USE_PROFILES: { html: true },
     ADD_ATTR: [
@@ -334,6 +392,7 @@ function renderMarkdown(content: string, interactiveTasks: boolean): string {
     item.parentElement?.classList.add('task-list');
     holder.insertBefore(checkbox, holder.firstChild);
   });
+  highlightRenderedText(parsed.body, searchQuery);
   return parsed.body.innerHTML;
 }
 
@@ -362,6 +421,7 @@ export function Preview({
   dark = false,
   eagerImages = false,
   onEditLine,
+  searchQuery = '',
 }: {
   content: string;
   onImage(src: string): void;
@@ -372,9 +432,10 @@ export function Preview({
   dark?: boolean;
   eagerImages?: boolean;
   onEditLine?(line: number): void;
+  searchQuery?: string;
 }) {
   const host = useRef<HTMLElement>(null);
-  const html = useMemo(() => renderMarkdown(content, !!onTask), [content, !!onTask]);
+  const html = useMemo(() => renderMarkdown(content, !!onTask, searchQuery), [content, !!onTask, searchQuery]);
   useEffect(() => {
     const elements = [...(host.current?.querySelectorAll<HTMLElement>('[data-mermaid-source]') ?? [])];
     const codeBlocks = [...(host.current?.querySelectorAll<HTMLElement>('code[data-code-language]') ?? [])];

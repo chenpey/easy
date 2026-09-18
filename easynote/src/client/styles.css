@@ -388,13 +388,14 @@ nav button.active svg { color: var(--accent); }
 }
 .note-row-title span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .note-row-title svg { color: var(--accent); }
-.search-highlight {
+.search-highlight, .cm-search-highlight {
   padding: 0;
   color: inherit;
   background: rgba(255, 204, 0, .48);
   border-radius: 2px;
 }
-:root[data-theme="dark"] .search-highlight { background: rgba(255, 214, 10, .32); }
+:root[data-theme="dark"] .search-highlight,
+:root[data-theme="dark"] .cm-search-highlight { background: rgba(255, 214, 10, .32); }
 .note-excerpt {
   display: -webkit-box;
   min-height: 18px;
@@ -1093,6 +1094,7 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
     min-height: 44px;
     justify-content: flex-start;
     padding: 9px 11px;
+    white-space: nowrap;
     background: transparent;
     border: 0;
     box-shadow: none;
