@@ -722,11 +722,16 @@ test("selected deletion, partial failure and transient notices", async ({ page, 
   });
   let items = [1, 2, 3].map((id) => ({ id: String(id), type: "text", content: `batch-${id}`, created_at: 1700000000 }));
   let failSecond = true;
+  let releaseSecond;
+  const secondRequest = new Promise((resolve) => { releaseSecond = resolve; });
   const deleted = [];
   await page.route("**/api/history**", async (route) => {
     if (route.request().method() === "DELETE") {
       const id = route.request().url().split("/").at(-1);
-      if (id === "2" && failSecond) return route.fulfill({ status: 503, json: { message: "Please retry" } });
+      if (id === "2" && failSecond) {
+        await secondRequest;
+        return route.fulfill({ status: 503, json: { message: "Please retry" } });
+      }
       deleted.push(id);
       items = items.filter((item) => item.id !== id);
       return route.fulfill({ json: { ok: true } });
@@ -744,9 +749,18 @@ test("selected deletion, partial failure and transient notices", async ({ page, 
   await page.getByLabel("选择记录：batch-3", { exact: true }).uncheck();
   await page.getByRole("button", { name: "删除所选 2 条记录", exact: true }).click();
   await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect.poll(() => deleted).toEqual(["1"]);
+  await expect(page.locator("#notice")).toHaveText("正在删除…");
+  await expect(page.locator(".history-item:visible")).toHaveCount(1);
+  await expect(page.getByLabel("选择记录：batch-1", { exact: true })).toBeHidden();
+  await expect(page.getByLabel("选择记录：batch-2", { exact: true })).toBeHidden();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.locator(".history-item:visible")).toHaveCount(1);
+  releaseSecond();
   await expect(page.locator("#notice")).toHaveText("Please retry");
   await expect(page.locator(".history-item")).toHaveCount(2);
   expect(deleted).toEqual(["1"]);
+  await expect(page.getByLabel("选择记录：batch-2", { exact: true })).toBeVisible();
   await expect(page.getByLabel("选择记录：batch-2", { exact: true })).toBeChecked();
   failSecond = false;
   await page.getByRole("button", { name: "删除所选 1 条记录", exact: true }).click();

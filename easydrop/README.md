@@ -1,6 +1,6 @@
 # EasyDrop
 
-当前版本：`1.1.1`
+当前版本：`1.1.2`
 
 EasyDrop 是一个基于 Cloudflare Workers 的文本与文件分享工具，使用用户名和密码登录、D1 数据库和私有 R2 对象存储。部署后，电脑、手机和平板可通过同一个 HTTPS 地址跨网络交换内容。
 
@@ -557,6 +557,11 @@ bash deploy.sh
 
 ## 版本更新
 
+### v1.1.2
+
+- 确认批量删除后立即隐藏全部选中项，后台执行删除并显示“正在删除”；失败时恢复未删除项并保持选中以便重试。
+- 删除期间暂停历史列表刷新与重复操作，避免记录逐条消失或轮询打断删除反馈。
+
 ### v1.1.1
 
 - 移除工具栏中“批量选择”的可见文字，保留复选框、悬停说明和无障碍名称。
@@ -575,7 +580,7 @@ bash deploy.sh
 node scripts/version.mjs bump easydrop patch
 node scripts/version.mjs check
 git add .
-git commit -m "发布：EasyDrop v1.1.1"
+git commit -m "发布：EasyDrop v1.1.2"
 ```
 
 `minor` 用于新增功能，`major` 用于不兼容变更。脚本会同步本 README、根 README、`package.json`、锁文件和应用显示版本。

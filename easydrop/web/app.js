@@ -13,6 +13,7 @@ let clearCopyFeedback;
 let nextCursor = null;
 let currentRevision = -1;
 let loading = false;
+let deletingHistory = false;
 let pendingRefresh = false;
 let uploading = false;
 let pauseRequested = false;
@@ -57,18 +58,18 @@ function requestedDownloadPath() {
     : null;
 }
 
-function notice(message, error = false) {
+function notice(message, error = false, duration = error ? 8000 : 1600) {
   clearTimeout(noticeTimer);
   clearCopyFeedback?.();
   $("notice").textContent = message;
   $("notice").classList.toggle("error", error);
   $("error-details").hidden = true;
   $("error-details").open = false;
-  if (message) noticeTimer = setTimeout(() => {
+  if (message && duration) noticeTimer = setTimeout(() => {
     if ($("error-details").open) return;
     $("notice").textContent = "";
     $("error-details").hidden = true;
-  }, error ? 8000 : 1600);
+  }, duration);
 }
 
 function report(error) {
@@ -592,6 +593,10 @@ function pruneHistoryRowCache() {
 
 async function loadHistory(more = false) {
   if (sessionEnded) return;
+  if (deletingHistory) {
+    pendingRefresh = true;
+    return;
+  }
   if (loading) {
     if (!more) pendingRefresh = true;
     return;
@@ -601,6 +606,10 @@ async function loadHistory(more = false) {
   try {
     const data = await api(`/api/history${more && nextCursor ? `?before=${nextCursor}` : ""}`);
     if (sessionEnded) return;
+    if (deletingHistory) {
+      pendingRefresh = true;
+      return;
+    }
     if (more && data.revision !== currentRevision) markHistoryUpdate();
     const list = $("history-list");
     const existing = new Set(Array.from(list.querySelectorAll("[data-id]"), (row) => row.dataset.id));
@@ -633,7 +642,7 @@ async function loadHistory(more = false) {
   } finally {
     loading = false;
     $("load-more").disabled = false;
-    if (pendingRefresh && !sessionEnded) {
+    if (pendingRefresh && !sessionEnded && !deletingHistory) {
       pendingRefresh = false;
       await loadHistory();
     }
@@ -662,7 +671,7 @@ async function refreshHistoryPreservingPosition() {
   retainHistoryRows = true;
   try {
     await loadHistory();
-    while (restoreExpanded && nextCursor &&
+    while (!deletingHistory && restoreExpanded && nextCursor &&
         $("history-list").querySelectorAll(".history-item").length < loadedCount) {
       await loadHistory(true);
     }
@@ -688,7 +697,7 @@ function schedulePoll(delaySeconds = session?.pollSeconds) {
 async function checkForHistoryUpdates() {
   clearTimeout(pollTimer);
   if (pollingStopped || !session || document.hidden || revisionCheckRunning) return;
-  if (uploading || loading) {
+  if (uploading || loading || deletingHistory) {
     schedulePoll();
     return;
   }
@@ -700,8 +709,10 @@ async function checkForHistoryUpdates() {
       await refreshHistoryPreservingPosition();
       updated = true;
     }
-    if (updated) notice("分享历史已自动更新");
-    else if (pollFailureCount) notice("同步已恢复");
+    if (!deletingHistory) {
+      if (updated) notice("分享历史已自动更新");
+      else if (pollFailureCount) notice("同步已恢复");
+    }
     pollFailureCount = 0;
   } catch (error) {
     if (!sessionEnded) {
@@ -1135,13 +1146,16 @@ async function initializeApp() {
     const rows = [...$("history-list").querySelectorAll(".history-item")]
       .filter((row) => row.querySelector(".history-select").checked);
     if (!await confirmDelete(rows.length ? `删除所选 ${rows.length} 条记录？` : "清空所有分享记录和文件？")) return;
+    const removed = [];
+    deletingHistory = true;
+    document.querySelector(".history").inert = true;
+    for (const row of rows) row.hidden = true;
+    notice("正在删除…", false, 0);
     try {
       if (rows.length) {
         for (const row of rows) {
           await api(`/api/history/${row.dataset.id}`, { method: "DELETE" });
-          row.remove();
-          historyRowCache.delete(row.dataset.id);
-          updateHistorySelection();
+          removed.push(row);
         }
       } else {
         await api("/api/clear_history", { method: "POST" });
@@ -1151,7 +1165,16 @@ async function initializeApp() {
       }
       notice(rows.length ? `已删除 ${rows.length} 条记录` : "已清空");
     } finally {
-      await loadHistory();
+      for (const row of removed) {
+        row.remove();
+        historyRowCache.delete(row.dataset.id);
+      }
+      for (const row of rows) row.hidden = false;
+      deletingHistory = false;
+      document.querySelector(".history").inert = false;
+      updateHistorySelection();
+      pendingRefresh = false;
+      await refreshHistoryPreservingPosition();
     }
   }));
   $("logout").addEventListener("click", () => busy($("logout"), async () => {
