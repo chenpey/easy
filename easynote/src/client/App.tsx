@@ -1168,9 +1168,9 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     {mobileNavigation && <Modal title="EasyNote" className="mobile-navigation-dialog" close={() => setMobileNavigation(false)}>
       <nav className="mobile-navigation-list" aria-label="移动端笔记分类">
         <button className={book.view === 'all' && !book.tag ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={18} />全部笔记</button>
+        <button onClick={() => { setMobileNavigation(false); void openTaskCenter(); }}><ClipboardList size={18} />任务中心</button>
         <button className={book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={18} />归档笔记</button>
         <button className={book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={18} />回收站</button>
-        <button onClick={() => { setMobileNavigation(false); void openTaskCenter(); }}><ClipboardList size={18} />任务中心</button>
       </nav>
       {book.tags.length > 0 && <>
         <div className="mobile-navigation-label">标签</div>
