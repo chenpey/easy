@@ -348,9 +348,10 @@ progress {
 
 .history > .section-heading { flex-wrap: wrap; }
 .history > .section-heading > .tools { margin-left: auto; }
-.history-selection { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
-.history-selection label { white-space: nowrap; }
-.history-selection label { display: flex; align-items: center; gap: 6px; }
+.history-selection { display: grid; place-items: center; width: 40px; height: 40px; cursor: pointer; }
+.history-selection input { margin: 0; }
+#selection-count { padding: 3px 8px; border-radius: 10px; background: #e8f3ff; color: var(--blue); font-size: 12px; font-weight: 500; white-space: nowrap; }
+#selection-count:empty { display: none; }
 .history-selection input, .history-select { width: 18px; height: 18px; accent-color: var(--blue); cursor: pointer; }
 .item-selection { display: grid; justify-items: center; gap: 12px; }
 

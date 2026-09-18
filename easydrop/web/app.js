@@ -545,6 +545,7 @@ function updateHistorySelection() {
   $("select-all").disabled = !boxes.length;
   $("select-all").checked = boxes.length > 0 && count === boxes.length;
   $("select-all").indeterminate = count > 0 && count < boxes.length;
+  $("history-count").hidden = count > 0;
   $("selection-count").textContent = count ? `已选 ${count} 条` : "";
   const label = count ? `删除所选 ${count} 条记录` : "清空历史";
   $("clear").title = label;

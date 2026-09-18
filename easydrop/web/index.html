@@ -58,10 +58,10 @@
     </div>
     <section class="history" aria-labelledby="history-title">
       <div class="section-heading">
-        <h2 id="history-title">分享历史 <span id="history-count" class="muted"></span></h2>
+        <h2 id="history-title">分享历史 <span id="history-count" class="muted"></span><span id="selection-count" role="status"></span></h2>
         <div class="tools">
           <button id="refresh" class="icon-button" title="刷新历史" aria-label="刷新历史" disabled><i data-lucide="refresh-cw"></i></button>
-          <div class="history-selection"><label title="选择或取消选择已加载的记录"><input id="select-all" type="checkbox" disabled> 批量选择</label><span id="selection-count" class="muted" role="status"></span></div>
+          <label class="history-selection" title="选择或取消选择已加载的记录"><input id="select-all" type="checkbox" aria-label="批量选择" disabled></label>
           <button id="clear" class="icon-button danger" title="清空历史" aria-label="清空历史" disabled><i data-lucide="trash-2"></i></button>
         </div>
       </div>
