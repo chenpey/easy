@@ -81,6 +81,25 @@ function moveButtonFocus(event: ReactKeyboardEvent<HTMLElement>, selector: strin
   buttons[next].focus();
 }
 
+function highlightMatches(text: string, query: string): ReactNode {
+  const needle = query.trim();
+  if (!needle) return text;
+  const haystack = text.toLocaleLowerCase();
+  const normalizedNeedle = needle.toLocaleLowerCase();
+  const parts: ReactNode[] = [];
+  let offset = 0;
+  let match = haystack.indexOf(normalizedNeedle);
+  while (match >= 0) {
+    if (match > offset) parts.push(text.slice(offset, match));
+    parts.push(<mark className="search-highlight" key={`${match}-${parts.length}`}>{text.slice(match, match + needle.length)}</mark>);
+    offset = match + needle.length;
+    match = haystack.indexOf(normalizedNeedle, offset);
+  }
+  if (!parts.length) return text;
+  if (offset < text.length) parts.push(text.slice(offset));
+  return parts;
+}
+
 function nextFrame() {
   return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
@@ -572,10 +591,10 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setSelected(new Set());
   };
   const setNoteFields = (patch: Partial<NoteInput>) => book.edit(patch);
-  const syncNow = async () => {
+  const syncNow = async (createVersion = true) => {
     if (syncing) return;
     const hadPending = book.pending.length > 0;
-    const checkpointId = note?.id;
+    const checkpointId = createVersion ? note?.id : undefined;
     setSyncing(true);
     try {
       if (await book.retry(checkpointId)) {
@@ -799,6 +818,21 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     const deletedAt = Date.now();
     return book.bulkUpdate(ids, () => ({ deletedAt, archived: false }));
   };
+  const moveCurrentToTrash = async () => {
+    if (!note) throw new Error('当前笔记不可用，请刷新后重试。');
+    const index = book.notes.findIndex((item) => item.id === note.id);
+    const next = index >= 0 ? book.notes[index + 1] : undefined;
+    await moveToTrash([note.id]);
+    if (next) {
+      await openNote(next.id);
+    } else {
+      book.clearSelection();
+      book.setQuery('');
+      setMobileSearch(false);
+      chooseView('all');
+    }
+    showNotice('已移入回收站');
+  };
   const applyBulkTrash = async () => {
     const count = await moveToTrash([...selected]);
     finishBulk(`已将 ${count} 篇笔记移入回收站`);
@@ -957,7 +991,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
             setSelectionMode((value) => !value);
             setSelected(new Set());
           }}>{selectionMode ? <CheckSquare size={16} /> : <Square size={16} />}</IconButton>}
-          <IconButton label={syncing ? '正在同步并更新历史版本' : '同步并更新历史版本'} className="icon-button list-sync-action" onClick={() => void syncNow()} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
+          <IconButton label={syncing ? '正在同步全部' : '同步全部'} className="icon-button list-sync-action" onClick={() => void syncNow(false)} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
           {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) &&
             <IconButton label="全部永久删除" className="icon-button danger-icon list-purge-action" onClick={() => setConfirmAction('purge-all')} disabled={disabled || book.pending.length > 0}><Trash2 size={17} /></IconButton>}
           <IconButton label="新建笔记" className="icon-button list-create-action" onClick={() => void createNote()} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
@@ -978,8 +1012,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <button className={`note-row ${item.id === note?.id ? 'selected' : ''} ${selected.has(item.id) ? 'checked' : ''}`} data-note-row key={item.id}
             aria-pressed={selectionMode ? selected.has(item.id) : undefined}
             onClick={() => selectionMode ? toggleSelected(item.id) : void openNote(item.id)}>
-            <div className="note-row-title">{selectionMode && (selected.has(item.id) ? <CheckSquare size={14} /> : <Square size={14} />)}<span>{item.title || '未命名笔记'}</span>{item.pinned && <Pin size={12} />}</div>
-            <div className="note-excerpt">{item.excerpt.replace(/!\[[^\]]*\]\([^)]*\)/g, '[图片]').replace(/[#*`]/g, '') || '空白笔记'}</div>
+            <div className="note-row-title">{selectionMode && (selected.has(item.id) ? <CheckSquare size={14} /> : <Square size={14} />)}<span>{highlightMatches(item.title || '未命名笔记', book.query)}</span>{item.pinned && <Pin size={12} />}</div>
+            <div className="note-excerpt">{highlightMatches(item.excerpt.replace(/!\[[^\]]*\]\([^)]*\)/g, '[图片]').replace(/[#*`]/g, '') || '空白笔记', book.query)}</div>
             <div className="note-row-meta"><time>{new Date(item.updatedAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}</time>{item.tags[0] && <span>#{item.tags[0]}</span>}{book.pending.some((n) => n.id === item.id) && <span className="local-dot" title="本机草稿" />}</div>
           </button>)}
         {book.nextOffset !== null && <button className="load-more" onClick={() => void run(book.loadMore)}>加载更多<ChevronDown size={14} /></button>}
@@ -1121,7 +1155,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           setSelectionMode(true);
           setSelected(new Set());
         }}><CheckSquare size={18} />批量选择</button>}
-        <button disabled={book.busy || syncing} onClick={() => { setMobileNavigation(false); void syncNow(); }}><RefreshCw size={18} />同步并更新历史版本</button>
+        <button disabled={book.busy || syncing} onClick={() => { setMobileNavigation(false); void syncNow(false); }}><RefreshCw size={18} />同步全部</button>
         {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) &&
           <button className="danger" disabled={disabled || book.pending.length > 0} onClick={() => { setMobileNavigation(false); setConfirmAction('purge-all'); }}><Trash2 size={18} />全部永久删除</button>}
         <button onClick={() => { setMobileNavigation(false); setSettings(true); }}><Settings size={18} />设置</button>
@@ -1129,7 +1163,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     </Modal>}
     {mobileNoteActions && note && <Modal title="笔记操作" className="mobile-actions-dialog" close={() => setMobileNoteActions(false)}>
       <div className="mobile-action-list">
-        <button disabled={disabled} onClick={() => { setMobileNoteActions(false); void syncNow(); }}><Save size={18} />同步笔记</button>
+        <button disabled={disabled} onClick={() => { setMobileNoteActions(false); void syncNow(); }}><Save size={18} />同步并更新历史版本</button>
         <button disabled={!!note.deletedAt || !!transfer} onClick={() => { setMobileNoteActions(false); beginLinkInsertion(); }}><Link2 size={18} />插入内部链接</button>
         <button onClick={() => { setMobileNoteActions(false); setInspector((value) => !value); }}><ListTree size={18} />大纲与反向链接</button>
         <button disabled={!!note.deletedAt || !!transfer} onClick={() => { setMobileNoteActions(false); setNoteFields({ pinned: !note.pinned }); }}><Pin size={18} fill={note.pinned ? 'currentColor' : 'none'} />{note.pinned ? '取消置顶' : '置顶'}</button>
@@ -1301,11 +1335,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           showNotice(`已永久删除 ${deleted} 篇笔记`);
         } else if (confirmAction === 'purge') await book.purge();
         else if (confirmAction === 'bulk-trash') await applyBulkTrash();
-        else {
-          if (!note) throw new Error('当前笔记不可用，请刷新后重试。');
-          await moveToTrash([note.id]);
-          showNotice('已移入回收站');
-        }
+        else await moveCurrentToTrash();
         setConfirmAction(null);
       })}>{confirmAction === 'purge-all' ? '全部永久删除' : confirmAction === 'purge' ? '永久删除' :
         confirmAction === 'bulk-trash' ? '删除' : '移入回收站'}</button></div>

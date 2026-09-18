@@ -388,6 +388,13 @@ nav button.active svg { color: var(--accent); }
 }
 .note-row-title span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .note-row-title svg { color: var(--accent); }
+.search-highlight {
+  padding: 0;
+  color: inherit;
+  background: rgba(255, 204, 0, .48);
+  border-radius: 2px;
+}
+:root[data-theme="dark"] .search-highlight { background: rgba(255, 214, 10, .32); }
 .note-excerpt {
   display: -webkit-box;
   min-height: 18px;

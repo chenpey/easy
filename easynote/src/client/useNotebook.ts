@@ -35,6 +35,14 @@ const blankNote = (note: Pick<Note, 'title' | 'content' | 'tags' | 'archived' | 
   !note.title && !note.content && !note.tags.length && !note.archived && note.deletedAt === null;
 const blankSummary = (note: NoteSummary) =>
   !note.title && !note.excerpt && !note.tags.length && !note.archived && note.deletedAt === null;
+const noteExcerpt = (content: string, query: string) => {
+  const needle = query.trim();
+  if (!needle) return content.slice(0, 180);
+  const match = content.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase());
+  const start = match > 60 ? match - 60 : 0;
+  const length = Math.max(180, needle.length + 60);
+  return `${start ? '…' : ''}${content.slice(start, start + length)}`;
+};
 
 async function prepareOfflineResources(): Promise<void> {
   if (!('serviceWorker' in navigator)) return;
@@ -109,7 +117,7 @@ export function useNotebook(session: Session) {
     });
     scoped.sort((left, right) => Number(right.pinned) - Number(left.pinned) ||
       right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
-    setNotes(scoped.map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 180) })));
+    setNotes(scoped.map(({ content, ...item }) => ({ ...item, excerpt: noteExcerpt(content, query) })));
     const viewTags = new Set<string>();
     for (const item of mirror.current.values()) {
       const inView = view === 'trash' ? item.deletedAt !== null :
@@ -344,6 +352,12 @@ export function useNotebook(session: Session) {
     } catch (e) {
       if (alive.current && generation === selectionGeneration.current) setError(String(e));
     }
+  };
+  const clearSelection = () => {
+    selectionGeneration.current++;
+    selectionAbort.current?.abort();
+    selectionAbort.current = null;
+    show(null);
   };
 
   const append = (target: Note, text: string) => {
@@ -708,10 +722,10 @@ export function useNotebook(session: Session) {
   const pending = [...drafts.current.values()].map((draft) => draft.note);
   const visible = notes.map((item) => {
     const draft = drafts.current.get(item.id)?.note;
-    return draft ? { ...draft, excerpt: draft.content.slice(0, 180) } : item;
+    return draft ? { ...draft, excerpt: noteExcerpt(draft.content, query) } : item;
   });
   for (const local of pending) {
-    if (!visible.some((item) => item.id === local.id)) visible.unshift({ ...local, excerpt: local.content.slice(0, 180) });
+    if (!visible.some((item) => item.id === local.id)) visible.unshift({ ...local, excerpt: noteExcerpt(local.content, query) });
   }
   const filtered = visible.filter((item) => {
     if (view === 'trash') {
@@ -720,7 +734,7 @@ export function useNotebook(session: Session) {
       if (item.deletedAt !== null || item.archived !== (view === 'archive')) return false;
     }
     if (tag && !item.tags.includes(tag)) return false;
-    return !query || `${item.title} ${item.excerpt}`.toLowerCase().includes(query.toLowerCase()) || notes.some((n) => n.id === item.id);
+    return !query || `${item.title} ${item.excerpt}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
   });
   const status = !online ? '仅保存在本机' : note && running.current.has(note.id) ? '正在保存' :
     note && drafts.current.has(note.id) ? blocked.current.has(note.id) ? '待处理草稿' : '本机草稿' : '已保存到云端';
@@ -729,7 +743,7 @@ export function useNotebook(session: Session) {
     note, notes: filtered, tags, view, query, tag, setView, setQuery, setTag,
     nextOffset, loading, error, setError, conflict, setConflict, status, pending,
     online, offlineLibrary, offlineCount,
-    busy: running.current.size > 0, select, create, edit, append, save: () => note ? save(note.id) : Promise.resolve(true),
+    busy: running.current.size > 0, select, clearSelection, create, edit, append, save: () => note ? save(note.id) : Promise.resolve(true),
     retry, conflictCopy, purge, purgeTrash, refresh: () => refreshRef.current(), loadMore: () => refresh(true),
     configureOffline, cachedFile, backlinks, tasks, searchAll, manageTag, bulkUpdate, findDuplicates,
   };

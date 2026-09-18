@@ -763,6 +763,7 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   const title = `手机笔记-${randomUUID().slice(0, 6)}`;
   await newNote(page, title, '手机上的简短记录');
   let actions = await openMobileNoteActions(page);
+  await expect(actions.getByRole('button', { name: '同步并更新历史版本', exact: true })).toBeVisible();
   await actions.screenshot({ path: 'test-results/mobile-note-actions.png' });
   await actions.getByRole('button', { name: '置顶', exact: true }).click();
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
@@ -774,6 +775,8 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   await page.getByRole('button', { name: '返回笔记列表' }).click();
   await expect(page.getByRole('button').filter({ hasText: title })).toBeHidden();
   let navigation = await openMobileNavigation(page);
+  await expect(navigation.getByRole('button', { name: '同步全部', exact: true })).toBeVisible();
+  await expect(navigation.getByRole('button', { name: '同步并更新历史版本', exact: true })).toHaveCount(0);
   await navigation.screenshot({ path: 'test-results/mobile-navigation.png' });
   await navigation.getByRole('button', { name: '归档笔记', exact: true }).click();
   await page.getByRole('button').filter({ hasText: title }).click();
@@ -787,8 +790,14 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   actions = await openMobileNoteActions(page);
   await actions.getByRole('button', { name: '移入回收站', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: '移入回收站', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已移入回收站');
+  await expect(page.locator('.trash-banner')).toBeHidden();
+  const back = page.getByRole('button', { name: '返回笔记列表' });
+  if (await back.isVisible()) await back.click();
+  navigation = await openMobileNavigation(page);
+  await navigation.getByRole('button', { name: '回收站', exact: true }).click();
+  await page.getByRole('button').filter({ hasText: title }).click();
   await expect(page.locator('.trash-banner').getByText('已移入回收站', { exact: true })).toBeVisible();
-  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   actions = await openMobileNoteActions(page);
   await actions.getByRole('button', { name: '恢复笔记', exact: true }).click();
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
@@ -800,6 +809,96 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   await page.getByRole('button', { name: '搜索笔记', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '搜索笔记' })).toBeVisible();
   await page.screenshot({ path: 'test-results/mobile-list.png', fullPage: true });
+});
+
+test('mobile list syncs all notes without creating history while note sync creates a version', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const title = `移动同步-${randomUUID().slice(0, 6)}`;
+  await page.goto('/');
+  await newNote(page, title, '区分列表同步和单篇笔记同步');
+  const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
+  const noteId = listed.notes[0].id;
+
+  await page.getByRole('button', { name: '返回笔记列表' }).click();
+  let navigation = await openMobileNavigation(page);
+  await navigation.getByRole('button', { name: '同步全部', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已同步，内容为最新');
+  expect((await (await page.request.get(`/api/notes/${noteId}/versions`)).json()).versions).toHaveLength(0);
+
+  await page.getByRole('button').filter({ hasText: title }).click();
+  const actions = await openMobileNoteActions(page);
+  await actions.getByRole('button', { name: '同步并更新历史版本', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('已保存并记录历史版本');
+  expect((await (await page.request.get(`/api/notes/${noteId}/versions`)).json()).versions).toHaveLength(1);
+});
+
+test('search highlights title and a matching excerpt from deep in the note', async ({ page }) => {
+  const marker = `高亮词-${randomUUID().slice(0, 6)}`;
+  const title = `${marker} 标题`;
+  const response = await page.request.post(`${origin}/api/notes/${randomUUID()}`, {
+    headers,
+    data: {
+      title,
+      content: `${'前置内容'.repeat(60)}${marker} 后续内容`,
+      tags: [],
+      pinned: false,
+      archived: false,
+      deletedAt: null,
+      revision: 0,
+      operationId: randomUUID(),
+    },
+  });
+  expect(response.status()).toBe(201);
+
+  await page.goto('/');
+  await page.getByRole('textbox', { name: '搜索笔记' }).fill(marker);
+  const row = page.locator('[data-note-row]').filter({ hasText: title });
+  await expect(row).toBeVisible();
+  await expect(row.locator('.note-row-title mark.search-highlight')).toHaveText(marker);
+  await expect(row.locator('.note-excerpt mark.search-highlight')).toHaveText(marker);
+});
+
+test('deleting a note opens its next visible note or returns to all notes', async ({ page }) => {
+  const marker = `删除跳转-${randomUUID().slice(0, 6)}`;
+  for (let index = 0; index < 3; index++) {
+    const response = await page.request.post(`${origin}/api/notes/${randomUUID()}`, {
+      headers,
+      data: {
+        title: `${marker}-${index}`,
+        content: `正文 ${index}`,
+        tags: [],
+        pinned: false,
+        archived: false,
+        deletedAt: null,
+        revision: 0,
+        operationId: randomUUID(),
+      },
+    });
+    expect(response.status()).toBe(201);
+  }
+  await page.goto('/');
+  await page.getByRole('textbox', { name: '搜索笔记' }).fill(marker);
+  const rows = page.locator('[data-note-row]');
+  await expect(rows).toHaveCount(3);
+  const nextTitle = await rows.nth(2).locator('.note-row-title span').innerText();
+  await rows.nth(1).click();
+  await page.getByRole('main').getByRole('button', { name: '移入回收站', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '移入回收站', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(nextTitle);
+
+  await page.getByRole('main').getByRole('button', { name: '移入回收站', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '移入回收站', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '全部笔记', exact: true })).toBeVisible();
+  await expect(page.getByRole('main').getByRole('heading', { name: '你的笔记', exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '搜索笔记' })).toHaveValue('');
+
+  const trashed = (await (await page.request.get(`/api/notes?view=trash&q=${encodeURIComponent(marker)}`)).json()).notes;
+  for (const item of trashed as Array<{ id: string; revision: number }>) {
+    expect((await page.request.delete(`${origin}/api/notes/${item.id}`, {
+      headers,
+      data: { revision: item.revision },
+    })).status()).toBe(200);
+  }
 });
 
 test('single and batch deletion persist and appear in trash', async ({ page }) => {
@@ -1063,7 +1162,7 @@ test('an expired session returns to login without a page reload', async ({ page 
     contentType: 'application/json',
     body: JSON.stringify({ error: { message: 'Please sign in.' } }),
   }));
-  const sync = page.locator('.note-list').getByRole('button', { name: '同步并更新历史版本', exact: true });
+  const sync = page.locator('.note-list').getByRole('button', { name: '同步全部', exact: true });
   await sync.evaluate((button) => (button as HTMLButtonElement).click());
   await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible();
   await expect(page.getByText('登录已过期，请重新登录。', { exact: true })).toBeVisible();

@@ -240,9 +240,13 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     else if (view === 'all') filters.push('deleted_at IS NULL', 'archived=0');
     if (q) { filters.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')"); binds.push(`%${escape(q)}%`, `%${escape(q)}%`); }
     if (tag) { filters.push('EXISTS(SELECT 1 FROM json_each(notes.tags) WHERE value=?)'); binds.push(tag); }
-    const result = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,archived,deleted_at,created_at,updated_at,revision
+    const excerpt = q
+      ? `(CASE WHEN instr(lower(content),lower(?))>61 THEN '…' ELSE '' END) ||
+        substr(content,max(1,instr(lower(content),lower(?))-60),max(180,length(?)+60))`
+      : 'substr(content,1,180)';
+    const result = await env.DB.prepare(`SELECT id,title,${excerpt} AS content,tags,pinned,archived,deleted_at,created_at,updated_at,revision
       FROM notes WHERE ${filters.join(' AND ')} ORDER BY pinned DESC,updated_at DESC,id ASC LIMIT ? OFFSET ?`)
-      .bind(...binds, limit + 1, offset).all<NoteRow>();
+      .bind(...(q ? [q, q, q] : []), ...binds, limit + 1, offset).all<NoteRow>();
     const notes = result.results.slice(0, limit).map((row) => {
       const { content, ...note } = toNote(row);
       return { ...note, excerpt: content };
