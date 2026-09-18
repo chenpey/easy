@@ -37,6 +37,11 @@ const blankNote = (note: Pick<Note, 'title' | 'content' | 'tags' | 'archived' | 
   !note.title && !note.content && !note.tags.length && !note.archived && note.deletedAt === null;
 const blankSummary = (note: NoteSummary) =>
   !note.title && !note.excerpt && !note.tags.length && !note.archived && note.deletedAt === null;
+const compareNoteOrder = (
+  left: Pick<NoteSummary, 'id' | 'pinned' | 'updatedAt'>,
+  right: Pick<NoteSummary, 'id' | 'pinned' | 'updatedAt'>,
+) => Number(right.pinned) - Number(left.pinned) ||
+  right.updatedAt - left.updatedAt || left.id.localeCompare(right.id);
 const noteExcerpt = (content: string, query: string) => {
   const needle = query.trim();
   if (!needle) return content.slice(0, 180);
@@ -126,8 +131,7 @@ export function useNotebook(session: Session) {
       if (tag && !item.tags.includes(tag)) return false;
       return !query || `${item.title} ${item.content}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
     });
-    scoped.sort((left, right) => Number(right.pinned) - Number(left.pinned) ||
-      right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+    scoped.sort(compareNoteOrder);
     setNotes(scoped.map(({ content, ...item }) => ({ ...item, excerpt: noteExcerpt(content, query) })));
     const viewTags = new Set<string>();
     for (const item of mirror.current.values()) {
@@ -235,10 +239,7 @@ export function useNotebook(session: Session) {
         updated.set(item.id, { ...summary, excerpt: noteExcerpt(content, query) });
       }
     }
-    const values = [...updated.values()].sort((left, right) =>
-      Number(right.pinned) - Number(left.pinned) ||
-      right.updatedAt - left.updatedAt ||
-      left.id.localeCompare(right.id));
+    const values = [...updated.values()].sort(compareNoteOrder);
     notesRef.current = values;
     setNotes(values);
     setNextOffset((value) => value === null ? null : values.length);
@@ -934,6 +935,7 @@ export function useNotebook(session: Session) {
   for (const local of pending) {
     if (!visible.some((item) => item.id === local.id)) visible.unshift({ ...local, excerpt: noteExcerpt(local.content, query) });
   }
+  visible.sort(compareNoteOrder);
   const filtered = visible.filter((item) => {
     if (view === 'trash') {
       if (item.deletedAt === null) return false;

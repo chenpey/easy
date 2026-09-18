@@ -891,6 +891,46 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   await page.screenshot({ path: 'test-results/mobile-list.png', fullPage: true });
 });
 
+test('pinning reorders the mobile list immediately and search toggles closed', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const marker = `即时排序-${randomUUID().slice(0, 6)}`;
+  const titles = [`${marker}-一`, `${marker}-二`];
+  for (const title of titles) {
+    const response = await page.request.post(`${origin}/api/notes/${randomUUID()}`, {
+      headers,
+      data: {
+        title, content: '用于验证置顶即时重排', tags: [], pinned: false,
+        archived: false, deletedAt: null, revision: 0, operationId: randomUUID(),
+      },
+    });
+    expect(response.status()).toBe(201);
+  }
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '搜索笔记', exact: true }).click();
+  const search = page.locator('.search-field input[aria-label="搜索笔记"]');
+  await search.fill(marker);
+  const rows = page.locator('[data-note-row]');
+  await expect(rows).toHaveCount(2);
+  const originalSecond = await rows.nth(1).locator('.note-row-title span').innerText();
+
+  await rows.nth(1).click();
+  let actions = await openMobileNoteActions(page);
+  await actions.getByRole('button', { name: '置顶', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记列表' }).click();
+  await expect(rows.nth(0).locator('.note-row-title span')).toHaveText(originalSecond);
+
+  await rows.nth(0).click();
+  actions = await openMobileNoteActions(page);
+  await actions.getByRole('button', { name: '取消置顶', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记列表' }).click();
+  await expect(rows.filter({ hasText: originalSecond }).locator('.note-row-title svg')).toHaveCount(0);
+
+  await page.getByRole('button', { name: '关闭搜索', exact: true }).click();
+  await expect(search).toBeHidden();
+  await expect(search).toHaveValue('');
+});
+
 test('mobile list syncs all notes without creating history while note sync creates a version', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const title = `移动同步-${randomUUID().slice(0, 6)}`;

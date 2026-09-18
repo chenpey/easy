@@ -620,6 +620,16 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setSelectionMode(false);
     setSelected(new Set());
   };
+  const toggleMobileSearch = () => {
+    if (mobileSearch || book.query) {
+      book.setQuery('');
+      setMobileSearch(false);
+      searchInput.current?.blur();
+      return;
+    }
+    setMobileSearch(true);
+    requestAnimationFrame(() => searchInput.current?.focus());
+  };
   const setNoteFields = (patch: Partial<NoteInput>) => book.edit(patch);
   const syncNow = async (createVersion = true) => {
     if (syncing) return;
@@ -1021,10 +1031,10 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <IconButton label="打开导航菜单" className="icon-button mobile-menu-trigger" onClick={() => setMobileNavigation(true)}><Menu size={21} /></IconButton>
           {!sidebar && <IconButton label="展开侧栏" onClick={() => setSidebar(true)}><MoreHorizontal size={18} /></IconButton>}
           <h1>{activeView}</h1>
-          <IconButton label="搜索笔记" className="icon-button mobile-search-trigger" onClick={() => {
-            setMobileSearch(true);
-            requestAnimationFrame(() => searchInput.current?.focus());
-          }}><Search size={20} /></IconButton>
+          <IconButton label={mobileSearch || book.query ? '关闭搜索' : '搜索笔记'} className="icon-button mobile-search-trigger"
+            aria-pressed={mobileSearch || !!book.query} onClick={toggleMobileSearch}>
+            {mobileSearch || book.query ? <X size={20} /> : <Search size={20} />}
+          </IconButton>
           <IconButton label="快速跳转" className="icon-button list-command-action" onClick={() => { setCommandQuery(''); setCommandPalette(true); }}><Command size={16} /></IconButton>
           {book.view !== 'trash' && <IconButton label={selectionMode ? '退出批量选择' : '批量选择'} className="icon-button list-bulk-action" aria-pressed={selectionMode} onClick={() => {
             if (selectionMode) exitSelectionMode();
@@ -1050,8 +1060,12 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           </div>
         </div>}
         <label className={`search-field ${mobileSearch || book.query ? 'mobile-open' : ''}`}><Search size={15} /><input ref={searchInput} aria-label="搜索笔记" placeholder="搜索笔记" value={book.query}
-          onChange={(e) => book.setQuery(e.target.value)}
-          onBlur={() => { if (!book.query) setMobileSearch(false); }}
+          onChange={(e) => {
+            const value = e.target.value;
+            book.setQuery(value);
+            setMobileSearch(!!value);
+          }}
+          onBlur={() => { if (!searchInput.current?.value) setMobileSearch(false); }}
           onKeyDown={(e) => { if (e.key === 'Escape') { book.setQuery(''); setMobileSearch(false); } }} /></label>
       </header>
       <div className="list-scroll" onKeyDown={(event) => moveButtonFocus(event, '.note-row')}>
