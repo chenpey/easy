@@ -45,6 +45,10 @@ jobs:
           test -x "$release_dir/EasyNewMac/首次打开 EasyNewMac.command"
           codesign --verify --deep --strict "$release_dir/EasyNewMac/EasyNewMac.app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Info.plist")" = "party.tiandi.easynewmac"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Info.plist")" = "EasyNewMac.icns"
+          ! /usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Info.plist"
+          test ! -e "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/Assets.car"
+          test ! -e "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/applet.icns"
 
       - name: Publish release
         env:

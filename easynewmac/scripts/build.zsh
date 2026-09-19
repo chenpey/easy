@@ -65,9 +65,14 @@ chmod 755 "$APP_RESOURCES/app-launch.zsh" "$APP_RESOURCES/scan.zsh"
 INFO_PLIST="$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile EasyNewMac.icns" "$INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string party.tiandi.easynewmac" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$INFO_PLIST"
+
+# osacompile adds its own asset-catalog icon. Modern macOS prefers that over
+# CFBundleIconFile, so remove the defaults and leave EasyNewMac.icns authoritative.
+rm -f -- "$APP_RESOURCES/Assets.car" "$APP_RESOURCES/applet.icns"
 
 /usr/bin/codesign --force --deep --sign - "$APP_PATH"
 /usr/bin/codesign --verify --deep --strict "$APP_PATH"
