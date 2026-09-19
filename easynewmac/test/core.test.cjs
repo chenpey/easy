@@ -127,6 +127,11 @@ test("automatic selections prepare Homebrew and defer MAS installs", () => {
   assert.match(script, /install_mas_app 'Simplenote' '692867256'/);
   assert.match(script, /HOMEBREW_DOWNLOAD_CONCURRENCY=3 brew bundle/);
   assert.ok(
+    script.indexOf('mas install "$app_id"') <
+      script.indexOf('mas lookup --json "$app_id"'),
+    "account-backed installation must run before locale-based lookup",
+  );
+  assert.ok(
     script.indexOf("ensure_homebrew") < script.indexOf("brew bundle"),
     "Homebrew must be prepared before brew bundle runs",
   );
@@ -168,6 +173,8 @@ test("nvm installs and manages selected Node.js versions", () => {
   assert.match(script, /nvm install '26\.8\.2'/);
   assert.match(script, /nvm install '20'/);
   assert.match(script, /nvm alias default '26\.8\.2'/);
+  assert.match(script, /export NVM_DIR="\$HOME\/\.nvm"/);
+  assert.match(script, /检测到自定义 NVM_DIR/);
   assert.match(script, /tail -c 1 "\$profile"/);
   assert.doesNotMatch(
     script,
@@ -200,7 +207,7 @@ fi
   writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
   fs.writeFileSync(
     path.join(nvmPrefix, "nvm.sh"),
-    'nvm() { print -r -- "$*" >> "$NVM_LOG"; }\n',
+    'nvm() { print -r -- "NVM_DIR=$NVM_DIR command=$*" >> "$NVM_LOG"; }\n',
   );
   fs.writeFileSync(path.join(root, ".zshrc"), "export FOO=bar");
 
@@ -233,14 +240,17 @@ fi
       FAKE_NVM_PREFIX: nvmPrefix,
       HOME: root,
       NVM_LOG: nvmLog,
-      NVM_DIR: path.join(root, ".nvm"),
+      NVM_DIR: path.join(root, "custom-nvm"),
       PATH: `${bin}:/usr/bin:/bin`,
       TERM: "xterm",
     },
   });
 
   assert.equal(result.status, 1);
-  assert.match(fs.readFileSync(nvmLog, "utf8"), /install 26\.8\.2/);
+  assert.match(
+    fs.readFileSync(nvmLog, "utf8"),
+    new RegExp(`NVM_DIR=${root}/\\.nvm command=install 26\\.8\\.2`),
+  );
   assert.match(
     fs.readFileSync(path.join(root, ".zshrc"), "utf8"),
     /^export FOO=bar\nexport NVM_DIR=/,
@@ -259,8 +269,11 @@ test("unavailable App Store apps are skipped without installation", () => {
     path.join(bin, "mas"),
     `#!/bin/zsh
 print -r -- "$*" >> "$MAS_LOG"
-print -u2 -- "No apps found in the App Store for ADAM ID $3"
-exit 0
+if [[ "$1" == "lookup" ]]; then
+  print -u2 -- "No apps found in the App Store for ADAM ID $3"
+  exit 0
+fi
+exit 1
 `,
   );
 
@@ -287,9 +300,110 @@ exit 0
   assert.equal(result.status, 0);
   assert.equal(
     fs.readFileSync(masLog, "utf8").trim(),
-    "lookup --json 932747118",
+    [
+      "install 932747118",
+      "get 932747118",
+      "lookup --json 932747118",
+    ].join("\n"),
   );
   assert.match(result.stdout, /跳过 Shadowrocket/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("App Store account installation succeeds before locale lookup", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-mas-"));
+  const bin = path.join(root, "bin");
+  const masLog = path.join(root, "mas.log");
+  fs.mkdirSync(bin);
+  writeExecutable(path.join(bin, "brew"), "#!/bin/zsh\nexit 0\n");
+  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
+  writeExecutable(
+    path.join(bin, "mas"),
+    '#!/bin/zsh\nprint -r -- "$*" >> "$MAS_LOG"\nexit 0\n',
+  );
+
+  const script = core.generateInstallScript([
+    item({
+      id: "mas:932747118",
+      kind: "mas",
+      name: "Shadowrocket",
+      installId: "932747118",
+    }),
+  ]);
+  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
+    input: "install apps\n\n",
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      MAS_LOG: masLog,
+      PATH: `${bin}:/usr/bin:/bin`,
+      TERM: "xterm",
+    },
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(fs.readFileSync(masLog, "utf8").trim(), "install 932747118");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("custom NVM_DIR in .zshrc fails before installing Node.js", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-nvm-"));
+  const bin = path.join(root, "bin");
+  const nvmPrefix = path.join(root, "nvm");
+  const nvmLog = path.join(root, "nvm.log");
+  fs.mkdirSync(bin);
+  fs.mkdirSync(nvmPrefix);
+  writeExecutable(
+    path.join(bin, "brew"),
+    `#!/bin/zsh
+if [[ "$1" == "--prefix" && "$2" == "nvm" ]]; then
+  print -r -- "$FAKE_NVM_PREFIX"
+fi
+exit 0
+`,
+  );
+  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
+  fs.writeFileSync(
+    path.join(nvmPrefix, "nvm.sh"),
+    'nvm() { print -r -- "$*" >> "$NVM_LOG"; }\n',
+  );
+  fs.writeFileSync(
+    path.join(root, ".zshrc"),
+    'export NVM_DIR="$HOME/.config/nvm"\n',
+  );
+
+  const script = core.generateInstallScript([
+    item({
+      id: "formula:nvm",
+      kind: "formula",
+      name: "nvm",
+      installId: "nvm",
+    }),
+    item({
+      id: "formula:node",
+      kind: "formula",
+      name: "node",
+      version: "26.8.2",
+      installId: "node",
+    }),
+  ]);
+  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
+    input: "install apps\n\n",
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      FAKE_NVM_PREFIX: nvmPrefix,
+      HOME: root,
+      NVM_LOG: nvmLog,
+      PATH: `${bin}:/usr/bin:/bin`,
+      TERM: "xterm",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /检测到自定义 NVM_DIR/);
+  assert.equal(fs.existsSync(nvmLog), false);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

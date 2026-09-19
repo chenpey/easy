@@ -1,6 +1,6 @@
 # EasyNewMac
 
-当前版本：`0.1.10`
+当前版本：`0.2.0`
 
 EasyNewMac 在旧 Mac 上扫描已安装应用，让用户搜索、筛选和选择需要迁移的项目，然后导出可在新 Mac 上运行的安装脚本。
 
@@ -40,7 +40,7 @@ EasyNewMac 不做模糊猜测。只有唯一且完全一致的 `.app` 文件名�
 
 同时选择 `nvm` 和 `node`/`node@版本` 时，迁移脚本只通过 Homebrew 安装 nvm，再由 nvm 安装原 Node.js 版本并设置默认版本；单独选择 Node.js 时仍按原 Homebrew Formula 迁移。
 
-Homebrew 项目最多使用 3 路并发下载，并由 Homebrew 串行完成安装以避免锁冲突。App Store 项目安装前会检查当前地区可用性，未找到的项目直接跳过；单个项目失败不会阻止后续 Node.js 或其他 App Store 项目继续处理。
+Homebrew 项目最多使用 3 路并发下载，并由 Homebrew 串行完成安装以避免锁冲突。App Store 项目优先按当前登录账号安装，失败后才判断是否属于当前商店未找到并跳过；单个项目失败不会阻止后续 Node.js 或其他 App Store 项目继续处理。nvm 统一使用 `~/.nvm`，检测到已有自定义 `NVM_DIR` 时会停止 Node.js 安装并明确提示，避免写入冲突配置。
 
 ## 安全与隐私
 
