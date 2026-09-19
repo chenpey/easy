@@ -65,6 +65,7 @@
 
   const elements = {
     workspace: document.querySelector("#workspace"),
+    scanStatus: document.querySelector("#scanStatus"),
     loadError: document.querySelector("#loadError"),
     scanSource: document.querySelector("#scanSource"),
     scanCount: document.querySelector("#scanCount"),
@@ -406,6 +407,7 @@
         formatScanSource(scan) || "本地扫描结果";
       elements.scanCount.textContent = String(state.items.length);
       elements.workspace.hidden = false;
+      elements.scanStatus.hidden = true;
       elements.loadError.hidden = true;
       bindEvents();
       render();
@@ -413,9 +415,31 @@
       console.error(error);
       elements.scanSource.textContent = "未找到本地扫描结果";
       elements.workspace.hidden = true;
+      elements.scanStatus.hidden = true;
       elements.loadError.hidden = false;
     }
   }
 
-  initialize();
+  function loadScanData() {
+    delete window.EASYNEWMAC_PENDING;
+    delete window.EASYNEWMAC_SCAN;
+
+    const script = document.createElement("script");
+    script.src = `data.js?${Date.now()}`;
+    script.addEventListener("load", () => {
+      script.remove();
+      if (window.EASYNEWMAC_PENDING) {
+        window.setTimeout(loadScanData, 800);
+        return;
+      }
+      initialize();
+    });
+    script.addEventListener("error", () => {
+      script.remove();
+      initialize();
+    });
+    document.head.append(script);
+  }
+
+  loadScanData();
 })();

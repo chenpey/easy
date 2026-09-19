@@ -21,9 +21,9 @@ run_dir="$runtime_root/current"
 rm -rf -- "$runtime_root"
 mkdir -p -- "$run_dir"
 cp -R "$WEB_DIR/." "$run_dir/"
-rm -f -- "$run_dir/data.js"
+print 'window.EASYNEWMAC_PENDING = true;' > "$run_dir/data.js"
 
-/usr/bin/open "$run_dir/loading.html"
+/usr/bin/open "$run_dir/index.html"
 "$SCANNER" "$run_dir/data.js"
 
 nohup /bin/zsh -c 'sleep 1800; rm -rf -- "$1"' _ "$runtime_root" \

@@ -150,6 +150,8 @@ svg {
 .plan h2,
 .plan h3,
 .plan p,
+.scan-status h2,
+.scan-status p,
 .load-error h2,
 .load-error p {
   margin: 0;
@@ -723,6 +725,7 @@ svg {
   text-align: center;
 }
 
+.scan-status,
 .load-error {
   min-height: calc(100vh - 72px);
   display: flex;
@@ -733,6 +736,13 @@ svg {
   text-align: center;
 }
 
+.scan-status img {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 16px;
+  border-radius: 11px;
+}
+
 .load-error svg {
   width: 30px;
   height: 30px;
@@ -740,13 +750,52 @@ svg {
   color: var(--orange);
 }
 
+.scan-status h2,
 .load-error h2 {
   font-size: 19px;
 }
 
+.scan-status p,
 .load-error p {
   margin-top: 6px;
   color: var(--text-secondary);
+}
+
+.scan-progress {
+  width: 160px;
+  height: 4px;
+  margin-top: 18px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--separator);
+}
+
+.scan-progress::after {
+  width: 45%;
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--blue);
+  content: "";
+  animation: scan 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes scan {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(225%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-progress::after {
+    width: 100%;
+    animation: none;
+    opacity: 0.7;
+  }
 }
 
 .toast {

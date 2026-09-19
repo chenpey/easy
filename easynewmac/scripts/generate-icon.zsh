@@ -4,7 +4,7 @@ emulate -L zsh
 set -euo pipefail
 
 PROJECT_DIR="${0:A:h:h}"
-SOURCE="$PROJECT_DIR/assets/easynewmac-icon.svg"
+SOURCE="$PROJECT_DIR/web/easynewmac-icon.svg"
 OUTPUT="${1:-$PROJECT_DIR/build/EasyNewMac.icns}"
 work_dir="$(/usr/bin/mktemp -d -t easynewmac-icon)"
 iconset="$work_dir/EasyNewMac.iconset"

@@ -102,6 +102,13 @@
         </div>
       </header>
 
+      <section class="scan-status" id="scanStatus" aria-live="polite">
+        <img src="easynewmac-icon.svg" alt="" />
+        <h2>正在扫描这台 Mac</h2>
+        <p>应用列表准备完成后会自动显示</p>
+        <div class="scan-progress" aria-label="正在扫描"></div>
+      </section>
+
       <main class="workspace" id="workspace" hidden>
         <aside class="sidebar" aria-label="应用分类">
           <div class="sidebar-label">分类</div>
@@ -220,7 +227,6 @@
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </div>
 
-    <script src="data.js"></script>
     <script src="core.js"></script>
     <script src="app.js"></script>
   </body>

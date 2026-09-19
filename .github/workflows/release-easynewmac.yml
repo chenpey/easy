@@ -51,7 +51,9 @@ jobs:
           ! /usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Info.plist"
           test ! -e "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/Assets.car"
           test ! -e "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/applet.icns"
+          gzip -t "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/catalog/casks.tsv.gz"
           test -f "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/web/easynewmac-icon.svg"
+          test ! -e "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/web/loading.html"
           grep -q 'rel="icon".*easynewmac-icon.svg' "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/web/index.html"
 
       - name: Publish release

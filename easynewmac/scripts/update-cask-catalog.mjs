@@ -3,21 +3,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const SOURCE_URL = "https://formulae.brew.sh/api/cask.json";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.dirname(SCRIPT_DIR);
-const APP_OUTPUT_FILE = path.join(
-  PROJECT_DIR,
-  "catalog",
-  "homebrew-casks.tsv",
-);
-const NAME_OUTPUT_FILE = path.join(
-  PROJECT_DIR,
-  "catalog",
-  "homebrew-cask-names.tsv",
-);
+const OUTPUT_FILE = path.join(PROJECT_DIR, "catalog", "casks.tsv.gz");
 
 const inputIndex = process.argv.indexOf("--input");
 const inputFile =
@@ -99,20 +91,22 @@ const generatedAt = new Date().toISOString().slice(0, 10);
 const appEntries = uniqueEntries(appCandidates);
 const nameEntries = uniqueEntries(nameCandidates);
 
-function writeCatalog(outputFile, description, entries) {
-  const output = [
-    `# Generated from ${SOURCE_URL}`,
-    `# Updated ${generatedAt}; ${entries.length} unique ${description}`,
-    "# Format: lowercase key<TAB>Homebrew Cask token",
-    ...entries.map(([key, token]) => `${key}\t${token}`),
-    "",
-  ].join("\n");
-  fs.writeFileSync(outputFile, output, "utf8");
-}
+const output = [
+  `# Generated from ${SOURCE_URL}`,
+  `# Updated ${generatedAt}; ${appEntries.length} app filenames; ${nameEntries.length} display names`,
+  "# Format: section followed by lowercase key<TAB>Homebrew Cask token",
+  "[apps]",
+  ...appEntries.map(([key, token]) => `${key}\t${token}`),
+  "[names]",
+  ...nameEntries.map(([key, token]) => `${key}\t${token}`),
+  "",
+].join("\n");
 
-fs.mkdirSync(path.dirname(APP_OUTPUT_FILE), { recursive: true });
-writeCatalog(APP_OUTPUT_FILE, "app bundle filenames", appEntries);
-writeCatalog(NAME_OUTPUT_FILE, "display names", nameEntries);
+fs.mkdirSync(path.dirname(OUTPUT_FILE), { recursive: true });
+fs.writeFileSync(
+  OUTPUT_FILE,
+  zlib.gzipSync(Buffer.from(output, "utf8"), { level: 9 }),
+);
 console.log(
-  `Wrote ${appEntries.length} app names and ${nameEntries.length} display names to ${path.relative(process.cwd(), path.dirname(APP_OUTPUT_FILE))}`,
+  `Wrote ${appEntries.length} app filenames and ${nameEntries.length} display names to ${path.relative(process.cwd(), OUTPUT_FILE)}`,
 );

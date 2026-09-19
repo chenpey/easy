@@ -95,8 +95,8 @@ bundle_details() {
 
 cask_catalog=""
 for candidate in \
-  "$SCRIPT_DIR/catalog/homebrew-casks.tsv" \
-  "$SCRIPT_DIR/../catalog/homebrew-casks.tsv"; do
+  "$SCRIPT_DIR/catalog/casks.tsv.gz" \
+  "$SCRIPT_DIR/../catalog/casks.tsv.gz"; do
   if [[ -f "$candidate" ]]; then
     cask_catalog="$candidate"
     break
@@ -104,30 +104,24 @@ for candidate in \
 done
 
 if [[ -n "$cask_catalog" ]]; then
-  while IFS=$'\t' read -r app_filename cask_token; do
-    [[ -n "$app_filename" && "$app_filename" != '# '* ]] || continue
-    [[ "$app_filename" == *.app ]] || continue
+  /usr/bin/gzip -t "$cask_catalog"
+  catalog_section=""
+  while IFS=$'\t' read -r catalog_key cask_token; do
+    case "$catalog_key" in
+      "[apps]"|"[names]")
+        catalog_section="$catalog_key"
+        continue
+        ;;
+    esac
+    [[ -n "$catalog_key" && "$catalog_key" != '# '* ]] || continue
     [[ "$cask_token" =~ '^[A-Za-z0-9][A-Za-z0-9@+._-]*$' ]] || continue
-    catalog_casks[$app_filename]="$cask_token"
-  done < "$cask_catalog"
-fi
 
-cask_name_catalog=""
-for candidate in \
-  "$SCRIPT_DIR/catalog/homebrew-cask-names.tsv" \
-  "$SCRIPT_DIR/../catalog/homebrew-cask-names.tsv"; do
-  if [[ -f "$candidate" ]]; then
-    cask_name_catalog="$candidate"
-    break
-  fi
-done
-
-if [[ -n "$cask_name_catalog" ]]; then
-  while IFS=$'\t' read -r display_name cask_token; do
-    [[ -n "$display_name" && "$display_name" != '# '* ]] || continue
-    [[ "$cask_token" =~ '^[A-Za-z0-9][A-Za-z0-9@+._-]*$' ]] || continue
-    catalog_cask_names[$display_name]="$cask_token"
-  done < "$cask_name_catalog"
+    if [[ "$catalog_section" == "[apps]" && "$catalog_key" == *.app ]]; then
+      catalog_casks[$catalog_key]="$cask_token"
+    elif [[ "$catalog_section" == "[names]" ]]; then
+      catalog_cask_names[$catalog_key]="$cask_token"
+    fi
+  done < <(/usr/bin/gzip -dc "$cask_catalog")
 fi
 
 brew_bin=""

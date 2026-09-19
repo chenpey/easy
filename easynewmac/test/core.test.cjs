@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+const zlib = require("node:zlib");
 
 const core = require("../web/core.js");
 
@@ -166,16 +167,23 @@ test("ZIP entry stores executable Unix permissions", () => {
 });
 
 test("bundled Cask catalog contains unique safe mappings", () => {
-  function readCatalog(filename) {
-    return fs
-      .readFileSync(path.resolve(__dirname, `../catalog/${filename}`), "utf8")
-      .split("\n")
-      .filter((line) => line && !line.startsWith("# "))
-      .map((line) => line.split("\t"));
-  }
-
-  const appCatalog = readCatalog("homebrew-casks.tsv");
-  const nameCatalog = readCatalog("homebrew-cask-names.tsv");
+  const catalog = zlib
+    .gunzipSync(
+      fs.readFileSync(path.resolve(__dirname, "../catalog/casks.tsv.gz")),
+    )
+    .toString("utf8");
+  const sections = { apps: [], names: [] };
+  let activeSection;
+  catalog.split("\n").forEach((line) => {
+    const section = line.match(/^\[(apps|names)\]$/)?.[1];
+    if (section) {
+      activeSection = section;
+    } else if (activeSection && line && !line.startsWith("# ")) {
+      sections[activeSection].push(line.split("\t"));
+    }
+  });
+  const appCatalog = sections.apps;
+  const nameCatalog = sections.names;
   const mappings = new Map(appCatalog);
   const nameMappings = new Map(nameCatalog);
 

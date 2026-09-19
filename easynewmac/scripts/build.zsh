@@ -54,14 +54,9 @@ cp "$ICON_PATH" "$APP_RESOURCES/EasyNewMac.icns"
 cp "$PROJECT_DIR/scripts/app-launch.zsh" "$APP_RESOURCES/"
 cp "$PROJECT_DIR/scripts/first-open.zsh" "$APP_RESOURCES/"
 cp "$PROJECT_DIR/scripts/scan.zsh" "$APP_RESOURCES/"
-cp "$PROJECT_DIR/catalog/homebrew-casks.tsv" "$APP_RESOURCES/catalog/"
-cp "$PROJECT_DIR/catalog/homebrew-cask-names.tsv" "$APP_RESOURCES/catalog/"
-cp "$PROJECT_DIR/web/index.html" "$APP_RESOURCES/web/"
-cp "$PROJECT_DIR/web/loading.html" "$APP_RESOURCES/web/"
-cp "$PROJECT_DIR/web/style.css" "$APP_RESOURCES/web/"
-cp "$PROJECT_DIR/web/core.js" "$APP_RESOURCES/web/"
-cp "$PROJECT_DIR/web/app.js" "$APP_RESOURCES/web/"
-cp "$PROJECT_DIR/assets/easynewmac-icon.svg" "$APP_RESOURCES/web/"
+cp "$PROJECT_DIR/catalog/casks.tsv.gz" "$APP_RESOURCES/catalog/"
+cp "$PROJECT_DIR"/web/{app.js,core.js,easynewmac-icon.svg,index.html,style.css} \
+  "$APP_RESOURCES/web/"
 chmod 755 \
   "$APP_RESOURCES/app-launch.zsh" \
   "$APP_RESOURCES/first-open.zsh" \

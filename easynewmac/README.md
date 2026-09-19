@@ -1,6 +1,6 @@
 # EasyNewMac
 
-当前版本：`0.1.6`
+当前版本：`0.1.7`
 
 EasyNewMac 在旧 Mac 上扫描已安装应用，让用户搜索、筛选和选择需要迁移的项目，然后导出可在新 Mac 上运行的安装脚本。
 
@@ -59,11 +59,10 @@ EasyNewMac 不做模糊猜测。只有唯一且完全一致的 `.app` 文件名�
 easynewmac/
 ├── VERSION                  # 版本源，由根目录版本脚本维护
 ├── FIRST_RUN.txt            # Release 中的首次授权说明
-├── assets/                  # 图标 SVG 源文件
-├── catalog/                 # 随应用分发的离线 Cask 映射
+├── catalog/casks.tsv.gz     # 单一压缩离线 Cask 映射
 ├── scripts/                 # 扫描、启动、构建和目录更新脚本
 ├── test/                    # Node.js 核心测试
-├── web/                     # 完全离线的选择与脚本预览页面
+├── web/                     # 页面、交互逻辑和唯一图标源
 ├── build/                   # 本地中间产物，不提交
 └── dist/                    # Release 产物，不提交
 ```
@@ -118,7 +117,7 @@ EASYNEWMAC_SCAN_FIXTURE=/tmp/easynewmac-test/data.js \
 node scripts/update-cask-catalog.mjs
 ```
 
-该开发命令从 Homebrew 官方 API 生成精简映射。用户扫描和页面使用过程不会联网。
+该开发命令从 Homebrew 官方 API 生成一个压缩映射文件。用户扫描和页面使用过程只读取该本地文件，不会联网。
 
 ## 版本与发布
 
