@@ -1,6 +1,6 @@
 # EasyNewMac
 
-当前版本：`0.2.1`
+当前版本：`0.3.0`
 
 EasyNewMac 在旧 Mac 上扫描已安装应用，让用户搜索、筛选和选择需要迁移的项目，然后导出可在新 Mac 上运行的安装脚本。
 
@@ -33,14 +33,20 @@ EasyNewMac 扫描：
 - Homebrew Cask：通过本机安装记录、应用包文件名精确匹配，或显示名与文件名同时匹配唯一的官方 Cask 名称。
 - App Store：应用元数据中存在有效 App Store ID。
 - 命令行工具：`brew leaves` 返回的顶层 Formula。
-- 网页应用：通过 Chrome/Edge 的 `CrAppModeShortcutURL` 元数据识别，保留宿主浏览器和原地址。
+- 网页应用：通过 Chrome/Edge 的 `CrAppModeShortcutURL` 元数据识别，保留宿主浏览器和扫描到的原地址（导出时清理已知跟踪参数）。
 - 手动安装：没有可靠自动安装来源的普通应用。
 
 EasyNewMac 不做模糊猜测。只有唯一且完全一致的 `.app` 文件名，或显示名和文件名完全相同的唯一官方名称才会映射到 Cask；重名项仍进入手动安装提醒。网页应用单独显示，并在脚本中提示使用原浏览器重新添加。
 
-同时选择 `nvm` 和 `node`/`node@版本` 时，迁移脚本只通过 Homebrew 安装 nvm，再由 nvm 安装原 Node.js 版本并设置默认版本；单独选择 Node.js 时仍按原 Homebrew Formula 迁移。
+选择 `node` 或 `node@版本` 时，统一通过官方 nvm 安装运行时最新的 Node.js LTS，并设为默认版本，不再复刻旧机的 Current 或旧版本。单独选择 nvm 时只配置 nvm。nvm 使用官方 v0.40.7 安装器，已有 `~/.nvm/nvm.sh` 则复用；不再通过 Homebrew 安装 nvm。
 
-Homebrew 项目最多使用 3 路并发下载，并由 Homebrew 串行完成安装以避免锁冲突。App Store 项目优先按当前登录账号安装，失败后才判断是否属于当前商店未找到并跳过；单个项目失败不会阻止后续 Node.js 或其他 App Store 项目继续处理。nvm 统一使用 `~/.nvm`，兼容标准目录的常见配置写法，检测到真正的自定义 `NVM_DIR` 时会停止 Node.js 安装并明确提示。全部处理结束后，脚本会按“项目 + 原因”汇总失败项。
+Homebrew 保留 `brew bundle` 默认升级行为，最多 3 路并发下载。批量失败后逐项补装缺失项目，再重试一次 bundle（也覆盖已有项目的升级失败）。最终检查已安装记录及 Brewfile；升级重试仍失败会明确报告，不会因旧版本存在而误报成功。
+
+自动安装要求 macOS 14+，拒绝 sudo/root 运行，打印系统版本和架构。日志保存在 `~/Library/Logs/EasyNewMac/`。结尾分别汇总验收通过、地区不可用而跳过、失败项；验收数量包含 mas 等辅助工具，失败数量包含环境检查，均不等同于所选应用数量。
+
+Node 安装前检查当前 `NVM_DIR`、zsh 启动配置（包括 `ZDOTDIR`）及 `.npmrc` 的 prefix/globalconfig 冲突，保留用户配置并提示修复。安装后验证 LTS 身份、版本、npm 和新登录 shell。Homebrew 同样检查登录 shell 的 PATH。App Store 在安装后通过 `mas list` 验收，异常时提示检查账户、网络或 Spotlight。单项失败不阻止后续项目。
+
+网页应用导出时清理 `utm_*` 跟踪参数和问财 `sign` 临时参数，保留其他功能参数及路径。已有但未被 Homebrew 管理的同名 App 只提示手动确认接管，不自动使用 `--adopt`。
 
 ## 安全与隐私
 

@@ -266,7 +266,7 @@
       if (summary.pwa > 0 && summary.manual > 0) {
         statusDescription.textContent = "当前脚本只会列出需要手动处理的项目";
       } else if (summary.pwa > 0) {
-        statusDescription.textContent = "当前脚本只会列出网页应用及原地址";
+        statusDescription.textContent = "当前脚本只会列出网页应用及清理跟踪参数后的地址";
       } else if (summary.manual > 0) {
         statusDescription.textContent = "当前脚本只会列出手动安装提醒";
       } else {

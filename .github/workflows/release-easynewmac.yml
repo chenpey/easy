@@ -73,6 +73,6 @@ jobs:
               "$checksum" \
               --verify-tag \
               --title "EasyNewMac v${version}" \
-              --notes "发布包已精简为 EasyNewMac.app 和“首次使用.txt”两个文件。首次使用时复制说明中的完整命令到终端并按回车；命令会调用 App 内置授权脚本，自动校验、解除隔离、关闭当前终端标签页并启动应用。" \
+              --notes-file easynewmac/RELEASE_NOTES.md \
               --generate-notes
           fi

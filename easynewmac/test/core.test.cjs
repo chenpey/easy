@@ -142,437 +142,194 @@ test("automatic selections prepare Homebrew and defer MAS installs", () => {
   );
 });
 
-test("nvm installs and manages selected Node.js versions", () => {
-  const script = core.generateInstallScript([
-    item({
-      id: "formula:nvm",
-      kind: "formula",
-      name: "nvm",
-      version: "0.40.7",
-      installId: "nvm",
-    }),
-    item({
-      id: "formula:node",
-      kind: "formula",
-      name: "node",
-      version: "26.8.2",
-      installId: "node",
-    }),
-    item({
-      id: "formula:node@20",
-      kind: "formula",
-      name: "node@20",
-      version: "",
-      installId: "node@20",
-    }),
-  ]);
+// Execute generated output with fake tools in a disposable HOME; never install software.
+function migration(t, items, { brew = "exit 0", mas = "exit 1", setup = () => {}, env = {}, transform = (script) => script } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  writeExecutable(path.join(bin, "brew"), `#!/bin/zsh\nprint -r -- "$*" >> "$HOME/brew.log"\n${brew}\n`);
+  writeExecutable(path.join(bin, "mas"), `#!/bin/zsh\nprint -r -- "$*" >> "$HOME/mas.log"\n${mas}\n`);
+  fs.mkdirSync(path.join(root, ".nvm"));
+  fs.writeFileSync(path.join(root, ".nvm/nvm.sh"), `
+nvm() {
+  print -r -- "$*" >> "$HOME/nvm.log"
+  [[ "$1" != version ]] || print v24.0.0
+  return 0
+}
+node() { if [[ "$1" == -v ]]; then print v24.0.0; else print Krypton; fi; }
+npm() { print 11.0.0; }
+`);
+  setup(root);
+  const script = transform(core.generateInstallScript(items));
+  const syntax = childProcess.spawnSync("/bin/zsh", ["-n"], { input: script, encoding: "utf8" });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
+    input: "install apps\n\n", encoding: "utf8", timeout: 10000,
+    env: { ...process.env, HOME: root, ZDOTDIR: root, NVM_DIR: "", NPM_CONFIG_PREFIX: "", npm_config_prefix: "", PATH: `${bin}:/usr/bin:/bin`, ...env },
+  });
+  return { ...result, root, script, output: result.stdout + result.stderr };
+}
+const nodeItem = item({ kind: "formula", installId: "node", version: "26.8.2", name: "node" });
+const caskItem = item({ kind: "cask", installId: "example", name: "Example App" });
+const masItem = item({ kind: "mas", installId: "932747118", name: "Shadowrocket" });
 
-  assert.match(script, /brew "nvm"/);
-  assert.doesNotMatch(script, /brew "node(?:@20)?"/);
-  assert.match(script, /source "\$nvm_script"/);
-  assert.match(script, /nvm install '26\.8\.2'/);
-  assert.match(script, /nvm install '20'/);
-  assert.match(script, /nvm alias default '26\.8\.2'/);
-  assert.match(script, /export NVM_DIR="\$HOME\/\.nvm"/);
-  assert.match(script, /检测到自定义 NVM_DIR/);
-  assert.match(script, /tail -c 1 "\$profile"/);
-  assert.doesNotMatch(
-    script,
-    /if \[\[ "\$install_status" -eq 0 \]\]; then\n  print -- "正在通过 nvm 安装 Node\.js/,
-  );
-  assert.ok(
-    script.indexOf('brew "nvm"') < script.indexOf("nvm install '26.8.2'"),
-    "nvm must be installed before Node.js",
-  );
+test("Node alone or with nvm uses official nvm and latest LTS", (t) => {
+  const result = migration(t, [nodeItem, item({ kind: "formula", installId: "nvm" })], {
+    setup(root) { fs.writeFileSync(path.join(root, ".zshrc"), "export FOO=bar"); },
+  });
+  assert.equal(result.status, 0, result.output);
+  assert.doesNotMatch(result.script, /brew "(?:node|nvm)/);
+  assert.match(result.script, /nvm-sh\/nvm\/v0\.40\.7\/install\.sh/);
+  assert.match(fs.readFileSync(path.join(result.root, "nvm.log"), "utf8"), /install --lts\nalias default lts\/\*\nuse --lts/);
+  assert.match(fs.readFileSync(path.join(result.root, ".zshrc"), "utf8"), /^export FOO=bar\nexport NVM_DIR=/);
+  assert.match(core.generateInstallScript([nodeItem]), /nvm install --lts/);
 });
 
-test("Node.js still installs after an unrelated Brewfile failure", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-node-"));
-  const bin = path.join(root, "bin");
-  const nvmPrefix = path.join(root, "nvm");
-  const nvmLog = path.join(root, "nvm.log");
-  fs.mkdirSync(bin);
-  fs.mkdirSync(nvmPrefix);
-  writeExecutable(
-    path.join(bin, "brew"),
-    `#!/bin/zsh
-if [[ "$1" == "bundle" ]]; then
+test("nvm alone is configured without installing Node", (t) => {
+  const result = migration(t, [item({ kind: "formula", installId: "nvm" })]);
+  assert.equal(result.status, 0, result.output);
+  assert.doesNotMatch(result.script, /nvm install --lts/);
+});
+
+test("bundle failure retries missing items and upgrades, then verifies", (t) => {
+  const result = migration(t, [caskItem], { brew: `
+if [[ "$1" == bundle && "$2" != check ]]; then
+  [[ -f "$HOME/retried" ]] && exit 0
+  touch "$HOME/retried"
   exit 1
 fi
-if [[ "$1" == "--prefix" && "$2" == "nvm" ]]; then
-  print -r -- "$FAKE_NVM_PREFIX"
-fi
-`,
-  );
-  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
-  fs.writeFileSync(
-    path.join(nvmPrefix, "nvm.sh"),
-    'nvm() { print -r -- "NVM_DIR=$NVM_DIR command=$*" >> "$NVM_LOG"; }\n',
-  );
-  fs.writeFileSync(path.join(root, ".zshrc"), "export FOO=bar");
-
-  const script = core.generateInstallScript([
-    item({
-      id: "formula:nvm",
-      kind: "formula",
-      name: "nvm",
-      installId: "nvm",
-    }),
-    item({
-      id: "formula:node",
-      kind: "formula",
-      name: "node",
-      version: "26.8.2",
-      installId: "node",
-    }),
-    item({
-      id: "cask:example",
-      kind: "cask",
-      name: "Example",
-      installId: "example",
-    }),
-  ]);
-  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
-    input: "install apps\n\n",
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      FAKE_NVM_PREFIX: nvmPrefix,
-      HOME: root,
-      NVM_LOG: nvmLog,
-      NVM_DIR: path.join(root, "custom-nvm"),
-      PATH: `${bin}:/usr/bin:/bin`,
-      TERM: "xterm",
-    },
-  });
-
-  assert.equal(result.status, 1);
-  assert.match(
-    fs.readFileSync(nvmLog, "utf8"),
-    new RegExp(`NVM_DIR=${root}/\\.nvm command=install 26\\.8\\.2`),
-  );
-  assert.match(
-    fs.readFileSync(path.join(root, ".zshrc"), "utf8"),
-    /^export FOO=bar\nexport NVM_DIR=/,
-  );
-  fs.rmSync(root, { recursive: true, force: true });
+if [[ "$1" == list ]]; then [[ -f "$HOME/installed" ]]; exit $?; fi
+if [[ "$1" == install ]]; then touch "$HOME/installed"; fi
+exit 0` });
+  assert.equal(result.status, 0, result.output);
+  const calls = fs.readFileSync(path.join(result.root, "brew.log"), "utf8");
+  assert.match(calls, /install --cask example/);
+  assert.equal(calls.split("\n").filter((line) => line.startsWith("bundle --file=")).length, 2);
+  assert.match(calls, /bundle check --no-upgrade/);
+  assert.doesNotMatch(calls, /bundle --no-upgrade/);
+  assert.match(result.output, /失败：0 项/);
+  const logDir = path.join(result.root, "Library/Logs/EasyNewMac");
+  assert.match(fs.readFileSync(path.join(logDir, fs.readdirSync(logDir)[0]), "utf8"), /验收通过/);
 });
 
-test("unavailable App Store apps are skipped without installation", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-mas-"));
-  const bin = path.join(root, "bin");
-  const masLog = path.join(root, "mas.log");
-  fs.mkdirSync(bin);
-  writeExecutable(path.join(bin, "brew"), "#!/bin/zsh\nexit 0\n");
-  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
-  writeExecutable(
-    path.join(bin, "mas"),
-    `#!/bin/zsh
-print -r -- "$*" >> "$MAS_LOG"
-if [[ "$1" == "lookup" ]]; then
-  print -u2 -- "No apps found in the App Store for ADAM ID $3"
-  exit 0
-fi
-exit 1
-`,
-  );
-
-  const script = core.generateInstallScript([
-    item({
-      id: "mas:932747118",
-      kind: "mas",
-      name: "Shadowrocket",
-      installId: "932747118",
-    }),
-  ]);
-  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
-    input: "install apps\n\n",
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      HOME: root,
-      MAS_LOG: masLog,
-      PATH: `${bin}:/usr/bin:/bin`,
-      TERM: "xterm",
-    },
-  });
-
-  assert.equal(result.status, 0);
-  assert.equal(
-    fs.readFileSync(masLog, "utf8").trim(),
-    [
-      "install 932747118",
-      "get 932747118",
-      "lookup --json 932747118",
-    ].join("\n"),
-  );
-  assert.match(result.stdout, /跳过 Shadowrocket/);
-  fs.rmSync(root, { recursive: true, force: true });
+test("persistent bundle failure does not prevent Node LTS installation", (t) => {
+  const result = migration(t, [nodeItem, caskItem], { brew: '[[ "$1" != bundle ]]' });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /重试后仍失败/);
+  assert.match(fs.readFileSync(path.join(result.root, "nvm.log"), "utf8"), /install --lts/);
 });
 
-test("App Store account installation succeeds before locale lookup", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-mas-"));
-  const bin = path.join(root, "bin");
-  const masLog = path.join(root, "mas.log");
-  fs.mkdirSync(bin);
-  writeExecutable(path.join(bin, "brew"), "#!/bin/zsh\nexit 0\n");
-  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
-  writeExecutable(
-    path.join(bin, "mas"),
-    '#!/bin/zsh\nprint -r -- "$*" >> "$MAS_LOG"\nexit 0\n',
-  );
-
-  const script = core.generateInstallScript([
-    item({
-      id: "mas:932747118",
-      kind: "mas",
-      name: "Shadowrocket",
-      installId: "932747118",
-    }),
-  ]);
-  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
-    input: "install apps\n\n",
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      HOME: root,
-      MAS_LOG: masLog,
-      PATH: `${bin}:/usr/bin:/bin`,
-      TERM: "xterm",
-    },
-  });
-
-  assert.equal(result.status, 0);
-  assert.equal(fs.readFileSync(masLog, "utf8").trim(), "install 932747118");
-  fs.rmSync(root, { recursive: true, force: true });
+test("successful bundle still verifies missing packages", (t) => {
+  const result = migration(t, [caskItem], { brew: '[[ "$1" != list ]]' });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /Example App：Homebrew 未检测到已安装/);
 });
 
-test("custom NVM_DIR in .zshrc fails before installing Node.js", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-nvm-"));
-  const bin = path.join(root, "bin");
-  const nvmPrefix = path.join(root, "nvm");
-  const nvmLog = path.join(root, "nvm.log");
-  fs.mkdirSync(bin);
-  fs.mkdirSync(nvmPrefix);
-  writeExecutable(
-    path.join(bin, "brew"),
-    `#!/bin/zsh
-if [[ "$1" == "--prefix" && "$2" == "nvm" ]]; then
-  print -r -- "$FAKE_NVM_PREFIX"
-fi
-exit 0
-`,
-  );
-  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
-  fs.writeFileSync(
-    path.join(nvmPrefix, "nvm.sh"),
-    'nvm() { print -r -- "$*" >> "$NVM_LOG"; }\n',
-  );
-  fs.writeFileSync(
-    path.join(root, ".zshrc"),
-    [
-      'export NVM_DIR="$HOME/.nvm"',
-      'export NVM_DIR="$HOME/.config/nvm"',
-      "",
-    ].join("\n"),
-  );
-
-  const script = core.generateInstallScript([
-    item({
-      id: "formula:nvm",
-      kind: "formula",
-      name: "nvm",
-      installId: "nvm",
-    }),
-    item({
-      id: "formula:node",
-      kind: "formula",
-      name: "node",
-      version: "26.8.2",
-      installId: "node",
-    }),
-  ]);
-  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
-    input: "install apps\n\n",
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      FAKE_NVM_PREFIX: nvmPrefix,
-      HOME: root,
-      NVM_LOG: nvmLog,
-      PATH: `${bin}:/usr/bin:/bin`,
-      TERM: "xterm",
-    },
-  });
-
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /检测到自定义 NVM_DIR/);
-  assert.match(
-    result.stdout,
-    /失败详情：[\s\S]*Node\.js：检测到自定义 NVM_DIR/,
-  );
-  assert.equal(fs.existsSync(nvmLog), false);
-  fs.rmSync(root, { recursive: true, force: true });
+test("manual-only output runs without unset-array errors", (t) => {
+  const result = migration(t, [item({ name: "Manual" })]);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /迁移清单处理完成/);
 });
 
-test("equivalent NVM_DIR and commented source line are handled", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-nvm-"));
-  const bin = path.join(root, "bin");
-  const nvmPrefix = path.join(root, "nvm");
-  fs.mkdirSync(bin);
-  fs.mkdirSync(nvmPrefix);
-  writeExecutable(
-    path.join(bin, "brew"),
-    `#!/bin/zsh
-if [[ "$1" == "--prefix" && "$2" == "nvm" ]]; then
-  print -r -- "$FAKE_NVM_PREFIX"
-fi
-exit 0
-`,
-  );
-  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
-  fs.writeFileSync(path.join(nvmPrefix, "nvm.sh"), "nvm() { return 0; }\n");
-  const nvmSourceLine = `[ -s "${nvmPrefix}/nvm.sh" ] && \\. "${nvmPrefix}/nvm.sh"`;
-  fs.writeFileSync(
-    path.join(root, ".zshrc"),
-    `NVM_DIR="$HOME/.nvm"\n# ${nvmSourceLine}\n`,
-  );
-
-  const script = core.generateInstallScript([
-    item({
-      id: "formula:nvm",
-      kind: "formula",
-      name: "nvm",
-      installId: "nvm",
-    }),
-    item({
-      id: "formula:node",
-      kind: "formula",
-      name: "node",
-      version: "26.8.2",
-      installId: "node",
-    }),
-  ]);
-  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
-    input: "install apps\n\n",
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      FAKE_NVM_PREFIX: nvmPrefix,
-      HOME: root,
-      PATH: `${bin}:/usr/bin:/bin`,
-      TERM: "xterm",
-    },
+for (const config of [".zshrc", ".zprofile", ".zshenv", ".zlogin", ".npmrc", "environment"]) {
+  test(`nvm rejects conflicting ${config} without modifying it`, (t) => {
+    const content = config === ".npmrc" ? "prefix=/custom" : 'export NVM_DIR="$HOME/custom"';
+    const result = migration(t, [nodeItem], {
+      setup(root) { if (config !== "environment") fs.writeFileSync(path.join(root, config), content); },
+      env: config === "environment" ? { NVM_DIR: "/custom" } : {},
+    });
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /自定义 NVM_DIR|prefix.*冲突/);
+    assert.equal(fs.existsSync(path.join(result.root, "nvm.log")), false);
+    if (config !== "environment") assert.equal(fs.readFileSync(path.join(result.root, config), "utf8"), content);
   });
-  const profile = fs.readFileSync(path.join(root, ".zshrc"), "utf8");
-  const activeSourceLines = profile
-    .split("\n")
-    .filter((line) => line === nvmSourceLine);
+}
 
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(activeSourceLines.length, 1);
-  fs.rmSync(root, { recursive: true, force: true });
+test("equivalent NVM_DIR and repeated execution do not duplicate config", (t) => {
+  const result = migration(t, [nodeItem], { setup(root) {
+    fs.writeFileSync(path.join(root, ".zshrc"), 'NVM_DIR="$HOME/.nvm"\n');
+  } });
+  assert.equal(result.status, 0, result.output);
+  const profile = fs.readFileSync(path.join(result.root, ".zshrc"), "utf8");
+  const again = childProcess.spawnSync("/bin/zsh", ["-c", result.script], {
+    input: "install apps\n\n", encoding: "utf8", timeout: 10000,
+    env: { ...process.env, HOME: result.root, ZDOTDIR: result.root, NVM_DIR: "", NPM_CONFIG_PREFIX: "", npm_config_prefix: "", PATH: `${result.root}/bin:/usr/bin:/bin` },
+  });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.equal(fs.readFileSync(path.join(result.root, ".zshrc"), "utf8"), profile);
 });
 
-test("Homebrew failures are listed with item and reason", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-brew-"));
-  const bin = path.join(root, "bin");
-  fs.mkdirSync(bin);
-  writeExecutable(
-    path.join(bin, "brew"),
-    `#!/bin/zsh
-if [[ "$1" == "bundle" || "$1" == "list" ]]; then
-  exit 1
-fi
-exit 0
-`,
-  );
-  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
-
-  const script = core.generateInstallScript([
-    item({
-      id: "cask:example",
-      kind: "cask",
-      name: "Example App",
-      installId: "example",
-    }),
-  ]);
-  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
-    input: "install apps\n\n",
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      HOME: root,
-      PATH: `${bin}:/usr/bin:/bin`,
-      TERM: "xterm",
-    },
-  });
-
-  assert.equal(result.status, 1);
-  assert.match(
-    result.stdout,
-    /失败详情：[\s\S]*Example App：Homebrew 未检测到已安装（example）/,
-  );
-  fs.rmSync(root, { recursive: true, force: true });
+test("Node verification rejects Current even when install succeeds", (t) => {
+  const result = migration(t, [nodeItem], { setup(root) {
+    fs.appendFileSync(path.join(root, ".nvm/nvm.sh"), '\nnode() { [[ "$1" != -v ]] || print v26.0.0; }\n');
+  } });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /LTS \/ npm 验收失败/);
 });
 
-test("App Store failures are listed with item and reason", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-mas-"));
-  const bin = path.join(root, "bin");
-  fs.mkdirSync(bin);
-  writeExecutable(path.join(bin, "brew"), "#!/bin/zsh\nexit 0\n");
-  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
-  writeExecutable(
-    path.join(bin, "mas"),
-    `#!/bin/zsh
-if [[ "$1" == "lookup" ]]; then
-  print -r -- '{"adamID":932747118}'
-  exit 0
-fi
-exit 1
-`,
-  );
-
-  const script = core.generateInstallScript([
-    item({
-      id: "mas:932747118",
-      kind: "mas",
-      name: "Shadowrocket",
-      installId: "932747118",
-    }),
-  ]);
-  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
-    input: "install apps\n\n",
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      HOME: root,
-      PATH: `${bin}:/usr/bin:/bin`,
-      TERM: "xterm",
-    },
-  });
-
-  assert.equal(result.status, 1);
-  assert.match(
-    result.stdout,
-    /失败详情：[\s\S]*Shadowrocket：mas install 和 mas get 均失败/,
-  );
-  fs.rmSync(root, { recursive: true, force: true });
+test("MAS records region skips and does not depend on JSON field names", (t) => {
+  const result = migration(t, [masItem], { mas: `
+if [[ "$1" == lookup ]]; then print 'No apps found in the App Store'; exit 0; fi
+exit 1` });
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /跳过：1 项；失败：0 项/);
+  assert.doesNotMatch(result.script, /adamID/);
 });
 
-test("Node.js remains a Homebrew formula when nvm is not selected", () => {
-  const script = core.generateInstallScript([
-    item({
-      id: "formula:node@20",
-      kind: "formula",
-      name: "node@20",
-      version: "20.19.5",
-      installId: "node@20",
-    }),
-  ]);
+test("MAS verifies account-backed install before locale lookup", (t) => {
+  const result = migration(t, [masItem], { mas: '[[ "$1" != list ]] || print "932747118 Shadowrocket"; exit 0' });
+  assert.equal(result.status, 0, result.output);
+  assert.equal(fs.readFileSync(path.join(result.root, "mas.log"), "utf8").trim(), "install 932747118\nlist");
+});
 
-  assert.match(script, /brew "node@20"/);
-  assert.doesNotMatch(script, /install_node_with_nvm|nvm install/);
+test("MAS false success reports Spotlight verification failure", (t) => {
+  const result = migration(t, [masItem], { mas: "exit 0" });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /Spotlight/);
+});
+
+test("MAS lookup network failure is failed, not skipped", (t) => {
+  const result = migration(t, [masItem]);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /无法确认 App Store 可用性/);
+  assert.match(result.output, /跳过：0 项/);
+});
+
+test("preflight rejects root and old macOS before package commands", (t) => {
+  for (const transform of [
+    (script) => script.replace('if (( EUID == 0 )); then', 'if true; then'),
+    (script) => script.replace('$(/usr/bin/sw_vers -productVersion)', '13.7'),
+  ]) {
+    const result = migration(t, [caskItem], { transform });
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /sudo\/root|需要 macOS 14/);
+    assert.equal(fs.existsSync(path.join(result.root, "brew.log")), false);
+  }
+});
+
+test("official nvm download failure reports error and continues MAS", (t) => {
+  const result = migration(t, [nodeItem, masItem], {
+    setup(root) { fs.rmSync(path.join(root, ".nvm/nvm.sh")); },
+    transform: (script) => script.replaceAll('/usr/bin/curl', '/usr/bin/false'),
+    mas: '[[ "$1" != list ]] || print "932747118 Shadowrocket"; exit 0',
+  });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /无法下载官方 nvm 安装器/);
+  assert.match(result.output, /Shadowrocket 已安装并通过验收/);
+});
+
+test("PWA removes tracking and known temporary sign, preserving functional parameters", () => {
+  const script = core.generateInstallScript([
+    item({ kind: "pwa", installId: "https://x.com/?utm_source=homescreen&q=hello#tab" }),
+    item({ kind: "pwa", installId: "https://www.iwencai.com/unifiedwap/home/index?sign=123&query=abc" }),
+    item({ kind: "pwa", installId: "https://example.com/?sign=keep&pwa=1" }),
+    item({ kind: "pwa", installId: "http://[invalid" }),
+  ]);
+  assert.doesNotMatch(script, /utm_source|sign=123|invalid/);
+  assert.match(script, /q=hello#tab/);
+  assert.match(script, /query=abc/);
+  assert.match(script, /sign=keep&pwa=1/);
 });
 
 test("invalid install identifiers are excluded from generated commands", () => {
