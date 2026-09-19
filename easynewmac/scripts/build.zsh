@@ -52,6 +52,7 @@ APP_RESOURCES="$APP_PATH/Contents/Resources"
 mkdir -p "$APP_RESOURCES/web" "$APP_RESOURCES/catalog"
 cp "$ICON_PATH" "$APP_RESOURCES/EasyNewMac.icns"
 cp "$PROJECT_DIR/scripts/app-launch.zsh" "$APP_RESOURCES/"
+cp "$PROJECT_DIR/scripts/first-open.zsh" "$APP_RESOURCES/"
 cp "$PROJECT_DIR/scripts/scan.zsh" "$APP_RESOURCES/"
 cp "$PROJECT_DIR/catalog/homebrew-casks.tsv" "$APP_RESOURCES/catalog/"
 cp "$PROJECT_DIR/catalog/homebrew-cask-names.tsv" "$APP_RESOURCES/catalog/"
@@ -61,7 +62,10 @@ cp "$PROJECT_DIR/web/style.css" "$APP_RESOURCES/web/"
 cp "$PROJECT_DIR/web/core.js" "$APP_RESOURCES/web/"
 cp "$PROJECT_DIR/web/app.js" "$APP_RESOURCES/web/"
 cp "$PROJECT_DIR/assets/easynewmac-icon.svg" "$APP_RESOURCES/web/"
-chmod 755 "$APP_RESOURCES/app-launch.zsh" "$APP_RESOURCES/scan.zsh"
+chmod 755 \
+  "$APP_RESOURCES/app-launch.zsh" \
+  "$APP_RESOURCES/first-open.zsh" \
+  "$APP_RESOURCES/scan.zsh"
 
 INFO_PLIST="$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$INFO_PLIST"
@@ -81,11 +85,7 @@ rm -f -- "$APP_RESOURCES/Assets.car" "$APP_RESOURCES/applet.icns"
 /usr/bin/ditto --norsrc --noextattr --noqtn --noacl \
   "$APP_PATH" \
   "$RELEASE_DIR/$PACKAGE_NAME.app"
-cp "$PROJECT_DIR/scripts/first-open.zsh" \
-  "$RELEASE_DIR/授权并打开 EasyNewMac.sh"
-chmod 755 "$RELEASE_DIR/授权并打开 EasyNewMac.sh"
-cp "$PROJECT_DIR/FIRST_RUN.txt" "$RELEASE_DIR/0.首次使用说明.txt"
-cp "$PROJECT_DIR/README.md" "$RELEASE_DIR/"
+cp "$PROJECT_DIR/FIRST_RUN.txt" "$RELEASE_DIR/首次使用.txt"
 
 /usr/bin/ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl \
   "$RELEASE_DIR" \

@@ -5,9 +5,9 @@ EasyNewMac 首次使用
 1. 打开 macOS 自带的“终端”。
 2. 复制下面整行命令，粘贴到终端并按回车：
 
-   /bin/zsh -c 'f=$(/usr/bin/find "$HOME/Downloads" -maxdepth 5 -type f -name "授权并打开 EasyNewMac.sh" -print 2>/dev/null | /usr/bin/head -n 1); [[ -n "$f" ]] || { echo "未在下载目录找到 EasyNewMac"; exit 1; }; /bin/zsh "$f"'
+   /bin/zsh -c 'f=$(/usr/bin/find "$HOME/Downloads" -maxdepth 8 -type f -path "*/EasyNewMac.app/Contents/Resources/first-open.zsh" -print 2>/dev/null | /usr/bin/head -n 1); [[ -n "$f" ]] || { echo "未在下载目录找到 EasyNewMac"; exit 1; }; /bin/zsh "$f"'
 
-命令会在下载目录中自动定位授权脚本及相邻的 EasyNewMac.app。
+命令会在下载目录中自动定位 EasyNewMac.app 及其内置授权脚本。
 
 脚本会先验证 EasyNewMac.app 的签名完整性和固定应用标识，只在验证
 通过后移除该应用自身的下载隔离标记，然后启动应用。
@@ -15,4 +15,3 @@ EasyNewMac 首次使用
 完成后会关闭当前终端标签页。以后可以直接双击 EasyNewMac.app。
 
 此操作仅修改当前用户下载的 EasyNewMac.app，不需要也不应要求管理员密码。
-请勿直接双击授权脚本；下载的脚本也会被 Gatekeeper 拦截。

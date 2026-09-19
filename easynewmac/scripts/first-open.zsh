@@ -4,7 +4,12 @@ emulate -L zsh
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
-APP_PATH="$SCRIPT_DIR/EasyNewMac.app"
+embedded_app="${SCRIPT_DIR:h:h}"
+if [[ "$embedded_app" == *.app && -f "$embedded_app/Contents/Info.plist" ]]; then
+  APP_PATH="$embedded_app"
+else
+  APP_PATH="$SCRIPT_DIR/EasyNewMac.app"
+fi
 INFO_PLIST="$APP_PATH/Contents/Info.plist"
 EXPECTED_IDENTIFIER="party.tiandi.easynewmac"
 terminal_tty="$(/usr/bin/tty 2>/dev/null || true)"
