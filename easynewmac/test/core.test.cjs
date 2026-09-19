@@ -370,7 +370,11 @@ exit 0
   );
   fs.writeFileSync(
     path.join(root, ".zshrc"),
-    'export NVM_DIR="$HOME/.config/nvm"\n',
+    [
+      'export NVM_DIR="$HOME/.nvm"',
+      'export NVM_DIR="$HOME/.config/nvm"',
+      "",
+    ].join("\n"),
   );
 
   const script = core.generateInstallScript([
@@ -403,7 +407,156 @@ exit 0
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /检测到自定义 NVM_DIR/);
+  assert.match(
+    result.stdout,
+    /失败详情：[\s\S]*Node\.js：检测到自定义 NVM_DIR/,
+  );
   assert.equal(fs.existsSync(nvmLog), false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("equivalent NVM_DIR and commented source line are handled", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-nvm-"));
+  const bin = path.join(root, "bin");
+  const nvmPrefix = path.join(root, "nvm");
+  fs.mkdirSync(bin);
+  fs.mkdirSync(nvmPrefix);
+  writeExecutable(
+    path.join(bin, "brew"),
+    `#!/bin/zsh
+if [[ "$1" == "--prefix" && "$2" == "nvm" ]]; then
+  print -r -- "$FAKE_NVM_PREFIX"
+fi
+exit 0
+`,
+  );
+  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
+  fs.writeFileSync(path.join(nvmPrefix, "nvm.sh"), "nvm() { return 0; }\n");
+  const nvmSourceLine = `[ -s "${nvmPrefix}/nvm.sh" ] && \\. "${nvmPrefix}/nvm.sh"`;
+  fs.writeFileSync(
+    path.join(root, ".zshrc"),
+    `NVM_DIR="$HOME/.nvm"\n# ${nvmSourceLine}\n`,
+  );
+
+  const script = core.generateInstallScript([
+    item({
+      id: "formula:nvm",
+      kind: "formula",
+      name: "nvm",
+      installId: "nvm",
+    }),
+    item({
+      id: "formula:node",
+      kind: "formula",
+      name: "node",
+      version: "26.8.2",
+      installId: "node",
+    }),
+  ]);
+  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
+    input: "install apps\n\n",
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      FAKE_NVM_PREFIX: nvmPrefix,
+      HOME: root,
+      PATH: `${bin}:/usr/bin:/bin`,
+      TERM: "xterm",
+    },
+  });
+  const profile = fs.readFileSync(path.join(root, ".zshrc"), "utf8");
+  const activeSourceLines = profile
+    .split("\n")
+    .filter((line) => line === nvmSourceLine);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(activeSourceLines.length, 1);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("Homebrew failures are listed with item and reason", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-brew-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  writeExecutable(
+    path.join(bin, "brew"),
+    `#!/bin/zsh
+if [[ "$1" == "bundle" || "$1" == "list" ]]; then
+  exit 1
+fi
+exit 0
+`,
+  );
+  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
+
+  const script = core.generateInstallScript([
+    item({
+      id: "cask:example",
+      kind: "cask",
+      name: "Example App",
+      installId: "example",
+    }),
+  ]);
+  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
+    input: "install apps\n\n",
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${bin}:/usr/bin:/bin`,
+      TERM: "xterm",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stdout,
+    /失败详情：[\s\S]*Example App：Homebrew 未检测到已安装（example）/,
+  );
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("App Store failures are listed with item and reason", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-mas-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  writeExecutable(path.join(bin, "brew"), "#!/bin/zsh\nexit 0\n");
+  writeExecutable(path.join(bin, "clear"), "#!/bin/zsh\nexit 0\n");
+  writeExecutable(
+    path.join(bin, "mas"),
+    `#!/bin/zsh
+if [[ "$1" == "lookup" ]]; then
+  print -r -- '{"adamID":932747118}'
+  exit 0
+fi
+exit 1
+`,
+  );
+
+  const script = core.generateInstallScript([
+    item({
+      id: "mas:932747118",
+      kind: "mas",
+      name: "Shadowrocket",
+      installId: "932747118",
+    }),
+  ]);
+  const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
+    input: "install apps\n\n",
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${bin}:/usr/bin:/bin`,
+      TERM: "xterm",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stdout,
+    /失败详情：[\s\S]*Shadowrocket：mas install 和 mas get 均失败/,
+  );
   fs.rmSync(root, { recursive: true, force: true });
 });
 
