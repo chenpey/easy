@@ -1,11 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
   <title id="title">EasyNewMac</title>
   <rect width="512" height="512" rx="112" fill="#0071e3"/>
-  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" stroke-width="24">
-    <rect x="64" y="120" width="160" height="120" rx="16"/>
-    <path d="M112 280h64M144 240v40"/>
-    <rect x="288" y="120" width="160" height="120" rx="16"/>
-    <path d="M336 280h64M368 240v40"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="80" y="84" width="352" height="244" rx="30" stroke="#ffffff" stroke-width="28"/>
+    <path d="M256 328v66M188 394h136" stroke="#ffffff" stroke-width="28"/>
+    <path d="M156 206h190m-52-52 52 52-52 52" stroke="#f0c930" stroke-width="30"/>
   </g>
-  <path d="M160 352h192m-52-52 52 52-52 52" fill="none" stroke="#f0c930" stroke-linecap="round" stroke-linejoin="round" stroke-width="30"/>
 </svg>
