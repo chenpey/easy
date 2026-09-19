@@ -13,6 +13,8 @@ const origin = "https://share.example.test";
 let mf, db, bucket, script;
 let cookie, csrf;
 const config = JSON.parse(await readFile(new URL("../wrangler.json", import.meta.url)));
+const builtIndex = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
+const builtAssets = [...builtIndex.matchAll(/(?:href|src)="(\/assets\/[^"]+)"/g)].map((match) => match[1]);
 
 async function request(path, { method = "GET", body, headers = {}, authenticated = false } = {}) {
   return mf.dispatchFetch(`${origin}${path}`, {
@@ -188,10 +190,10 @@ test("missing credentials and invalid settings fail closed; production refuses H
 test("unauthenticated pages, APIs and direct downloads are protected", async () => {
   for (const path of ["/", "/index.html"]) {
     const response = await request(path);
-    assert.equal(response.status, 303);
-    assert.equal(response.headers.get("Location"), `${origin}/login`);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /<body data-page="app">/);
   }
-  for (const path of ["/api/session", "/api/history", "/api/revision", "/uploads/arbitrary", "/login.html"]) {
+  for (const path of ["/api/bootstrap", "/api/session", "/api/history", "/api/revision", "/uploads/arbitrary", "/login.html"]) {
     assert.equal((await request(path)).status, 401, path);
   }
   const unauthorizedDownload = await request(fileDownloadPath(crypto.randomUUID(), "file.txt"));
@@ -210,7 +212,7 @@ test("unauthenticated pages, APIs and direct downloads are protected", async () 
     assert.match(await page.text(), /<link rel="icon" href="\/favicon\.ico" type="image\/svg\+xml">/);
   }
   for (const path of [
-    "/assets/app.js",
+    ...builtAssets,
     "/apple-touch-icon.png",
     "/manifest.webmanifest",
     "/pwa-192x192.png",
@@ -251,7 +253,7 @@ test("login validates inputs and origin, issues secure cookies and stores only t
   assert.equal(active.headers.get("Set-Cookie"), null);
   assert.equal((await db.prepare("SELECT expires_at FROM sessions").first()).expires_at, stored.expires_at);
   await db.prepare("UPDATE sessions SET expires_at = ?").bind(Math.floor(Date.now() / 1000) + 60).run();
-  const renewed = await request("/", { authenticated: true });
+  const renewed = await request("/api/revision", { authenticated: true });
   assert.equal(renewed.status, 200);
   assert.match(renewed.headers.get("Set-Cookie"), /Max-Age=2592000/);
   const sliding = await db.prepare("SELECT expires_at FROM sessions").first();
@@ -262,6 +264,19 @@ test("login validates inputs and origin, issues secure cookies and stores only t
   assert.equal(resumed.headers.get("Location"), `${origin}${downloadPath}`);
   const unsafe = await request("/login?next=https%3A%2F%2Fevil.example", { authenticated: true });
   assert.equal(unsafe.headers.get("Location"), `${origin}/`);
+});
+
+test("bootstrap combines the current session and first history page", async () => {
+  await signIn();
+  assert.equal((await jsonRequest("/api/text", { text: "bootstrap history" }, true)).status, 201);
+  const response = await request("/api/bootstrap", { authenticated: true });
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.session.user.username, username);
+  assert.equal(data.session.csrfToken, csrf);
+  assert.equal(data.session.maxUploadBytes, 6291456);
+  assert.equal(data.history.revision, 1);
+  assert.deepEqual(data.history.items.map((item) => item.content), ["bootstrap history"]);
 });
 
 test("session tampering, expiry and password-version changes invalidate access", async () => {
@@ -1052,10 +1067,12 @@ test("expired sessions, login counters and abandoned uploads are cleaned", async
 });
 
 test("security headers apply to success, error and static responses", async () => {
-  for (const path of ["/login", "/api/history", "/assets/app.js", "/favicon.ico"]) {
+  for (const path of ["/login", "/api/history", ...builtAssets, "/favicon.ico"]) {
     const response = await request(path);
-    const publicAsset = path.startsWith("/assets/") || path === "/favicon.ico";
-    assert.equal(response.headers.get("Cache-Control"), publicAsset ? "public, max-age=0, must-revalidate" : "no-store");
+    const expectedCache = path.startsWith("/assets/")
+      ? "public, max-age=31536000, immutable"
+      : path === "/favicon.ico" ? "public, max-age=0, must-revalidate" : "no-store";
+    assert.equal(response.headers.get("Cache-Control"), expectedCache);
     assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
     assert.match(response.headers.get("Content-Security-Policy"), /frame-ancestors 'none'/);
     assert.match(response.headers.get("Content-Security-Policy"), /manifest-src 'self'/);

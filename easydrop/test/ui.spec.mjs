@@ -59,9 +59,19 @@ test("PWA metadata, icons and public-only service worker cache work", async ({ p
     }
     return paths;
   });
-  expect(cachedPaths).toContain("/assets/app.js");
+  const hashedAssets = cachedPaths.filter((path) => /^\/assets\/(?:app|style)-[a-f0-9]{12}\.(?:js|css)$/.test(path));
+  expect(hashedAssets).toHaveLength(2);
   expect(cachedPaths.some((path) => path.startsWith("/api/"))).toBe(false);
   expect(cachedPaths.some((path) => ["/", "/index.html", "/login"].includes(path))).toBe(false);
+  await context.setOffline(true);
+  try {
+    expect(await page.evaluate(async (paths) => Promise.all(paths.map(async (path) => {
+      const response = await fetch(path);
+      return response.ok;
+    })), hashedAssets)).toEqual([true, true]);
+  } finally {
+    await context.setOffline(false);
+  }
 });
 
 test("an external top-level launch preserves the persistent session", async ({ page, context }) => {
@@ -77,10 +87,39 @@ test("an external top-level launch preserves the persistent session", async ({ p
     contentType: "text/html",
     body: `<a href="${preview.url}/">Open EasyDrop</a>`,
   }));
+  const startupApis = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith("/api/")) startupApis.push(path);
+  });
   await page.goto("https://launcher.example.test/");
   await page.getByRole("link", { name: "Open EasyDrop" }).click();
   await expect(page).toHaveURL(`${preview.url}/`);
   await expect(page.locator("#file-input")).toBeEnabled();
+  expect(startupApis).toEqual(["/api/bootstrap"]);
+});
+
+test("login submission does not wait for registration configuration", async ({ page }) => {
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/auth/config", async (route) => {
+    await hold;
+    await route.continue();
+  });
+  try {
+    await page.goto(`${preview.url}/login`);
+    await page.locator("#login-view").getByLabel("用户名", { exact: true }).fill(preview.username);
+    await page.locator("#login-view").getByLabel("密码", { exact: true }).fill(preview.password);
+    const loginRequest = page.waitForRequest((request) =>
+      request.method() === "POST" && new URL(request.url()).pathname === "/api/login");
+    await page.locator("#login-view").getByRole("button", { name: "登录", exact: true }).click();
+    await loginRequest;
+    release();
+    await expect(page).toHaveURL(`${preview.url}/`);
+    await expect(page.locator("#file-input")).toBeEnabled();
+  } finally {
+    release?.();
+  }
 });
 
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 700 }]) {
@@ -267,6 +306,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await guestContext.close();
     await temporaryDialog.getByRole("button", { name: "关闭" }).click();
     await expect(file.getByRole("button", { name: "创建临时链接" })).toBeVisible();
+    await expect(file.locator(".file-link-qr canvas")).toHaveCount(0);
     await fileLink.hover();
     await expect(file.locator(".file-link-qr")).toBeVisible();
     await expect(file.locator(".file-link-qr")).toHaveCSS("opacity", "1");
@@ -724,6 +764,14 @@ test("selected deletion, partial failure and transient notices", async ({ page, 
   let releaseSecond;
   const secondRequest = new Promise((resolve) => { releaseSecond = resolve; });
   const deleted = [];
+  await page.route("**/api/bootstrap", async (route) => {
+    const response = await route.fetch();
+    const bootstrap = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...bootstrap, history: { items, nextCursor: null, revision: 1 } },
+    });
+  });
   await page.route("**/api/history**", async (route) => {
     if (route.request().method() === "DELETE") {
       const id = route.request().url().split("/").at(-1);

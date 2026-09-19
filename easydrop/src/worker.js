@@ -13,8 +13,6 @@ const previewLimit = 512 * 1024;
 const validId = (id) => /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id);
 const encoder = new TextEncoder();
 const publicAssets = new Map([
-  ["/assets/app.js", "/assets/app.js"],
-  ["/assets/style.css", "/assets/style.css"],
   ["/apple-touch-icon.png", "/apple-touch-icon.png"],
   ["/favicon.ico", "/favicon.svg"],
   ["/favicon.svg", "/favicon.svg"],
@@ -24,6 +22,8 @@ const publicAssets = new Map([
   ["/pwa-maskable-512x512.png", "/pwa-maskable-512x512.png"],
   ["/sw.js", "/sw.js"],
 ]);
+const hashedAssetPath = /^\/assets\/(?:app-[a-f0-9]+\.js|style-[a-f0-9]+\.css)$/;
+const publicAssetPath = (path) => publicAssets.get(path) || (hashedAssetPath.test(path) ? path : null);
 const imageTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp"]);
 const temporaryShareToken = /^[a-f0-9]{64}$/;
 const recoveryCodeToken = /^[a-f0-9]{64}$/;
@@ -490,11 +490,15 @@ async function deleteOwnAccount(request, env, ctx, session) {
 
 function harden(response, request, env, session) {
   const result = new Response(response.body, response);
-  const publicAsset = publicAssets.has(new URL(request.url).pathname);
+  const path = new URL(request.url).pathname;
+  const publicAsset = publicAssetPath(path);
   if (session?.renewed && session.token && !result.headers.has("Set-Cookie")) {
     result.headers.set("Set-Cookie", sessionCookie(request, env, session.token, session.ttl));
   }
-  result.headers.set("Cache-Control", publicAsset && (response.ok || response.status === 304) ? "public, max-age=0, must-revalidate" : "no-store");
+  const cacheable = publicAsset && (response.ok || response.status === 304);
+  result.headers.set("Cache-Control", cacheable
+    ? hashedAssetPath.test(path) ? "public, max-age=31536000, immutable" : "public, max-age=0, must-revalidate"
+    : "no-store");
   result.headers.set("X-Content-Type-Options", "nosniff");
   result.headers.set("X-Frame-Options", "DENY");
   result.headers.set("Referrer-Policy", "no-referrer");
@@ -1118,6 +1122,51 @@ function backgroundCleanup(env, ctx) {
   ctx.waitUntil(cleanupDeleted(env).catch((error) => console.error("R2 cleanup deferred to cron:", error)));
 }
 
+function sessionPayload(session, config) {
+  return {
+    csrfToken: session.csrf_token,
+    expiresAt: session.expires_at,
+    user: {
+      id: session.user_id,
+      username: session.username,
+      role: session.role,
+      hasRecoveryCode: Boolean(session.has_recovery_code),
+    },
+    maxUploadBytes: config.uploadLimit,
+    uploadChunkBytes: config.uploadChunkBytes,
+    uploadConcurrency: config.uploadConcurrency,
+    uploadFileConcurrency: config.uploadFileConcurrency,
+    uploadSessionTtlSeconds: config.uploadSessionTtl,
+    maxTextBytes: config.textLimit,
+    pollSeconds: config.pollSeconds,
+  };
+}
+
+async function historyPayload(env, session, config, url) {
+  const raw = url.searchParams.get("before");
+  if (raw !== null && (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw)))) {
+    throw new HttpError(400, "Invalid history cursor.");
+  }
+  const cursor = raw ? Number(raw) : Number.MAX_SAFE_INTEGER;
+  // Bound the worst-case text allocation before fetching full bodies from D1.
+  const pageSize = Math.min(config.pageSize, Math.max(1, Math.floor(1048576 / config.textLimit)));
+  const items = await env.DB.prepare(
+    `SELECT i.seq, i.id, i.type, i.content, i.name, i.size, i.media_type, i.created_at,
+     CASE WHEN s.expires_at > ? THEN s.expires_at ELSE NULL END AS share_expires_at
+     FROM items i LEFT JOIN file_shares s ON s.item_id = i.id
+     WHERE i.owner_user_id = ? AND i.state = 'ready' AND i.seq < ?
+     ORDER BY i.seq DESC LIMIT ?`,
+  ).bind(now(), session.user_id, cursor, pageSize + 1).all();
+  return {
+    items: items.results.slice(0, pageSize).map((item) => ({
+      ...item,
+      media_type: item.type === "file" ? storedImageMediaType(item.media_type) : null,
+    })),
+    nextCursor: items.results.length > pageSize ? items.results[pageSize - 1].seq : null,
+    revision: session.revision,
+  };
+}
+
 async function route(request, env, ctx, responseState) {
   const config = configuration(env);
   const url = new URL(request.url);
@@ -1136,12 +1185,16 @@ async function route(request, env, ctx, responseState) {
   if (method === "GET" && path === "/api/auth/config") return authConfiguration(env);
   if (method === "POST" && path === "/api/register") return registerUser(request, env, config);
   if (method === "POST" && path === "/api/password/reset") return resetPassword(request, env, config);
-  if ((method === "GET" || method === "HEAD") && publicAssets.has(path)) {
-    return asset(request, env, publicAssets.get(path));
+  const publicPath = publicAssetPath(path);
+  if ((method === "GET" || method === "HEAD") && publicPath) {
+    return asset(request, env, publicPath);
   }
   if ((method === "GET" || method === "HEAD") && path.startsWith("/shared/")) {
     const match = /^\/shared\/([a-f0-9]{64})\/([^/?#]+)$/.exec(path);
     return temporaryDownload(request, env, match?.[1], decodeFilename(match?.[2]));
+  }
+  if ((method === "GET" || method === "HEAD") && ["/", "/index.html"].includes(path)) {
+    return asset(request, env, "/index.html");
   }
   const session = await getSession(request, env, config.ttl, config.sessionRenewInterval);
   if (session) responseState.session = { ...session, ttl: config.ttl };
@@ -1163,23 +1216,13 @@ async function route(request, env, ctx, responseState) {
   }
   if (!["GET", "HEAD"].includes(method)) requireCsrf(request, session);
 
-  if ((method === "GET" || method === "HEAD") && ["/", "/index.html"].includes(path)) return asset(request, env, "/index.html");
   if (method === "GET" && path === "/api/session") {
+    return json(sessionPayload(session, config));
+  }
+  if (method === "GET" && path === "/api/bootstrap") {
     return json({
-      csrfToken: session.csrf_token, expiresAt: session.expires_at,
-      user: {
-        id: session.user_id,
-        username: session.username,
-        role: session.role,
-        hasRecoveryCode: Boolean(session.has_recovery_code),
-      },
-      maxUploadBytes: config.uploadLimit,
-      uploadChunkBytes: config.uploadChunkBytes,
-      uploadConcurrency: config.uploadConcurrency,
-      uploadFileConcurrency: config.uploadFileConcurrency,
-      uploadSessionTtlSeconds: config.uploadSessionTtl,
-      maxTextBytes: config.textLimit,
-      pollSeconds: config.pollSeconds,
+      session: sessionPayload(session, config),
+      history: await historyPayload(env, session, config, url),
     });
   }
   if (method === "POST" && path === "/api/logout") {
@@ -1209,26 +1252,7 @@ async function route(request, env, ctx, responseState) {
     if (method === "DELETE") return deleteUser(env, ctx, session, userRoute[1]);
   }
   if (method === "GET" && path === "/api/history") {
-    const raw = url.searchParams.get("before");
-    if (raw !== null && (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw)))) throw new HttpError(400, "Invalid history cursor.");
-    const cursor = raw ? Number(raw) : Number.MAX_SAFE_INTEGER;
-    // Bound the worst-case text allocation before fetching full bodies from D1.
-    const pageSize = Math.min(config.pageSize, Math.max(1, Math.floor(1048576 / config.textLimit)));
-    const items = await env.DB.prepare(
-      `SELECT i.seq, i.id, i.type, i.content, i.name, i.size, i.media_type, i.created_at,
-       CASE WHEN s.expires_at > ? THEN s.expires_at ELSE NULL END AS share_expires_at
-       FROM items i LEFT JOIN file_shares s ON s.item_id = i.id
-       WHERE i.owner_user_id = ? AND i.state = 'ready' AND i.seq < ?
-       ORDER BY i.seq DESC LIMIT ?`,
-    ).bind(now(), session.user_id, cursor, pageSize + 1).all();
-    return json({
-      items: items.results.slice(0, pageSize).map((item) => ({
-        ...item,
-        media_type: item.type === "file" ? storedImageMediaType(item.media_type) : null,
-      })),
-      nextCursor: items.results.length > pageSize ? items.results[pageSize - 1].seq : null,
-      revision: session.revision,
-    });
+    return json(await historyPayload(env, session, config, url));
   }
   if (method === "POST" && path === "/api/text") {
     const data = await readJson(request, config.textLimit * 6 + 1024);

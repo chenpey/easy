@@ -303,13 +303,7 @@ async function initializeAuth() {
     if (name === view) tab.setAttribute("aria-current", "page");
     else tab.removeAttribute("aria-current");
   }
-
-  const authConfig = await api("/api/auth/config");
-  $("register-tab").hidden = !authConfig.registrationEnabled;
-  if (view === "register" && !authConfig.registrationEnabled) {
-    $("register-form").hidden = true;
-    $("registration-closed").hidden = false;
-  }
+  const authConfigRequest = api("/api/auth/config");
 
   $("login-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -373,6 +367,13 @@ async function initializeAuth() {
       notice("密码已重置，请返回登录");
     });
   });
+
+  const authConfig = await authConfigRequest;
+  $("register-tab").hidden = !authConfig.registrationEnabled;
+  if (view === "register" && !authConfig.registrationEnabled) {
+    $("register-form").hidden = true;
+    $("registration-closed").hidden = false;
+  }
 }
 
 function temporaryShareActive(item) {
@@ -497,18 +498,26 @@ function historyRow(item) {
     link.append(icon("download"));
     const qr = document.createElement("div");
     qr.className = "qr-popover file-link-qr";
-    const canvas = document.createElement("canvas");
-    canvas.width = 168;
-    canvas.height = 168;
-    canvas.setAttribute("aria-label", `${item.name} 文件链接二维码`);
     const hint = document.createElement("span");
     hint.textContent = "扫码后登录下载";
-    qr.append(canvas, hint);
+    qr.append(hint);
     preview.append(link, qr);
-    QRCode.toCanvas(canvas, fileUrl, { width: 168, margin: 1 }).catch((error) => {
-      console.error("File QR generation failed:", error);
-      qr.remove();
-    });
+    let qrStarted = false;
+    const renderQr = () => {
+      if (qrStarted) return;
+      qrStarted = true;
+      const canvas = document.createElement("canvas");
+      canvas.width = 168;
+      canvas.height = 168;
+      canvas.setAttribute("aria-label", `${item.name} 文件链接二维码`);
+      qr.prepend(canvas);
+      QRCode.toCanvas(canvas, fileUrl, { width: 168, margin: 1 }).catch((error) => {
+        console.error("File QR generation failed:", error);
+        qr.remove();
+      });
+    };
+    preview.addEventListener("pointerenter", renderQr, { once: true });
+    preview.addEventListener("focusin", renderQr, { once: true });
     const temporaryShare = actionButton(
       temporaryShareActive(item) ? "管理临时链接" : "创建临时链接",
       "share-2",
@@ -591,6 +600,38 @@ function pruneHistoryRowCache() {
   for (const id of historyRowCache.keys()) if (!visible.has(id)) historyRowCache.delete(id);
 }
 
+function renderHistory(data, more = false) {
+  if (more && data.revision !== currentRevision) markHistoryUpdate();
+  const list = $("history-list");
+  const existing = new Set(Array.from(list.querySelectorAll("[data-id]"), (row) => row.dataset.id));
+  if (!more) {
+    expandedHistory = false;
+    $("refresh").classList.remove("has-updates");
+    $("refresh").title = "刷新历史";
+    currentRevision = data.revision;
+  }
+  if (more) expandedHistory = true;
+  const fragment = document.createDocumentFragment();
+  for (const item of data.items) {
+    if (!more || !existing.has(item.id)) fragment.append(cachedHistoryRow(item));
+  }
+  if (more) list.append(fragment);
+  else list.replaceChildren(fragment);
+  nextCursor = data.nextCursor;
+  const count = list.querySelectorAll(".history-item").length;
+  $("history-count").textContent = count ? `${count}${nextCursor ? "+" : ""}` : "";
+  if (!count) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "暂无分享记录";
+    list.append(empty);
+  }
+  $("load-more").hidden = !nextCursor;
+  updateHistorySelection();
+  if (!retainHistoryRows) pruneHistoryRowCache();
+  renderIcons();
+}
+
 async function loadHistory(more = false) {
   if (sessionEnded) return;
   if (deletingHistory) {
@@ -610,35 +651,7 @@ async function loadHistory(more = false) {
       pendingRefresh = true;
       return;
     }
-    if (more && data.revision !== currentRevision) markHistoryUpdate();
-    const list = $("history-list");
-    const existing = new Set(Array.from(list.querySelectorAll("[data-id]"), (row) => row.dataset.id));
-    if (!more) {
-      expandedHistory = false;
-      $("refresh").classList.remove("has-updates");
-      $("refresh").title = "刷新历史";
-      currentRevision = data.revision;
-    }
-    if (more) expandedHistory = true;
-    const fragment = document.createDocumentFragment();
-    for (const item of data.items) {
-      if (!more || !existing.has(item.id)) fragment.append(cachedHistoryRow(item));
-    }
-    if (more) list.append(fragment);
-    else list.replaceChildren(fragment);
-    nextCursor = data.nextCursor;
-    const count = list.querySelectorAll(".history-item").length;
-    $("history-count").textContent = count ? `${count}${nextCursor ? "+" : ""}` : "";
-    if (!count) {
-      const empty = document.createElement("p");
-      empty.className = "empty";
-      empty.textContent = "暂无分享记录";
-      list.append(empty);
-    }
-    $("load-more").hidden = !nextCursor;
-    updateHistorySelection();
-    if (!retainHistoryRows) pruneHistoryRowCache();
-    renderIcons();
+    renderHistory(data, more);
   } finally {
     loading = false;
     $("load-more").disabled = false;
@@ -1086,7 +1099,8 @@ function pauseUpload() {
 }
 
 async function initializeApp() {
-  session = await api("/api/session");
+  const bootstrap = await api("/api/bootstrap");
+  session = bootstrap.session;
   $("users-open").hidden = session.user.role !== "admin";
   $("upload-limit").textContent = `单文件上限 ${size(session.maxUploadBytes)}`;
   const updateCount = () => {
@@ -1372,7 +1386,7 @@ async function initializeApp() {
       event.returnValue = "";
     }
   });
-  await loadHistory();
+  renderHistory(bootstrap.history);
   notice("");
   schedulePoll();
 }
