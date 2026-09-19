@@ -131,17 +131,16 @@ svg {
 .brand-mark {
   width: 38px;
   height: 38px;
-  display: grid;
+  display: block;
   flex: 0 0 auto;
-  place-items: center;
   border-radius: 9px;
-  background: var(--blue);
-  color: #ffffff;
+  overflow: hidden;
 }
 
-.brand-mark svg {
-  width: 21px;
-  height: 21px;
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .brand h1,

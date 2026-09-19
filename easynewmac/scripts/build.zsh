@@ -60,6 +60,7 @@ cp "$PROJECT_DIR/web/loading.html" "$APP_RESOURCES/web/"
 cp "$PROJECT_DIR/web/style.css" "$APP_RESOURCES/web/"
 cp "$PROJECT_DIR/web/core.js" "$APP_RESOURCES/web/"
 cp "$PROJECT_DIR/web/app.js" "$APP_RESOURCES/web/"
+cp "$PROJECT_DIR/assets/easynewmac-icon.svg" "$APP_RESOURCES/web/"
 chmod 755 "$APP_RESOURCES/app-launch.zsh" "$APP_RESOURCES/scan.zsh"
 
 INFO_PLIST="$APP_PATH/Contents/Info.plist"

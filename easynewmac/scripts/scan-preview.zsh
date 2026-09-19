@@ -11,6 +11,7 @@ output_dir="${1:-${TMPDIR:-/tmp}/EasyNewMac-scan-$UID}"
 rm -rf -- "$output_dir"
 mkdir -p -- "$output_dir"
 cp -R "$WEB_DIR/." "$output_dir/"
+cp "$PROJECT_DIR/assets/easynewmac-icon.svg" "$output_dir/"
 "$SCANNER" "$output_dir/data.js"
 
 print -r -- "$output_dir/index.html"

@@ -50,6 +50,8 @@ jobs:
           ! /usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Info.plist"
           test ! -e "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/Assets.car"
           test ! -e "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/applet.icns"
+          test -f "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/web/easynewmac-icon.svg"
+          grep -q 'rel="icon".*easynewmac-icon.svg' "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Resources/web/index.html"
 
       - name: Publish release
         env:
@@ -68,6 +70,6 @@ jobs:
               "$checksum" \
               --verify-tag \
               --title "EasyNewMac v${version}" \
-              --notes "首次使用：解压后打开终端，输入“zsh ”，将“授权并打开 EasyNewMac.sh”拖入终端并按回车。脚本会先校验应用完整性，再仅移除 EasyNewMac.app 的下载隔离标记；不要直接双击授权脚本。" \
+              --notes "首次使用：解压后打开“0.首次使用说明.txt”，复制其中的完整命令到终端并按回车。命令会自动定位 App、校验完整性、解除该 App 的下载隔离、关闭当前终端标签页并启动应用；不要直接双击授权脚本。" \
               --generate-notes
           fi

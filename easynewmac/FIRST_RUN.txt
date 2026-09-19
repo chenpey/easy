@@ -1,18 +1,18 @@
 EasyNewMac 首次使用
 
-由于 EasyNewMac 没有 Apple Developer ID 公证，请先通过终端授权：
+由于 EasyNewMac 没有 Apple Developer ID 公证，请先通过终端授权。
 
 1. 打开 macOS 自带的“终端”。
-2. 输入 zsh，然后按一次空格键：
+2. 复制下面整行命令，粘贴到终端并按回车：
 
-   zsh
+   /bin/zsh -c 'f=$(/usr/bin/find "$HOME/Downloads" -maxdepth 5 -type f -name "授权并打开 EasyNewMac.sh" -print 2>/dev/null | /usr/bin/head -n 1); [[ -n "$f" ]] || { echo "未在下载目录找到 EasyNewMac"; exit 1; }; /bin/zsh "$f"'
 
-3. 将“授权并打开 EasyNewMac.sh”拖入终端窗口。
-4. 按回车键。
+命令会在下载目录中自动定位授权脚本及相邻的 EasyNewMac.app。
 
 脚本会先验证 EasyNewMac.app 的签名完整性和固定应用标识，只在验证
 通过后移除该应用自身的下载隔离标记，然后启动应用。
 
-以后可以直接双击 EasyNewMac.app。
+完成后会关闭当前终端标签页。以后可以直接双击 EasyNewMac.app。
 
+此操作仅修改当前用户下载的 EasyNewMac.app，不需要也不应要求管理员密码。
 请勿直接双击授权脚本；下载的脚本也会被 Gatekeeper 拦截。

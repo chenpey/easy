@@ -1,6 +1,6 @@
 # EasyNewMac
 
-当前版本：`0.1.4`
+当前版本：`0.1.5`
 
 EasyNewMac 在旧 Mac 上扫描已安装应用，让用户搜索、筛选和选择需要迁移的项目，然后导出可在新 Mac 上运行的安装脚本。
 
@@ -10,16 +10,15 @@ EasyNewMac 在旧 Mac 上扫描已安装应用，让用户搜索、筛选和选�
 
 1. 保留完整的 `EasyNewMac` 文件夹。
 2. 首次使用时打开 macOS 自带的“终端”。
-3. 输入 `zsh `（末尾保留一个空格）。
-4. 将 `授权并打开 EasyNewMac.sh` 拖入终端窗口，然后按回车。
-5. 终端完成应用完整性校验后会打开 EasyNewMac；以后可直接双击 `EasyNewMac.app`。
-6. 在自动打开的本地页面中选择项目并预览脚本。
-7. 点击“下载迁移脚本”。
-8. 将 ZIP 带到新 Mac，解压后双击 `EasyNewMac-Migration.command`。
+3. 从 `0.首次使用说明.txt` 复制完整授权命令，粘贴到终端并按回车。
+4. 命令会自动在下载目录定位 App；校验和授权完成后会关闭当前终端标签页并打开 EasyNewMac。
+5. 以后可直接双击 `EasyNewMac.app`。
+6. 在自动打开的本地页面中选择项目并预览脚本，然后下载迁移脚本。
+7. 将 ZIP 带到新 Mac，解压后双击 `EasyNewMac-Migration.command`。
 
 不要直接双击授权脚本；从网络下载的脚本本身也会被 Gatekeeper 拦截。发布包内的 `0.首次使用说明.txt` 包含相同操作说明。
 
-EasyNewMac 没有使用 Apple Developer ID 公证，因为项目没有付费开发者账号。授权脚本会先使用 `codesign` 验证应用包内容和固定 Bundle ID，再只移除 `EasyNewMac.app` 自身的下载隔离标记；它不会关闭 Gatekeeper、修改系统安全设置或请求管理员权限。
+EasyNewMac 没有使用 Apple Developer ID 公证，因为项目没有付费开发者账号。授权脚本会先使用 `codesign` 验证应用包内容和固定 Bundle ID，再只移除 `EasyNewMac.app` 自身的下载隔离标记；它不会关闭 Gatekeeper、修改系统安全设置或请求管理员权限，因此不需要也不应要求管理员密码。
 
 ## 识别范围
 
