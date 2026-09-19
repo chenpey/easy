@@ -168,7 +168,6 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       { name: "empty.txt", mimeType: "text/plain", buffer: Buffer.alloc(0) },
       { name: imageName, mimeType: "image/png", buffer: Buffer.from(imageBase64, "base64") },
     ]);
-    await page.getByRole("button", { name: "上传文件", exact: true }).click();
     await expect(page.locator("#notice")).toHaveText("上传完成");
     const file = page.locator(".history-item").filter({ hasText: filename });
     await expect(file).toHaveCount(1);
@@ -492,7 +491,6 @@ test("temporary share ignores a stale response after switching files", async ({ 
     { name: "share-race-a.txt", mimeType: "text/plain", buffer: Buffer.from("first") },
     { name: "share-race-b.txt", mimeType: "text/plain", buffer: Buffer.from("second") },
   ]);
-  await page.getByRole("button", { name: "上传文件", exact: true }).click();
   await expect(page.locator("#notice")).toHaveText("上传完成");
   const first = page.locator(".history-item").filter({ hasText: "share-race-a.txt" });
   const second = page.locator(".history-item").filter({ hasText: "share-race-b.txt" });
@@ -575,7 +573,6 @@ test("lost upload response can be retried without duplicate history", async ({ p
   await page.goto(preview.url);
   await expect(page.locator("#file-input")).toBeEnabled();
   await page.locator("#file-input").setInputFiles({ name: "retry.txt", mimeType: "text/plain", buffer: Buffer.from("retry") });
-  await page.getByRole("button", { name: "上传文件", exact: true }).click();
   try {
     await reachedComplete;
     await expect(page.locator("#upload-list .upload-row > .muted")).toHaveText("上传分片 1/1");
@@ -613,7 +610,6 @@ test("multipart upload runs concurrently and resumes after pause and reload", as
   try {
     await page.goto(preview.url);
     await page.locator("#file-input").setInputFiles(path);
-    await page.getByRole("button", { name: "上传文件", exact: true }).click();
     await expect.poll(() => maxActive).toBeGreaterThan(1);
     await page.getByRole("button", { name: "暂停上传", exact: true }).click();
     release();
@@ -622,8 +618,7 @@ test("multipart upload runs concurrently and resumes after pause and reload", as
 
     await page.reload();
     await page.locator("#file-input").setInputFiles(path);
-    await expect(page.getByRole("button", { name: "继续上传", exact: true })).toBeEnabled();
-    await page.getByRole("button", { name: "继续上传", exact: true }).click();
+
     await expect(page.locator("#notice")).toHaveText("上传完成", { timeout: 30000 });
     await expect(page.locator(".history-item").filter({ hasText: "resume-large.bin" })).toHaveCount(1);
   } finally {
@@ -657,13 +652,17 @@ test("multiple files upload concurrently", async ({ page, context }) => {
       { name: "parallel-b.txt", mimeType: "text/plain", buffer: Buffer.from("second") },
       { name: "parallel-c.txt", mimeType: "text/plain", buffer: Buffer.from("third") },
     ]);
-    await page.getByRole("button", { name: "上传文件", exact: true }).click();
     await expect.poll(() => maxActive).toBeGreaterThan(2);
     release();
     await expect(page.locator("#notice")).toHaveText("上传完成");
     await expect(page.locator(".history-item").filter({ hasText: "parallel-a.txt" })).toHaveCount(1);
     await expect(page.locator(".history-item").filter({ hasText: "parallel-b.txt" })).toHaveCount(1);
     await expect(page.locator(".history-item").filter({ hasText: "parallel-c.txt" })).toHaveCount(1);
+    await expect(page.locator("#upload")).toBeHidden();
+    await expect(page.locator("#upload-list > li")).toHaveCount(3);
+    await expect(page.locator("#upload-list > li")).toHaveCount(0, { timeout: 10000 });
+    await expect(page.locator("#file-count")).toBeEmpty();
+    await expect(page.locator(".history-item").filter({ hasText: "parallel-a.txt" })).toHaveCount(1);
   } finally {
     if (!released) release();
     await page.unroute("**/api/uploads/*/parts/*");
@@ -775,4 +774,36 @@ test("selected deletion, partial failure and transient notices", async ({ page, 
   await page.getByRole("button", { name: "确认删除", exact: true }).click();
   await expect(page.locator(".history-item")).toHaveCount(0);
   await expect(page.locator("#notice")).toBeEmpty({ timeout: 2500 });
+});
+
+
+test("thumbnail upload does not block file parts", async ({ page, context }) => {
+  await loginContext(context);
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  let partStarted = false;
+  await page.route("**/api/uploads/*/preview", async (route) => {
+    await hold;
+    await route.continue();
+  });
+  page.on("request", (request) => {
+    if (/\/api\/uploads\/[^/]+\/parts\//.test(request.url())) partStarted = true;
+  });
+  try {
+    await page.goto(preview.url);
+    const image = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 10;
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await page.locator("#file-input").setInputFiles({
+      name: "parallel-preview.png", mimeType: "image/png", buffer: Buffer.from(image, "base64"),
+    });
+    await expect.poll(() => partStarted).toBe(true);
+    release();
+    await expect(page.locator("#notice")).toHaveText("上传完成");
+  } finally {
+    release();
+    await page.unroute("**/api/uploads/*/preview");
+  }
 });

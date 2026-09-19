@@ -1,7 +1,7 @@
-import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, Image as ImageIcon, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound } from "lucide";
+import { createIcons, LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, Image as ImageIcon, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound } from "lucide";
 import QRCode from "qrcode";
 
-const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Upload, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, Image: ImageIcon, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound };
+const icons = { LogIn, LogOut, QrCode, Text, Files, FileUp, Send, Download, Pause, Play, RefreshCw, Trash2, X, Copy, Eye, Image: ImageIcon, FileText, Users, UserPlus, Pencil, UserCheck, UserX, Share2, Unlink, KeyRound, UserRound };
 const APP_VERSION = __EASYDROP_VERSION__;
 const renderIcons = () => createIcons({ icons });
 const $ = (id) => document.getElementById(id);
@@ -781,9 +781,10 @@ function updateUploadControls() {
   if (uploading) {
     uploadButton("pause", pauseRequested ? "正在暂停" : "暂停上传", pauseRequested);
   } else {
-    const started = uploadQueue.some((entry) => !entry.done && entry.started);
-    uploadButton(started ? "play" : "upload", started ? "继续上传" : "上传文件", !pending);
+    uploadButton("play", "继续上传", !pending);
   }
+  $("upload").hidden = !uploading && !pending;
+  $("file-count").textContent = uploadQueue.length ? `${uploadQueue.length} 个文件` : "";
   $("file-input").disabled = uploading;
   $("clear").disabled = uploading || !session;
 }
@@ -810,7 +811,6 @@ function makeUploadRow(file, saved) {
     state,
     progress,
     done: false,
-    started: Boolean(saved),
     key: saved?.key || crypto.randomUUID(),
     id: saved?.id || null,
     chunkSize: saved?.chunkSize || null,
@@ -928,10 +928,8 @@ function uploadPart(entry, partNumber, blob, checksum) {
 }
 
 async function uploadFile(entry) {
-  entry.started = true;
   saveUpload(entry);
-  entry.state.textContent = "生成缩略图";
-  const preview = await createImagePreview(entry.file);
+  const previewPromise = createImagePreview(entry.file);
   const prepared = await prepareFile(entry);
   entry.state.textContent = entry.id ? "检查恢复点" : "初始化";
   const upload = await api("/api/uploads", {
@@ -947,17 +945,15 @@ async function uploadFile(entry) {
   });
   entry.id = upload.id;
   saveUpload(entry);
-  if (preview) {
-    entry.state.textContent = "上传缩略图";
-    try {
-      await uploadImagePreview(entry, preview);
-    } catch (error) {
-      if (sessionEnded) throw error;
-      entry.previewFailed = true;
-      console.error("Image preview upload failed:", error.details || error);
-    }
-  }
+  const previewUpload = previewPromise.then(async (preview) => {
+    if (preview) await uploadImagePreview(entry, preview);
+  }).catch((error) => {
+    entry.previewFailed = true;
+    console.error("Image preview upload failed:", error.details || error);
+  });
   if (upload.complete) {
+    await previewUpload;
+    if (sessionEnded) throw new Error("会话已结束");
     entry.done = true;
     entry.progress.value = 100;
     entry.state.textContent = entry.previewFailed ? "已上传（无缩略图）" : "已上传";
@@ -1011,7 +1007,8 @@ async function uploadFile(entry) {
     }
   };
   const concurrency = Math.min(upload.uploadConcurrency || session.uploadConcurrency || 1, upload.totalParts);
-  await Promise.all(Array.from({ length: concurrency }, worker));
+  await Promise.all([...Array.from({ length: concurrency }, worker), previewUpload]);
+  if (sessionEnded) throw new Error("会话已结束");
   if (firstError) throw firstError;
   if (pauseRequested) throw new UploadPaused("Upload paused.");
 
@@ -1041,6 +1038,11 @@ async function startUpload() {
         try {
           if (entry.file.size > session.maxUploadBytes) throw new Error(`${entry.file.name} 超过单文件上限`);
           await uploadFile(entry);
+          setTimeout(() => {
+            entry.progress.closest("li").remove();
+            uploadQueue = uploadQueue.filter((item) => item !== entry);
+            updateUploadControls();
+          }, 8000);
         } catch (error) {
           if (error instanceof UploadPaused) {
             entry.state.textContent = "已暂停";
@@ -1064,7 +1066,7 @@ async function startUpload() {
       error.details = errors.join("\n\n");
       report(error);
     } else if (paused && session) notice("上传已暂停");
-    else if (session) notice("上传完成");
+    else if (session) notice("上传完成", false, 8000);
     if (session) await loadHistory();
   } catch (error) {
     report(error);
@@ -1125,8 +1127,8 @@ async function initializeApp() {
       if (saved) used.add(saved.key);
       return makeUploadRow(file, saved);
     });
-    $("file-count").textContent = uploadQueue.length ? `${uploadQueue.length} 个文件` : "未选择文件";
     updateUploadControls();
+    if (uploadQueue.length) void startUpload();
   });
   $("upload").addEventListener("click", () => uploading ? pauseUpload() : startUpload());
   $("refresh").addEventListener("click", () => busy($("refresh"), async () => {
