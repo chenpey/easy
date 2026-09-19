@@ -81,8 +81,9 @@ rm -f -- "$APP_RESOURCES/Assets.car" "$APP_RESOURCES/applet.icns"
   "$APP_PATH" \
   "$RELEASE_DIR/$PACKAGE_NAME.app"
 cp "$PROJECT_DIR/scripts/first-open.zsh" \
-  "$RELEASE_DIR/首次打开 EasyNewMac.command"
-chmod 755 "$RELEASE_DIR/首次打开 EasyNewMac.command"
+  "$RELEASE_DIR/授权并打开 EasyNewMac.sh"
+chmod 755 "$RELEASE_DIR/授权并打开 EasyNewMac.sh"
+cp "$PROJECT_DIR/FIRST_RUN.txt" "$RELEASE_DIR/0.首次使用说明.txt"
 cp "$PROJECT_DIR/README.md" "$RELEASE_DIR/"
 
 /usr/bin/ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl \
