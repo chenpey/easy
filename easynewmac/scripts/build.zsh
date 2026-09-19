@@ -75,6 +75,9 @@ INFO_PLIST="$APP_PATH/Contents/Info.plist"
 /usr/bin/ditto --norsrc --noextattr --noqtn --noacl \
   "$APP_PATH" \
   "$RELEASE_DIR/$PACKAGE_NAME.app"
+cp "$PROJECT_DIR/scripts/first-open.zsh" \
+  "$RELEASE_DIR/首次打开 EasyNewMac.command"
+chmod 755 "$RELEASE_DIR/首次打开 EasyNewMac.command"
 cp "$PROJECT_DIR/README.md" "$RELEASE_DIR/"
 
 /usr/bin/ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl \

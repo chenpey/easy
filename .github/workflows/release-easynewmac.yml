@@ -37,7 +37,14 @@ jobs:
 
       - name: Build
         shell: zsh {0}
-        run: easynewmac/scripts/build.zsh
+        run: |
+          easynewmac/scripts/build.zsh
+          version="$(<easynewmac/VERSION)"
+          release_dir="$(mktemp -d)"
+          ditto -x -k "easynewmac/dist/EasyNewMac-v${version}.zip" "$release_dir"
+          test -x "$release_dir/EasyNewMac/首次打开 EasyNewMac.command"
+          codesign --verify --deep --strict "$release_dir/EasyNewMac/EasyNewMac.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$release_dir/EasyNewMac/EasyNewMac.app/Contents/Info.plist")" = "party.tiandi.easynewmac"
 
       - name: Publish release
         env:
@@ -56,5 +63,6 @@ jobs:
               "$checksum" \
               --verify-tag \
               --title "EasyNewMac v${version}" \
+              --notes "首次使用：解压后双击“首次打开 EasyNewMac.command”。脚本会先校验应用完整性，再仅移除 EasyNewMac.app 的下载隔离标记；以后可直接双击应用。" \
               --generate-notes
           fi
