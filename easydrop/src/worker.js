@@ -1150,14 +1150,20 @@ async function historyPayload(env, session, config, url) {
   const cursor = raw ? Number(raw) : Number.MAX_SAFE_INTEGER;
   // Ten maximum-sized text records remain bounded to 10 MiB.
   const pageSize = Math.min(config.pageSize, 10);
-  const items = await env.DB.prepare(
+  const [items, count] = await env.DB.batch([env.DB.prepare(
     `SELECT i.seq, i.id, i.type, i.content, i.name, i.size, i.media_type, i.created_at,
      CASE WHEN s.expires_at > ? THEN s.expires_at ELSE NULL END AS share_expires_at
      FROM items i LEFT JOIN file_shares s ON s.item_id = i.id
      WHERE i.owner_user_id = ? AND i.state = 'ready' AND i.seq < ?
      ORDER BY i.seq DESC LIMIT ?`,
-  ).bind(now(), session.user_id, cursor, pageSize + 1).all();
+  ).bind(now(), session.user_id, cursor, pageSize + 1),
+    env.DB.prepare("SELECT COUNT(*) AS total FROM items WHERE owner_user_id = ? AND state = 'ready'")
+      .bind(session.user_id),
+  ]);
+  const total = count.results[0].total;
   return {
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
     items: items.results.slice(0, pageSize).map((item) => ({
       ...item,
       media_type: item.type === "file" ? storedImageMediaType(item.media_type) : null,

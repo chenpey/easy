@@ -721,7 +721,7 @@ test("history paginates ten newest records and polling preserves the current pag
   await expect(page.getByRole("button", { name: "上一页" })).toBeDisabled();
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page.locator(".history-item")).toHaveCount(8);
-  await expect(page.locator("#history-page")).toHaveText("第 2 页");
+  await expect(page.locator("#history-page")).toHaveText("第2/2页");
   await expect(page.locator(".item-text").first()).toHaveText("history-7");
   await expect(page.locator(".item-text").last()).toHaveText("history-0");
   await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
@@ -749,13 +749,13 @@ test("history paginates ten newest records and polling preserves the current pag
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(page.locator("#notice")).toHaveText("Temporary polling failure.");
   await expect(page.locator("#notice")).toHaveText("分享历史已自动更新", { timeout: 12000 });
-  await expect(page.locator("#history-page")).toHaveText("第 2 页");
+  await expect(page.locator("#history-page")).toHaveText("第2/2页");
   await expect(page.locator(".history-item")).toHaveCount(8);
   await expect(page.locator(".item-text").first()).toHaveText("history-7");
   expect(revisionRequests).toBeGreaterThanOrEqual(2);
   expect(Math.abs(await anchor.evaluate((node) => node.getBoundingClientRect().top) - anchorTop)).toBeLessThan(1);
   await page.getByRole("button", { name: "上一页" }).click();
-  await expect(page.locator("#history-page")).toHaveText("第 1 页");
+  await expect(page.locator("#history-page")).toHaveText("第1/2页");
   await expect(page.locator(".history-item")).toHaveCount(10);
   await expect(page.locator(".item-text").first()).toHaveText("new from another device");
   const deleted = await context.request.delete(`${preview.url}/api/history/${id}`, { headers });
@@ -767,7 +767,8 @@ test("history paginates ten newest records and polling preserves the current pag
   await page.getByRole("checkbox", { name: "批量选择", exact: true }).check();
   await page.getByRole("button", { name: "删除所选 8 条记录", exact: true }).click();
   await page.getByRole("button", { name: "确认删除", exact: true }).click();
-  await expect(page.locator("#history-page")).toHaveText("第 1 页");
+  await expect(page.locator("#history-page")).toHaveText("第1/1页");
+  await expect(page.locator("#history-count")).toHaveText("10");
   await expect(page.locator(".history-item")).toHaveCount(10);
   await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
 });
@@ -787,7 +788,7 @@ test("selected deletion, partial failure and transient notices", async ({ page, 
     const bootstrap = await response.json();
     await route.fulfill({
       response,
-      json: { ...bootstrap, history: { items, nextCursor: null, revision: 1 } },
+      json: { ...bootstrap, history: { items, total: items.length, totalPages: 1, nextCursor: null, revision: 1 } },
     });
   });
   await page.route("**/api/history**", async (route) => {
@@ -801,7 +802,7 @@ test("selected deletion, partial failure and transient notices", async ({ page, 
       items = items.filter((item) => item.id !== id);
       return route.fulfill({ json: { ok: true } });
     }
-    await route.fulfill({ json: { items, nextCursor: null, revision: 1 } });
+    await route.fulfill({ json: { items, total: items.length, totalPages: 1, nextCursor: null, revision: 1 } });
   });
   await page.route("**/api/revision", (route) => route.fulfill({ json: { revision: 1 } }));
   await page.goto(preview.url);
@@ -899,4 +900,22 @@ test("completed files appear in history while another upload is pending", async 
     release();
     await page.unroute("**/api/uploads/*/parts/*");
   }
+});
+
+
+test("thirteen records show the total count and two pages", async ({ page, context }) => {
+  const headers = await loginContext(context);
+  for (let i = 0; i < 13; i++) {
+    expect((await context.request.post(`${preview.url}/api/text`, {
+      headers, data: { text: `total-${i}` },
+    })).ok()).toBe(true);
+  }
+  await page.goto(preview.url);
+  await expect(page.locator("#history-count")).toHaveText("13");
+  await expect(page.locator("#history-page")).toHaveText("第1/2页");
+  await expect(page.locator(".history-item")).toHaveCount(10);
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.locator("#history-count")).toHaveText("13");
+  await expect(page.locator("#history-page")).toHaveText("第2/2页");
+  await expect(page.locator(".history-item")).toHaveCount(3);
 });

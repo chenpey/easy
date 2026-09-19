@@ -651,6 +651,8 @@ test("user tenants isolate history, files, mutations and idempotency keys", asyn
   }, true, { "Idempotency-Key": sharedKey })).status, 201);
   history = await (await request("/api/history", { authenticated: true })).json();
   assert.deepEqual(history.items.map((item) => item.content), ["member private text"]);
+  assert.equal(history.total, 1);
+  assert.equal(history.totalPages, 1);
 
   useCredentials(adminCredentials);
   history = await (await request("/api/history", { authenticated: true })).json();
@@ -694,6 +696,8 @@ test("text validation, preservation, pagination and revisions", async () => {
   ).bind(crypto.randomUUID(), admin.id, `page-${i}`)));
   history = await (await request("/api/history", { authenticated: true })).json();
   assert.equal(history.items.length, 10);
+  assert.equal(history.total, 54);
+  assert.equal(history.totalPages, 6);
   const seen = [...history.items];
   while (history.nextCursor) {
     const previousCursor = history.nextCursor;

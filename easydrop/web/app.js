@@ -26,6 +26,8 @@ let pollFailureCount = 0;
 let textSubmitting = false;
 let textOperation;
 let historyPage = 0;
+let historyTotal = 0;
+let historyTotalPages = 1;
 let historyCursors = [null];
 let sessionEnded = false;
 let temporaryShareItem;
@@ -562,8 +564,7 @@ function updateHistorySelection() {
   const label = count ? `删除所选 ${count} 条记录` : "清空历史";
   $("clear").title = label;
   $("clear").setAttribute("aria-label", label);
-  const total = boxes.length;
-  $("history-count").textContent = total ? `${total}${nextCursor ? "+" : ""}` : "";
+  $("history-count").textContent = String(historyTotal);
 }
 
 function historyItemSnapshot(item) {
@@ -603,7 +604,7 @@ function pruneHistoryRowCache() {
 }
 
 function updateHistoryPagination() {
-  $("history-page").textContent = `第 ${historyPage + 1} 页`;
+  $("history-page").textContent = `第${historyPage + 1}/${historyTotalPages}页`;
   $("history-prev").disabled = loading || historyPage === 0;
   $("history-next").disabled = loading || !nextCursor;
 }
@@ -612,6 +613,8 @@ function renderHistory(data, page = 0) {
   const list = $("history-list");
   if (page === 0) historyCursors = [null];
   historyPage = page;
+  historyTotal = data.total;
+  historyTotalPages = data.totalPages;
   currentRevision = data.revision;
   const fragment = document.createDocumentFragment();
   for (const item of data.items) fragment.append(cachedHistoryRow(item));
