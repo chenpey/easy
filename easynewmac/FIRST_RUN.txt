@@ -3,9 +3,9 @@ EasyNewMac 首次使用
 由于 EasyNewMac 没有 Apple Developer ID 公证，请先通过终端授权：
 
 1. 打开 macOS 自带的“终端”。
-2. 输入 zsh 和一个空格：
+2. 输入 zsh，然后按一次空格键：
 
-   zsh 
+   zsh
 
 3. 将“授权并打开 EasyNewMac.sh”拖入终端窗口。
 4. 按回车键。
