@@ -14,6 +14,8 @@
   const BREW_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9@+._/-]*$/;
   const CASK_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9@+._-]*$/;
   const APP_STORE_ID_PATTERN = /^[0-9]+$/;
+  const NODE_FORMULA_PATTERN = /^node(?:@([0-9]+))?$/;
+  const NODE_VERSION_PATTERN = /^v?([0-9]+(?:\.[0-9]+){0,2})/;
   const WEB_APP_URL_PATTERN = /^https?:\/\/[^\s"'`]+$/i;
 
   function decodeBase64(value) {
@@ -115,6 +117,14 @@
     return "浏览器";
   }
 
+  function nvmNodeVersion(item) {
+    const installedVersion = item.version.trim().match(NODE_VERSION_PATTERN);
+    if (installedVersion) return installedVersion[1];
+
+    const formulaVersion = item.installId.match(NODE_FORMULA_PATTERN)?.[1];
+    return formulaVersion || "lts/*";
+  }
+
   function validInstallItems(items) {
     return items.filter((item) => {
       if (item.kind === "formula") {
@@ -145,6 +155,16 @@
     const shouldInstall = automatic.length > 0;
     const appStoreItems = automatic.filter((item) => item.kind === "mas");
     const formulaItems = automatic.filter((item) => item.kind === "formula");
+    const nvmSelected = formulaItems.some((item) => item.installId === "nvm");
+    const nvmNodeItems = nvmSelected
+      ? formulaItems.filter((item) =>
+          NODE_FORMULA_PATTERN.test(item.installId),
+        )
+      : [];
+    const brewFormulaItems = formulaItems.filter(
+      (item) =>
+        !nvmSelected || !NODE_FORMULA_PATTERN.test(item.installId),
+    );
     const caskItems = automatic.filter((item) => item.kind === "cask");
 
     const lines = [
@@ -214,7 +234,7 @@
 
       const brewfileLines = [];
       if (appStoreItems.length > 0) brewfileLines.push('brew "mas"');
-      formulaItems.forEach((item) => {
+      brewFormulaItems.forEach((item) => {
         brewfileLines.push(`brew ${brewfileQuote(item.installId)}`);
       });
       caskItems.forEach((item) => {
@@ -241,7 +261,7 @@
           'print -- "正在安装所选项目..."',
           'if brew bundle --file="$brewfile"; then',
           "  install_status=0",
-          '  print -- "自动安装已完成。"',
+          `  print -- "${nvmNodeItems.length > 0 ? "Homebrew 项目已安装。" : "自动安装已完成。"}"`,
           "else",
           "  install_status=$?",
           '  print -u2 -- "部分项目安装失败，请查看上方信息。"',
@@ -252,6 +272,53 @@
         lines.push(
           "install_status=0",
           'print -- "Homebrew 已准备完成。"',
+          "",
+        );
+      }
+
+      if (nvmNodeItems.length > 0) {
+        const defaultNode =
+          nvmNodeItems.find((item) => item.installId === "node") ||
+          nvmNodeItems[nvmNodeItems.length - 1];
+        const defaultVersion = nvmNodeVersion(defaultNode);
+
+        lines.push(
+          "install_node_with_nvm() {",
+          "  local nvm_prefix nvm_script nvm_status profile",
+          '  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
+          '  /bin/mkdir -p "$NVM_DIR" || return 1',
+          '  nvm_prefix="$(brew --prefix nvm 2>/dev/null)" || return 1',
+          '  nvm_script="$nvm_prefix/nvm.sh"',
+          '  [[ -s "$nvm_script" ]] || return 1',
+          "",
+          "  set +u",
+          '  source "$nvm_script" || { set -u; return 1; }',
+          ...nvmNodeItems.map(
+            (item) =>
+              `  nvm install ${shellQuote(nvmNodeVersion(item))} || { set -u; return 1; }`,
+          ),
+          `  nvm alias default ${shellQuote(defaultVersion)}`,
+          "  nvm_status=$?",
+          "  set -u",
+          '  [[ "$nvm_status" -eq 0 ]] || return "$nvm_status"',
+          "",
+          '  profile="$HOME/.zshrc"',
+          '  /usr/bin/touch "$profile" || return 1',
+          '  /usr/bin/grep -Eq \'^[[:space:]]*(export[[:space:]]+)?NVM_DIR=\' "$profile" 2>/dev/null || \\',
+          '    print -r -- \'export NVM_DIR="$HOME/.nvm"\' >> "$profile"',
+          '  /usr/bin/grep -Fq "$nvm_script" "$profile" 2>/dev/null || \\',
+          "    printf '[ -s \"%s\" ] && \\\\. \"%s\"\\n' \"$nvm_script\" \"$nvm_script\" >> \"$profile\"",
+          "}",
+          "",
+          'if [[ "$install_status" -eq 0 ]]; then',
+          '  print -- "正在通过 nvm 安装 Node.js..."',
+          "  if install_node_with_nvm; then",
+          '    print -- "Node.js 已通过 nvm 安装并设为默认版本。"',
+          "  else",
+          "    install_status=1",
+          '    print -u2 -- "Node.js 安装失败，请检查 nvm 配置。"',
+          "  fi",
+          "fi",
           "",
         );
       }

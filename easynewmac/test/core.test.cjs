@@ -123,6 +123,58 @@ test("automatic selections install Homebrew first and emit a Brewfile", () => {
   );
 });
 
+test("nvm installs and manages selected Node.js versions", () => {
+  const script = core.generateInstallScript([
+    item({
+      id: "formula:nvm",
+      kind: "formula",
+      name: "nvm",
+      version: "0.40.7",
+      installId: "nvm",
+    }),
+    item({
+      id: "formula:node",
+      kind: "formula",
+      name: "node",
+      version: "26.8.2",
+      installId: "node",
+    }),
+    item({
+      id: "formula:node@20",
+      kind: "formula",
+      name: "node@20",
+      version: "",
+      installId: "node@20",
+    }),
+  ]);
+
+  assert.match(script, /brew "nvm"/);
+  assert.doesNotMatch(script, /brew "node(?:@20)?"/);
+  assert.match(script, /source "\$nvm_script"/);
+  assert.match(script, /nvm install '26\.8\.2'/);
+  assert.match(script, /nvm install '20'/);
+  assert.match(script, /nvm alias default '26\.8\.2'/);
+  assert.ok(
+    script.indexOf('brew "nvm"') < script.indexOf("nvm install '26.8.2'"),
+    "nvm must be installed before Node.js",
+  );
+});
+
+test("Node.js remains a Homebrew formula when nvm is not selected", () => {
+  const script = core.generateInstallScript([
+    item({
+      id: "formula:node@20",
+      kind: "formula",
+      name: "node@20",
+      version: "20.19.5",
+      installId: "node@20",
+    }),
+  ]);
+
+  assert.match(script, /brew "node@20"/);
+  assert.doesNotMatch(script, /install_node_with_nvm|nvm install/);
+});
+
 test("invalid install identifiers are excluded from generated commands", () => {
   const script = core.generateInstallScript([
     item({
