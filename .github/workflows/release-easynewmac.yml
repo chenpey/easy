@@ -1,0 +1,60 @@
+name: Release EasyNewMac
+
+on:
+  push:
+    tags:
+      - "easynewmac-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate version
+        shell: zsh {0}
+        run: |
+          version="$(<easynewmac/VERSION)"
+          tag_version="${GITHUB_REF_NAME#easynewmac-v}"
+          [[ "$tag_version" == "$version" ]] || {
+            print -u2 -- "标签版本 $tag_version 与 VERSION $version 不一致"
+            exit 1
+          }
+
+      - name: Test
+        shell: zsh {0}
+        run: |
+          chmod 755 easynewmac/scripts/*.zsh
+          easynewmac/scripts/scan-preview.zsh /tmp/easynewmac-release-test >/dev/null
+          EASYNEWMAC_SCAN_FIXTURE=/tmp/easynewmac-release-test/data.js \
+            node --test easynewmac/test/core.test.cjs
+          node scripts/version.mjs check
+
+      - name: Build
+        shell: zsh {0}
+        run: easynewmac/scripts/build.zsh
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: zsh {0}
+        run: |
+          version="$(<easynewmac/VERSION)"
+          archive="easynewmac/dist/EasyNewMac-v${version}.zip"
+          checksum="${archive}.sha256"
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$archive" "$checksum" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              "$archive" \
+              "$checksum" \
+              --verify-tag \
+              --title "EasyNewMac v${version}" \
+              --generate-notes
+          fi

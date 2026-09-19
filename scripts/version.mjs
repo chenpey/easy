@@ -23,6 +23,12 @@ const projects = {
     lockPath: 'easydrop/package-lock.json',
     readmePath: 'easydrop/README.md',
   },
+  easynewmac: {
+    title: 'EasyNewMac',
+    directory: 'easynewmac',
+    readmePath: 'easynewmac/README.md',
+    versionPath: 'easynewmac/VERSION',
+  },
 };
 
 function fail(message) {
@@ -30,7 +36,7 @@ function fail(message) {
 }
 
 function validateProject(name) {
-  if (!projects[name]) fail(`Unknown project "${name}". Use easynote or easydrop.`);
+  if (!projects[name]) fail(`Unknown project "${name}". Use easynote, easydrop or easynewmac.`);
   return projects[name];
 }
 
@@ -84,12 +90,14 @@ function rootReadmeBlock(versions) {
     '| 项目 | 当前版本 |',
     '| --- | --- |',
     `| [EasyDrop](easydrop/) | \`${versions.easydrop}\` |`,
+    `| [EasyNewMac](easynewmac/) | \`${versions.easynewmac}\` |`,
     `| [EasyNote](easynote/) | \`${versions.easynote}\` |`,
     '<!-- versions:end -->',
   ].join('\n');
 }
 
 async function syncPackage(project, version) {
+  if (!project.packagePath) return;
   const packagePath = resolve(root, project.packagePath);
   const packageJson = await readJson(packagePath);
   packageJson.version = version;
@@ -100,6 +108,11 @@ async function syncPackage(project, version) {
   lockJson.version = version;
   if (lockJson.packages?.['']) lockJson.packages[''].version = version;
   await writeIfChanged(lockPath, jsonContent(lockJson));
+}
+
+async function syncVersionFile(project, version) {
+  if (!project.versionPath) return;
+  await writeIfChanged(resolve(root, project.versionPath), `${version}\n`);
 }
 
 async function syncProjectReadme(project, version) {
@@ -135,6 +148,7 @@ async function syncReadme(versions) {
 async function syncAll(versions) {
   for (const [name, project] of Object.entries(projects)) {
     await syncPackage(project, versions[name]);
+    await syncVersionFile(project, versions[name]);
     await syncProjectReadme(project, versions[name]);
     await syncRuntimeVersion(project, versions[name]);
   }
@@ -144,11 +158,17 @@ async function syncAll(versions) {
 async function checkVersions(versions) {
   const errors = [];
   for (const [name, project] of Object.entries(projects)) {
-    const packageJson = await readJson(resolve(root, project.packagePath));
-    if (packageJson.version !== versions[name]) errors.push(`${project.packagePath} version is ${packageJson.version}`);
-    const lockJson = await readJson(resolve(root, project.lockPath));
-    if (lockJson.version !== versions[name] || lockJson.packages?.['']?.version !== versions[name]) {
-      errors.push(`${project.lockPath} root version is not ${versions[name]}`);
+    if (project.packagePath) {
+      const packageJson = await readJson(resolve(root, project.packagePath));
+      if (packageJson.version !== versions[name]) errors.push(`${project.packagePath} version is ${packageJson.version}`);
+      const lockJson = await readJson(resolve(root, project.lockPath));
+      if (lockJson.version !== versions[name] || lockJson.packages?.['']?.version !== versions[name]) {
+        errors.push(`${project.lockPath} root version is not ${versions[name]}`);
+      }
+    }
+    if (project.versionPath) {
+      const versionFile = (await readFile(resolve(root, project.versionPath), 'utf8')).trim();
+      if (versionFile !== versions[name]) errors.push(`${project.versionPath} is ${versionFile}`);
     }
     const readme = await readFile(resolve(root, project.readmePath), 'utf8');
     if (!readme.includes(versionReadmeLine(versions[name]))) errors.push(`${project.readmePath} is missing ${versions[name]}`);
@@ -177,7 +197,7 @@ function usage() {
   node scripts/version.mjs bump <project> <major|minor|patch>
 
 From a project directory, the project name may be omitted:
-  cd easynote && node ../scripts/version.mjs bump patch`;
+  cd easynewmac && node ../scripts/version.mjs bump patch`;
 }
 
 async function main() {

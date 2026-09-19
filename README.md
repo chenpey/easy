@@ -1,6 +1,6 @@
 # Easy Suite
 
-Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专属依赖、配置、数据存储和使用文档，Cloudflare D1/R2 资源与本地运行产物也分别管理。
+Easy Suite 集中管理四个相互独立的实用工具。每个项目使用专属依赖、配置、数据存储和使用文档，Cloudflare D1/R2 资源与本地运行产物也分别管理。
 
 ## 版本
 
@@ -8,6 +8,7 @@ Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专
 | 项目 | 当前版本 |
 | --- | --- |
 | [EasyDrop](easydrop/) | `1.1.5` |
+| [EasyNewMac](easynewmac/) | `0.1.0` |
 | [EasyNote](easynote/) | `0.3.2` |
 <!-- versions:end -->
 
@@ -33,6 +34,14 @@ Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专
 
 详细说明见 [EasyNote README](easynote/README.md)。
 
+### [EasyNewMac](easynewmac/)
+
+用于从旧 Mac 扫描 Homebrew、Mac App Store 和普通应用，让用户搜索、筛选并选择需要迁移的项目，预览后导出新 Mac 安装脚本。工具由无终端窗口的本地启动器和本地网页组成，不需要 Xcode、开发者账号或额外运行环境；扫描清单不上传，EasyNewMac 本身也不执行安装。
+
+技术栈：AppleScript、Zsh、HTML、CSS、JavaScript。
+
+详细说明见 [EasyNewMac README](easynewmac/README.md)。
+
 ### [EasyNews](easynews/)
 
 用于新闻采集、关键词粗筛、语义判断校验、统计和 Excel 台账导出的纯 Python 工具。脚本负责准备全文分片、校验判断结果和导出，语义判断固定由当前 AI 会话完成。
@@ -43,24 +52,25 @@ Easy Suite 集中管理三个相互独立的实用工具。每个项目使用专
 
 ## 使用
 
-三个项目相互独立，所有命令都应在对应项目目录中执行：
+四个项目相互独立，所有命令都应在对应项目目录中执行：
 
 - EasyDrop 和 EasyNote 需要 Node.js 22 或更新版本；部署凭据和初始账号均通过各自 README 规定的交互流程处理。
+- EasyNewMac 需要 macOS 13 或更新版本，解压发布包后双击 `EasyNewMac.app` 即可使用。
 - EasyNews 需要 Python 3.12 和 uv，使用 `uv sync --locked` 创建并使用项目专属环境。
 
 具体启动、测试、部署、配置和安全边界以各项目 README 为准。
 
 ## 版本管理
 
-版本源文件是 [`versions.json`](versions.json)，不要直接修改两个项目的 `package.json` 或 README 版本行。准备提交功能更新时，在仓库根目录执行：
+版本源文件是 [`versions.json`](versions.json)，不要直接修改各项目的版本文件、`package.json` 或 README 版本行。准备提交功能更新时，在仓库根目录执行：
 
 ```bash
 node scripts/version.mjs bump easynote patch
-# 或：node scripts/version.mjs bump easydrop minor
+# 或：node scripts/version.mjs bump easynewmac minor
 node scripts/version.mjs check
 ```
 
-脚本会同步项目的 `package.json`、锁文件、运行时版本、README 和根目录版本表。`patch` 适合兼容性修复，`minor` 适合新增功能，`major` 适合不兼容变更。随后使用带版本号的提交信息，例如 `发布：EasyNote v0.3.1`。
+脚本会同步项目的版本文件、`package.json`、锁文件、运行时版本、README 和根目录版本表。`patch` 适合兼容性修复，`minor` 适合新增功能，`major` 适合不兼容变更。随后使用带版本号的提交信息，例如 `发布：EasyNewMac v0.1.0`。
 
 ## 清空重建
 
