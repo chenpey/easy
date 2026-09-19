@@ -1148,8 +1148,8 @@ async function historyPayload(env, session, config, url) {
     throw new HttpError(400, "Invalid history cursor.");
   }
   const cursor = raw ? Number(raw) : Number.MAX_SAFE_INTEGER;
-  // Bound the worst-case text allocation before fetching full bodies from D1.
-  const pageSize = Math.min(config.pageSize, Math.max(1, Math.floor(1048576 / config.textLimit)));
+  // Ten maximum-sized text records remain bounded to 10 MiB.
+  const pageSize = Math.min(config.pageSize, 10);
   const items = await env.DB.prepare(
     `SELECT i.seq, i.id, i.type, i.content, i.name, i.size, i.media_type, i.created_at,
      CASE WHEN s.expires_at > ? THEN s.expires_at ELSE NULL END AS share_expires_at

@@ -523,8 +523,11 @@ a.icon-button:hover { background: var(--fill-hover); }
   padding: 44px 0;
 }
 
-#load-more {
+.history-pagination {
   display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
   margin: 22px auto 0;
 }
 

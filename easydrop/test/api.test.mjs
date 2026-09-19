@@ -693,7 +693,7 @@ test("text validation, preservation, pagination and revisions", async () => {
     "INSERT INTO items(id, owner_user_id, type, content, state, created_at) VALUES (?, ?, 'text', ?, 'ready', 1)",
   ).bind(crypto.randomUUID(), admin.id, `page-${i}`)));
   history = await (await request("/api/history", { authenticated: true })).json();
-  assert.equal(history.items.length, 8);
+  assert.equal(history.items.length, 10);
   const seen = [...history.items];
   while (history.nextCursor) {
     const previousCursor = history.nextCursor;

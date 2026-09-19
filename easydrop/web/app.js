@@ -15,6 +15,7 @@ let currentRevision = -1;
 let loading = false;
 let deletingHistory = false;
 let pendingRefresh = false;
+let pendingHistoryPage = null;
 let uploading = false;
 let pauseRequested = false;
 let uploadQueue = [];
@@ -24,7 +25,8 @@ let revisionCheckRunning = false;
 let pollFailureCount = 0;
 let textSubmitting = false;
 let textOperation;
-let expandedHistory = false;
+let historyPage = 0;
+let historyCursors = [null];
 let sessionEnded = false;
 let temporaryShareItem;
 let temporaryShareGeneration = 0;
@@ -600,71 +602,68 @@ function pruneHistoryRowCache() {
   for (const id of historyRowCache.keys()) if (!visible.has(id)) historyRowCache.delete(id);
 }
 
-function renderHistory(data, more = false) {
-  if (more && data.revision !== currentRevision) markHistoryUpdate();
+function updateHistoryPagination() {
+  $("history-page").textContent = `第 ${historyPage + 1} 页`;
+  $("history-prev").disabled = loading || historyPage === 0;
+  $("history-next").disabled = loading || !nextCursor;
+}
+
+function renderHistory(data, page = 0) {
   const list = $("history-list");
-  const existing = new Set(Array.from(list.querySelectorAll("[data-id]"), (row) => row.dataset.id));
-  if (!more) {
-    expandedHistory = false;
-    $("refresh").classList.remove("has-updates");
-    $("refresh").title = "刷新历史";
-    currentRevision = data.revision;
-  }
-  if (more) expandedHistory = true;
+  if (page === 0) historyCursors = [null];
+  historyPage = page;
+  currentRevision = data.revision;
   const fragment = document.createDocumentFragment();
-  for (const item of data.items) {
-    if (!more || !existing.has(item.id)) fragment.append(cachedHistoryRow(item));
-  }
-  if (more) list.append(fragment);
-  else list.replaceChildren(fragment);
+  for (const item of data.items) fragment.append(cachedHistoryRow(item));
+  list.replaceChildren(fragment);
   nextCursor = data.nextCursor;
-  const count = list.querySelectorAll(".history-item").length;
-  $("history-count").textContent = count ? `${count}${nextCursor ? "+" : ""}` : "";
-  if (!count) {
+  historyCursors.length = page + 1;
+  if (nextCursor) historyCursors.push(nextCursor);
+  if (!data.items.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
     empty.textContent = "暂无分享记录";
     list.append(empty);
   }
-  $("load-more").hidden = !nextCursor;
+  updateHistoryPagination();
   updateHistorySelection();
   if (!retainHistoryRows) pruneHistoryRowCache();
   renderIcons();
 }
 
-async function loadHistory(more = false) {
+async function loadHistory(page = historyPage) {
   if (sessionEnded) return;
-  if (deletingHistory) {
+  if (deletingHistory || loading) {
+    pendingHistoryPage = page;
     pendingRefresh = true;
     return;
   }
-  if (loading) {
-    if (!more) pendingRefresh = true;
-    return;
-  }
   loading = true;
-  $("load-more").disabled = true;
+  updateHistoryPagination();
   try {
-    const data = await api(`/api/history${more && nextCursor ? `?before=${nextCursor}` : ""}`);
-    if (sessionEnded) return;
-    if (deletingHistory) {
-      pendingRefresh = true;
-      return;
-    }
-    renderHistory(data, more);
+    let data;
+    do {
+      const cursor = historyCursors[page];
+      data = await api(`/api/history${cursor ? `?before=${cursor}` : ""}`);
+      if (sessionEnded) return;
+      if (deletingHistory) {
+        pendingRefresh = true;
+        return;
+      }
+      if (data.items.length || page === 0) break;
+      page--;
+    } while (true);
+    renderHistory(data, page);
   } finally {
     loading = false;
-    $("load-more").disabled = false;
+    updateHistoryPagination();
     if (pendingRefresh && !sessionEnded && !deletingHistory) {
       pendingRefresh = false;
-      await loadHistory();
+      const pendingPage = pendingHistoryPage ?? historyPage;
+      pendingHistoryPage = null;
+      await loadHistory(pendingPage);
     }
   }
-}
-
-function markHistoryUpdate() {
-  $("refresh").classList.add("has-updates");
-  $("refresh").title = "分享历史有更新";
 }
 
 function visibleHistoryAnchors() {
@@ -678,16 +677,10 @@ function visibleHistoryAnchors() {
 }
 
 async function refreshHistoryPreservingPosition() {
-  const loadedCount = $("history-list").querySelectorAll(".history-item").length;
-  const restoreExpanded = expandedHistory;
   const anchors = visibleHistoryAnchors();
   retainHistoryRows = true;
   try {
     await loadHistory();
-    while (!deletingHistory && restoreExpanded && nextCursor &&
-        $("history-list").querySelectorAll(".history-item").length < loadedCount) {
-      await loadHistory(true);
-    }
     for (const anchor of anchors) {
       const row = Array.from($("history-list").querySelectorAll(".history-item"))
         .find((item) => item.dataset.id === anchor.id);
@@ -1051,6 +1044,7 @@ async function startUpload() {
         try {
           if (entry.file.size > session.maxUploadBytes) throw new Error(`${entry.file.name} 超过单文件上限`);
           await uploadFile(entry);
+          void loadHistory(0).catch(report);
           setTimeout(() => {
             entry.progress.closest("li").remove();
             uploadQueue = uploadQueue.filter((item) => item !== entry);
@@ -1125,7 +1119,7 @@ async function initializeApp() {
       textOperation = null;
       if ($("text-input").value === text) $("text-input").value = "";
       notice("已分享");
-      await loadHistory();
+      await loadHistory(0);
     });
     textSubmitting = false;
     if (session) updateCount();
@@ -1152,7 +1146,8 @@ async function initializeApp() {
     pollFailureCount = 0;
     schedulePoll();
   }));
-  $("load-more").addEventListener("click", () => loadHistory(true).catch(report));
+  $("history-prev").addEventListener("click", () => loadHistory(historyPage - 1).catch(report));
+  $("history-next").addEventListener("click", () => loadHistory(historyPage + 1).catch(report));
   $("select-all").addEventListener("change", () => {
     for (const box of $("history-list").querySelectorAll(".history-select")) box.checked = $("select-all").checked;
     updateHistorySelection();

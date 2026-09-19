@@ -709,18 +709,23 @@ test("multiple files upload concurrently", async ({ page, context }) => {
   }
 });
 
-test("polling refreshes expanded pages, preserves position and recovers after failure", async ({ page, context }) => {
+test("history paginates ten newest records and polling preserves the current page", async ({ page, context }) => {
   const headers = await loginContext(context);
   for (let i = 0; i < 18; i++) {
     expect((await context.request.post(`${preview.url}/api/text`, { headers, data: { text: `history-${i}` } })).ok()).toBe(true);
   }
   await page.goto(preview.url);
+  await expect(page.locator(".history-item")).toHaveCount(10);
+  await expect(page.locator(".item-text").first()).toHaveText("history-17");
+  await expect(page.locator(".item-text").last()).toHaveText("history-8");
+  await expect(page.getByRole("button", { name: "上一页" })).toBeDisabled();
+  await page.getByRole("button", { name: "下一页" }).click();
   await expect(page.locator(".history-item")).toHaveCount(8);
-  await page.getByRole("button", { name: "加载更早记录" }).click();
-  await expect(page.locator(".history-item")).toHaveCount(16);
-  await page.getByRole("button", { name: "加载更早记录" }).click();
-  await expect(page.locator(".history-item")).toHaveCount(18);
-  const anchor = page.getByText("history-9", { exact: true });
+  await expect(page.locator("#history-page")).toHaveText("第 2 页");
+  await expect(page.locator(".item-text").first()).toHaveText("history-7");
+  await expect(page.locator(".item-text").last()).toHaveText("history-0");
+  await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
+  const anchor = page.getByText("history-7", { exact: true });
   await anchor.scrollIntoViewIfNeeded();
   const anchorTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
   let revisionRequests = 0;
@@ -743,15 +748,28 @@ test("polling refreshes expanded pages, preserves position and recovers after fa
   const { id } = await created.json();
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(page.locator("#notice")).toHaveText("Temporary polling failure.");
-  await expect(page.locator(".item-text").first()).toHaveText("new from another device", { timeout: 12000 });
-  await expect(page.locator(".history-item")).toHaveCount(19);
-  await expect(page.locator("#notice")).toHaveText("分享历史已自动更新");
+  await expect(page.locator("#notice")).toHaveText("分享历史已自动更新", { timeout: 12000 });
+  await expect(page.locator("#history-page")).toHaveText("第 2 页");
+  await expect(page.locator(".history-item")).toHaveCount(8);
+  await expect(page.locator(".item-text").first()).toHaveText("history-7");
   expect(revisionRequests).toBeGreaterThanOrEqual(2);
   expect(Math.abs(await anchor.evaluate((node) => node.getBoundingClientRect().top) - anchorTop)).toBeLessThan(1);
+  await page.getByRole("button", { name: "上一页" }).click();
+  await expect(page.locator("#history-page")).toHaveText("第 1 页");
+  await expect(page.locator(".history-item")).toHaveCount(10);
+  await expect(page.locator(".item-text").first()).toHaveText("new from another device");
   const deleted = await context.request.delete(`${preview.url}/api/history/${id}`, { headers });
   expect(deleted.ok()).toBe(true);
   await expect(page.getByText("new from another device", { exact: true })).toHaveCount(0, { timeout: 10000 });
-  await expect(page.locator(".history-item")).toHaveCount(18);
+  await expect(page.locator(".history-item")).toHaveCount(10);
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.locator(".history-item")).toHaveCount(8);
+  await page.getByRole("checkbox", { name: "批量选择", exact: true }).check();
+  await page.getByRole("button", { name: "删除所选 8 条记录", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(page.locator("#history-page")).toHaveText("第 1 页");
+  await expect(page.locator(".history-item")).toHaveCount(10);
+  await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
 });
 
 test("selected deletion, partial failure and transient notices", async ({ page, context }) => {
@@ -853,5 +871,32 @@ test("thumbnail upload does not block file parts", async ({ page, context }) => 
   } finally {
     release();
     await page.unroute("**/api/uploads/*/preview");
+  }
+});
+
+
+test("completed files appear in history while another upload is pending", async ({ page, context }) => {
+  await loginContext(context);
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/uploads/*/parts/*", async (route) => {
+    if (route.request().postDataBuffer()?.toString() === "slow upload") await hold;
+    await route.continue();
+  });
+  try {
+    await page.goto(preview.url);
+    await page.locator("#file-input").setInputFiles([
+      { name: "pending-upload.txt", mimeType: "text/plain", buffer: Buffer.from("slow upload") },
+      { name: "finished-upload.txt", mimeType: "text/plain", buffer: Buffer.from("fast upload") },
+    ]);
+    await expect(page.locator(".history-item").filter({ hasText: "finished-upload.txt" })).toHaveCount(1);
+    await expect(page.locator(".history-item").filter({ hasText: "pending-upload.txt" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "暂停上传", exact: true })).toBeVisible();
+    release();
+    await expect(page.locator("#notice")).toHaveText("上传完成");
+    await expect(page.locator(".history-item").filter({ hasText: "pending-upload.txt" })).toHaveCount(1);
+  } finally {
+    release();
+    await page.unroute("**/api/uploads/*/parts/*");
   }
 });
