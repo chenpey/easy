@@ -1,13 +1,12 @@
-## EasyNewMac 0.3.0
+## EasyNewMac 0.3.1
 
-本次修复 App 内的迁移脚本生成器；下载新版 App 后重新导出，已有迁移脚本不会自动更新。
+修复 App 内生成器的 shell 配置判断。请用新版 App 重新导出；旧迁移脚本不会自动更新。
 
-- 保留 Homebrew 默认升级。bundle 失败后补装缺失项目并重试一次，最终验证安装记录和 Brewfile；升级失败也会报告。
-- Node / node@版本统一通过官方 nvm 安装最新 LTS 并设为默认版本。单选 nvm 只配置 nvm，不安装 Node。不再用 Homebrew 安装 nvm。
-- 自动安装增加非 root、macOS 14+ 检查和持久日志；汇总验收通过、跳过和失败详情。
-- 检查 nvm 环境变量、zsh 配置及 npm prefix/globalconfig 冲突；验收 Node LTS、npm 和新登录 shell。
-- App Store 安装后验证记录，地区不可用单独汇总，网络或安装异常保留失败状态，并提示 Spotlight 排查。
-- Brewfile、补装和验收共用源码中的项目清单；清理网页应用 utm_* 参数及问财临时 sign，保留功能参数。
-- 修复仅手动提醒时的未初始化数组；不会自动接管已有同名 App。
+- 删除 NVM_DIR 的字符串解析，由 zsh 读取最终生效的目录；兼容官方条件表达式、单引号、条件赋值与 ZDOTDIR。
+- 真正的自定义 nvm 目录保持不变并明确提示。无法读取启动配置单独报告，不再误报目录冲突。
+- 从基础 PATH、清除继承 nvm 变量的登录 shell 验证环境。Homebrew 缺少持久配置时追加对应 shellenv，再确认找到同一个 brew；重复运行不重复追加。
+- Node 验收直接检查 shell 启动后的版本，不再提前执行 nvm use 掩盖启动配置的实际结果。
+- 增加独立 shell 回归测试和可选的真实官方 nvm/LTS 联网安装测试。
 
-发布包包含 EasyNewMac.app 和“首次使用.txt”。首次使用按说明在终端运行完整授权命令。
+保留默认 brew 升级、失败补装与重试、Node LTS、日志和 App Store 三态汇总。
+发布包仍包含 EasyNewMac.app 和“首次使用.txt”。

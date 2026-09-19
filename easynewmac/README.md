@@ -1,6 +1,6 @@
 # EasyNewMac
 
-当前版本：`0.3.0`
+当前版本：`0.3.1`
 
 EasyNewMac 在旧 Mac 上扫描已安装应用，让用户搜索、筛选和选择需要迁移的项目，然后导出可在新 Mac 上运行的安装脚本。
 
@@ -44,7 +44,7 @@ Homebrew 保留 `brew bundle` 默认升级行为，最多 3 路并发下载。�
 
 自动安装要求 macOS 14+，拒绝 sudo/root 运行，打印系统版本和架构。日志保存在 `~/Library/Logs/EasyNewMac/`。结尾分别汇总验收通过、地区不可用而跳过、失败项；验收数量包含 mas 等辅助工具，失败数量包含环境检查，均不等同于所选应用数量。
 
-Node 安装前检查当前 `NVM_DIR`、zsh 启动配置（包括 `ZDOTDIR`）及 `.npmrc` 的 prefix/globalconfig 冲突，保留用户配置并提示修复。安装后验证 LTS 身份、版本、npm 和新登录 shell。Homebrew 同样检查登录 shell 的 PATH。App Store 在安装后通过 `mas list` 验收，异常时提示检查账户、网络或 Spotlight。单项失败不阻止后续项目。
+Node 安装前由 zsh 实际加载启动文件，读取最终生效的 `NVM_DIR` 和 `ZDOTDIR`，不再解析配置文本。官方条件表达式、单引号及等价目录均按实际结果判断；真正的自定义目录会保留并提示，不会被覆盖。启动文件提前退出等导致无法读取时单独报告读取失败，不误报目录冲突。仍检查当前环境和 `.npmrc` 的 prefix/globalconfig 冲突。安装后验证 LTS 身份、版本及 npm；独立登录 shell 从基础 PATH 启动并清除继承的 nvm 环境，直接验证默认 Node，不先切换版本。Homebrew 同样在基础 PATH 下确认找到同一个 brew；缺少配置时向实际 `ZDOTDIR` 下的 `.zprofile` 追加对应 `brew shellenv`，再重新验证。重复运行不重复追加，保留原有配置。App Store 在安装后通过 `mas list` 验收，异常时提示检查账户、网络或 Spotlight。单项失败不阻止后续项目。
 
 网页应用导出时清理 `utm_*` 跟踪参数和问财 `sign` 临时参数，保留其他功能参数及路径。已有但未被 Homebrew 管理的同名 App 只提示手动确认接管，不自动使用 `--adopt`。
 
@@ -111,6 +111,12 @@ EASYNEWMAC_SCAN_FIXTURE=/tmp/easynewmac-test/data.js \
 EASYNEWMAC_SCAN_FIXTURE=/tmp/easynewmac-test/data.js \
   node --test test/core.test.cjs
 ./scripts/build.zsh
+```
+
+可选的真实 nvm/LTS 联网集成检查（使用临时 HOME，Homebrew 为测试替身，不修改用户配置）：
+
+```bash
+EASYNEWMAC_REAL_NVM=1 node --test --test-name-pattern='real official nvm' test/core.test.cjs
 ```
 
 构建只依赖 macOS 自带的 `osacompile`、`sips`、`iconutil` 和 `codesign`。Ad-hoc 签名不需要 Apple 开发者账号。

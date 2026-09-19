@@ -143,12 +143,16 @@ test("automatic selections prepare Homebrew and defer MAS installs", () => {
 });
 
 // Execute generated output with fake tools in a disposable HOME; never install software.
-function migration(t, items, { brew = "exit 0", mas = "exit 1", setup = () => {}, env = {}, transform = (script) => script } = {}) {
+function migration(t, items, { brew = "exit 0", mas = "exit 1", setup = () => {}, env = {}, transform = (script) => script, timeout = 10000 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "easynewmac-test-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
-  writeExecutable(path.join(bin, "brew"), `#!/bin/zsh\nprint -r -- "$*" >> "$HOME/brew.log"\n${brew}\n`);
+  writeExecutable(path.join(bin, "brew"), `#!/bin/zsh\nprint -r -- "$*" >> "$HOME/brew.log"\nif [[ "$1" == shellenv ]]; then
+  printf 'export PATH=%q:$PATH\\n' "${bin}"
+  exit 0
+fi
+${brew}\n`);
   writeExecutable(path.join(bin, "mas"), `#!/bin/zsh\nprint -r -- "$*" >> "$HOME/mas.log"\n${mas}\n`);
   fs.mkdirSync(path.join(root, ".nvm"));
   fs.writeFileSync(path.join(root, ".nvm/nvm.sh"), `
@@ -165,8 +169,8 @@ npm() { print 11.0.0; }
   const syntax = childProcess.spawnSync("/bin/zsh", ["-n"], { input: script, encoding: "utf8" });
   assert.equal(syntax.status, 0, syntax.stderr);
   const result = childProcess.spawnSync("/bin/zsh", ["-c", script], {
-    input: "install apps\n\n", encoding: "utf8", timeout: 10000,
-    env: { ...process.env, HOME: root, ZDOTDIR: root, NVM_DIR: "", NPM_CONFIG_PREFIX: "", npm_config_prefix: "", PATH: `${bin}:/usr/bin:/bin`, ...env },
+    input: "install apps\n\n", encoding: "utf8", timeout,
+    env: { ...process.env, HOME: root, ZDOTDIR: root, NVM_DIR: "", XDG_CONFIG_HOME: "", NPM_CONFIG_PREFIX: "", npm_config_prefix: "", PATH: `${bin}:/usr/bin:/bin`, ...env },
   });
   return { ...result, root, script, output: result.stdout + result.stderr };
 }
@@ -242,7 +246,7 @@ for (const config of [".zshrc", ".zprofile", ".zshenv", ".zlogin", ".npmrc", "en
     assert.equal(result.status, 1, result.output);
     assert.match(result.output, /自定义 NVM_DIR|prefix.*冲突/);
     assert.equal(fs.existsSync(path.join(result.root, "nvm.log")), false);
-    if (config !== "environment") assert.equal(fs.readFileSync(path.join(result.root, config), "utf8"), content);
+    if (config !== "environment") assert.ok(fs.readFileSync(path.join(result.root, config), "utf8").startsWith(content));
   });
 }
 
@@ -252,12 +256,120 @@ test("equivalent NVM_DIR and repeated execution do not duplicate config", (t) =>
   } });
   assert.equal(result.status, 0, result.output);
   const profile = fs.readFileSync(path.join(result.root, ".zshrc"), "utf8");
+  const brewProfile = fs.readFileSync(path.join(result.root, ".zprofile"), "utf8");
   const again = childProcess.spawnSync("/bin/zsh", ["-c", result.script], {
     input: "install apps\n\n", encoding: "utf8", timeout: 10000,
-    env: { ...process.env, HOME: result.root, ZDOTDIR: result.root, NVM_DIR: "", NPM_CONFIG_PREFIX: "", npm_config_prefix: "", PATH: `${result.root}/bin:/usr/bin:/bin` },
+    env: { ...process.env, HOME: result.root, ZDOTDIR: result.root, NVM_DIR: "", XDG_CONFIG_HOME: "", NPM_CONFIG_PREFIX: "", npm_config_prefix: "", PATH: `${result.root}/bin:/usr/bin:/bin` },
   });
   assert.equal(again.status, 0, again.stdout + again.stderr);
   assert.equal(fs.readFileSync(path.join(result.root, ".zshrc"), "utf8"), profile);
+  assert.equal(fs.readFileSync(path.join(result.root, ".zprofile"), "utf8"), brewProfile);
+});
+
+function freshShell(root, command) {
+  return childProcess.spawnSync("/usr/bin/env", ["-u", "NVM_DIR", "-u", "NVM_BIN", "-u", "NVM_INC", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "/bin/zsh", "-lic", command], {
+    encoding: "utf8", timeout: 10000,
+    env: { ...process.env, HOME: root, ZDOTDIR: root, XDG_CONFIG_HOME: "" },
+  });
+}
+
+test("Homebrew survives a fresh shell without inheriting migration PATH", (t) => {
+  const result = migration(t, [caskItem]);
+  assert.equal(result.status, 0, result.output);
+  const fresh = freshShell(result.root, 'command -v brew');
+  assert.equal(fresh.status, 0, fresh.stderr);
+  assert.equal(fresh.stdout.trim(), `${result.root}/bin/brew`);
+  assert.match(fs.readFileSync(path.join(result.root, ".zprofile"), "utf8"), /shellenv/);
+});
+
+for (const style of ["official", "single-quoted", "spaces", "conditional", "overridden"]) {
+  test(`nvm uses effective directory for ${style} config`, (t) => {
+    let original;
+    const result = migration(t, [nodeItem], { setup(root) {
+      const configs = {
+        official: 'export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"',
+        "single-quoted": `export NVM_DIR='${root}/.nvm'`,
+        spaces: 'export NVM_DIR="$HOME/.nvm" # normal directory',
+        conditional: 'if [[ -d "$HOME/.nvm" ]]; then export NVM_DIR="$HOME/.nvm"; fi',
+        overridden: 'export NVM_DIR="$HOME/old"\nexport NVM_DIR="$HOME/.nvm"',
+      };
+      original = configs[style] + "\n";
+      fs.writeFileSync(path.join(root, ".zshrc"), original);
+    } });
+    assert.equal(result.status, 0, result.output);
+    assert.ok(fs.readFileSync(path.join(result.root, ".zshrc"), "utf8").startsWith(original));
+    assert.equal(freshShell(result.root, 'nvm --version && node -v').status, 0);
+  });
+}
+
+test("actual custom directory from official XDG expression remains untouched", (t) => {
+  const original = 'export XDG_CONFIG_HOME="$HOME/.config"\nexport NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"\n';
+  const result = migration(t, [nodeItem], { setup(root) {
+    fs.writeFileSync(path.join(root, ".zshrc"), original);
+  } });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /自定义 NVM_DIR/);
+  assert.equal(fs.readFileSync(path.join(result.root, ".zshrc"), "utf8"), original);
+  assert.equal(fs.existsSync(path.join(result.root, "nvm.log")), false);
+});
+
+test("startup that exits cannot be mistaken for an empty or conflicting NVM_DIR", (t) => {
+  const result = migration(t, [nodeItem], { setup(root) {
+    fs.writeFileSync(path.join(root, ".zshrc"), "exit 0\n");
+  } });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /无法读取.*shell/);
+  assert.doesNotMatch(result.output, /检测到自定义 NVM_DIR/);
+  assert.equal(fs.readFileSync(path.join(result.root, ".zshrc"), "utf8"), "exit 0\n");
+});
+
+test("ZDOTDIR set by .zshenv determines where configuration is written", (t) => {
+  const result = migration(t, [nodeItem], { setup(root) {
+    fs.mkdirSync(path.join(root, "zsh"));
+    fs.writeFileSync(path.join(root, ".zshenv"), 'export ZDOTDIR="$HOME/zsh"\n');
+  } });
+  assert.equal(result.status, 0, result.output);
+  assert.equal(fs.existsSync(path.join(result.root, ".zshrc")), false);
+  assert.match(fs.readFileSync(path.join(result.root, "zsh/.zshrc"), "utf8"), /nvm.sh/);
+  assert.match(fs.readFileSync(path.join(result.root, "zsh/.zprofile"), "utf8"), /shellenv/);
+  assert.equal(freshShell(result.root, 'command -v brew && node -v').status, 0);
+});
+
+test("startup output does not contaminate the evaluated configuration", (t) => {
+  const result = migration(t, [nodeItem], { setup(root) {
+    fs.writeFileSync(path.join(root, ".zshrc"), 'print welcome\nexport NVM_DIR="$HOME/.nvm"\n');
+  } });
+  assert.equal(result.status, 0, result.output);
+});
+
+test("current NVM_DIR cannot hide a different independent-shell directory", (t) => {
+  const result = migration(t, [nodeItem], { setup(root) {
+    fs.writeFileSync(path.join(root, ".zshrc"), 'export NVM_DIR="${NVM_DIR:-$HOME/custom}"\n');
+  }, transform(script) {
+    return script.replace('set -u', 'set -u\nexport NVM_DIR="$HOME/.nvm"');
+  } });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /登录 shell 配置存在自定义 NVM_DIR/);
+});
+
+test("Node login validation observes startup version without switching it", (t) => {
+  const result = migration(t, [nodeItem], { setup(root) {
+    fs.appendFileSync(path.join(root, ".nvm/nvm.sh"), `
+node() { if [[ "$1" == -v ]]; then print "v$active_node.0.0"; elif [[ "$active_node" == 24 ]]; then print Krypton; fi; }
+nvm() {
+  case "$1" in
+    version) print v24.0.0;;
+    use) if [[ "$2" == 26 ]]; then active_node=26; else active_node=24; fi;;
+  esac
+  return 0
+}
+active_node=24
+`);
+    fs.writeFileSync(path.join(root, ".zshrc"), 'export NVM_DIR="$HOME/.nvm"\nsource "$NVM_DIR/nvm.sh"\nnvm use 26\n');
+  } });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /独立登录 shell 中 nvm \/ Node.js 验收失败/);
+  assert.equal(freshShell(result.root, 'node -v').stdout.trim(), "v26.0.0");
 });
 
 test("Node verification rejects Current even when install succeeds", (t) => {
@@ -317,6 +429,21 @@ test("official nvm download failure reports error and continues MAS", (t) => {
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, /无法下载官方 nvm 安装器/);
   assert.match(result.output, /Shadowrocket 已安装并通过验收/);
+});
+
+test("real official nvm installs LTS and survives an independent login", { skip: process.env.EASYNEWMAC_REAL_NVM !== "1" }, (t) => {
+  const result = migration(t, [nodeItem], {
+    timeout: 300000,
+    env: { METHOD: "script" },
+    setup(root) {
+      fs.rmSync(path.join(root, ".nvm/nvm.sh"));
+      fs.writeFileSync(path.join(root, ".zshrc"), 'export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"\n');
+    },
+  });
+  assert.equal(result.status, 0, result.output);
+  const fresh = freshShell(result.root, 'nvm --version && node -p \'Boolean(process.release.lts)\' && npm --version');
+  assert.equal(fresh.status, 0, fresh.stdout + fresh.stderr);
+  assert.match(fresh.stdout, /^true$/m);
 });
 
 test("PWA removes tracking and known temporary sign, preserving functional parameters", () => {
